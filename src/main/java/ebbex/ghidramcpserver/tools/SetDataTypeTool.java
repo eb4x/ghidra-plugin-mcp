@@ -31,7 +31,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 /** Apply a data type: define/retype data, a variable, a parameter, or a return type. */
 public class SetDataTypeTool implements ProgramTool {
 
-	private static final List<String> TARGETS =
+	private static final List<String> KINDS =
 		List.of("data", "local_variable", "parameter", "return");
 
 	private final Decompilers decompilers;
@@ -47,9 +47,9 @@ public class SetDataTypeTool implements ProgramTool {
 
 	@Override
 	public String description() {
-		return "Apply a C data type. target=data defines/retypes data at 'address' (creating it " +
-			"if the address is undefined). target=local_variable|parameter retypes the variable " +
-			"'variable_name' in 'function'. target=return sets the return type of 'function'. " +
+		return "Apply a C data type. kind=data defines/retypes data at 'address' (creating it " +
+			"if the address is undefined). kind=local_variable|parameter retypes the variable " +
+			"'variable_name' in 'function'. kind=return sets the return type of 'function'. " +
 			"'type' is a C type string like 'int', 'char *', 'uint32_t[8]', or a known struct name.";
 	}
 
@@ -58,14 +58,14 @@ public class SetDataTypeTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Schemas.enumProp("What to type", TARGETS),
+				"kind", Schemas.enumProp("What to type", KINDS),
 				"type", Schemas.stringProp("C data type string"),
-				"address", Schemas.stringProp("Address (for target=data)"),
-				"function", Schemas.stringProp(
-					"Function name/address (for local_variable|parameter|return)"),
+				"address", Schemas.stringProp("Address (for kind=data)"),
+				"function", Schemas.stringProp("Function name or an address inside it " +
+					"(for kind=local_variable|parameter|return)"),
 				"variable_name", Schemas.stringProp(
-					"Variable name (for local_variable|parameter)")),
-			"required", List.of("target", "type"));
+					"Variable name (for kind=local_variable|parameter)")),
+			"required", List.of("kind", "type"));
 	}
 
 	@Override
@@ -76,10 +76,10 @@ public class SetDataTypeTool implements ProgramTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		String target = Args.stringArg(args, "target", null);
+		String kind = Args.stringArg(args, "kind", null);
 		String typeString = Args.stringArg(args, "type", null);
-		if (target == null || !TARGETS.contains(target)) {
-			return Results.error("target must be one of " + TARGETS);
+		if (kind == null || !KINDS.contains(kind)) {
+			return Results.error("kind must be one of " + KINDS);
 		}
 		if (typeString == null || typeString.isBlank()) {
 			return Results.error("type is required");
@@ -90,11 +90,11 @@ public class SetDataTypeTool implements ProgramTool {
 			return Results.error("Unknown data type: " + typeString);
 		}
 
-		return switch (target) {
+		return switch (kind) {
 			case "data" -> applyToData(program, args, dataType);
 			case "return" -> applyToReturn(program, args, dataType);
 			case "local_variable", "parameter" -> applyToVariable(program, args, dataType);
-			default -> Results.error("unhandled target " + target);
+			default -> Results.error("unhandled kind " + kind);
 		};
 	}
 
@@ -102,7 +102,7 @@ public class SetDataTypeTool implements ProgramTool {
 			DataType dataType) {
 		String addressArg = Args.stringArg(args, "address", null);
 		if (addressArg == null) {
-			return Results.error("address is required for target=data");
+			return Results.error("'address' is required for kind=data");
 		}
 		Address address = Locations.parseAddress(program, addressArg);
 		return Transactions.modify(program, "Set data type", () -> {
@@ -116,7 +116,7 @@ public class SetDataTypeTool implements ProgramTool {
 			DataType dataType) {
 		String functionRef = Args.stringArg(args, "function", null);
 		if (functionRef == null) {
-			return Results.error("function is required for target=return");
+			return Results.error("'function' is required for kind=return");
 		}
 		Function function = Locations.findFunction(program, functionRef);
 		return Transactions.modify(program, "Set return type", () -> {
@@ -130,7 +130,7 @@ public class SetDataTypeTool implements ProgramTool {
 		String functionRef = Args.stringArg(args, "function", null);
 		String variableName = Args.stringArg(args, "variable_name", null);
 		if (functionRef == null || variableName == null) {
-			return Results.error("function and variable_name are required");
+			return Results.error("'function' and 'variable_name' are required");
 		}
 		Function function = Locations.findFunction(program, functionRef);
 

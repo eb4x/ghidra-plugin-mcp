@@ -26,7 +26,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 /** Rename any nameable thing: function, label, data, parameter, or local variable. */
 public class RenameTool implements ProgramTool {
 
-	private static final List<String> TARGETS =
+	private static final List<String> KINDS =
 		List.of("function", "label", "data", "parameter", "local_variable");
 
 	private final Decompilers decompilers;
@@ -42,9 +42,10 @@ public class RenameTool implements ProgramTool {
 
 	@Override
 	public String description() {
-		return "Rename something. target=function|label|data renames the symbol at 'address' (or " +
-			"the named function). target=parameter|local_variable renames a variable inside the " +
-			"function given by 'function', identified by its current 'old_name'.";
+		return "Rename something. kind=function renames the function given by 'function'; " +
+			"kind=label|data renames the symbol at 'address'. kind=parameter|local_variable " +
+			"renames a variable inside the function given by 'function', identified by its " +
+			"current 'variable_name'.";
 	}
 
 	@Override
@@ -52,15 +53,14 @@ public class RenameTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Schemas.enumProp("What to rename", TARGETS),
+				"kind", Schemas.enumProp("What to rename", KINDS),
 				"new_name", Schemas.stringProp("The new name"),
-				"address", Schemas.stringProp(
-					"Address of the function/label/data (for target=function|label|data)"),
-				"function", Schemas.stringProp(
-					"Function name or address (for target=parameter|local_variable)"),
-				"old_name", Schemas.stringProp(
-					"Current variable name (for target=parameter|local_variable)")),
-			"required", List.of("target", "new_name"));
+				"function", Schemas.stringProp("Function name or an address inside it " +
+					"(for kind=function|parameter|local_variable)"),
+				"address", Schemas.stringProp("Address of the label/data (for kind=label|data)"),
+				"variable_name", Schemas.stringProp(
+					"Current variable name (for kind=parameter|local_variable)")),
+			"required", List.of("kind", "new_name"));
 	}
 
 	@Override
@@ -70,29 +70,28 @@ public class RenameTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Args.stringArg(args, "target", null);
+		String kind = Args.stringArg(args, "kind", null);
 		String newName = Args.stringArg(args, "new_name", null);
-		if (target == null || !TARGETS.contains(target)) {
-			return Results.error("target must be one of " + TARGETS);
+		if (kind == null || !KINDS.contains(kind)) {
+			return Results.error("kind must be one of " + KINDS);
 		}
 		if (newName == null || newName.isBlank()) {
 			return Results.error("new_name is required");
 		}
 
-		return switch (target) {
+		return switch (kind) {
 			case "function" -> renameFunction(program, args, newName);
 			case "label", "data" -> renameSymbol(program, args, newName);
 			case "parameter", "local_variable" -> renameVariable(program, args, newName);
-			default -> Results.error("unhandled target " + target);
+			default -> Results.error("unhandled kind " + kind);
 		};
 	}
 
 	private McpSchema.CallToolResult renameFunction(Program program, Map<String, Object> args,
 			String newName) {
-		String ref = Args.stringArg(args, "address",
-			Args.stringArg(args, "function", null));
+		String ref = Args.stringArg(args, "function", null);
 		if (ref == null) {
-			return Results.error("address (or function) is required");
+			return Results.error("'function' (a name or an address inside it) is required");
 		}
 		Function function = Locations.findFunction(program, ref);
 		return Transactions.modify(program, "Rename function", () -> {
@@ -107,7 +106,7 @@ public class RenameTool implements ProgramTool {
 			String newName) {
 		String addressArg = Args.stringArg(args, "address", null);
 		if (addressArg == null) {
-			return Results.error("address is required");
+			return Results.error("'address' is required for kind=label|data");
 		}
 		Address address = Locations.parseAddress(program, addressArg);
 		Symbol symbol = program.getSymbolTable().getPrimarySymbol(address);
@@ -124,9 +123,9 @@ public class RenameTool implements ProgramTool {
 	private McpSchema.CallToolResult renameVariable(Program program, Map<String, Object> args,
 			String newName) {
 		String functionRef = Args.stringArg(args, "function", null);
-		String oldName = Args.stringArg(args, "old_name", null);
+		String oldName = Args.stringArg(args, "variable_name", null);
 		if (functionRef == null || oldName == null) {
-			return Results.error("function and old_name are required for variable renames");
+			return Results.error("'function' and 'variable_name' are required for variable renames");
 		}
 		Function function = Locations.findFunction(program, functionRef);
 

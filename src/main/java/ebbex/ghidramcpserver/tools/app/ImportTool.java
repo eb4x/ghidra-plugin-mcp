@@ -41,9 +41,9 @@ public class ImportTool implements ApplicationLevelTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"source", Schemas.stringProp("Absolute path to the file on the host filesystem"),
+				"file", Schemas.stringProp("Absolute path to the file on the host filesystem"),
 				"folder", Schemas.stringProp("Destination project folder (default '/')")),
-			"required", List.of("source"));
+			"required", List.of("file"));
 	}
 
 	@Override
@@ -54,9 +54,9 @@ public class ImportTool implements ApplicationLevelTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Project project)
 			throws Exception {
-		String source = Args.stringArg(args, "source", null);
+		String source = Args.stringArg(args, "file", null);
 		if (source == null || source.isBlank()) {
-			return Results.error("source is required");
+			return Results.error("'file' (a host filesystem path) is required");
 		}
 		File file = new File(source);
 		if (!file.isFile()) {

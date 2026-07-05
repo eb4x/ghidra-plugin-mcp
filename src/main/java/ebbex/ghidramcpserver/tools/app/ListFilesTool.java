@@ -37,9 +37,9 @@ public class ListFilesTool implements ApplicationLevelTool {
 			"type", "object",
 			"properties", Map.of(
 				"folder", Schemas.stringProp("Project folder to list (default '/')"),
-				"recursive", Map.of("type", "boolean",
-					"description", "Recurse into subfolders (default true)"),
+				"recursive", Schemas.boolProp("Recurse into subfolders (default true)"),
 				"filter", Schemas.stringProp("Case-insensitive substring to match against paths"),
+				"offset", Schemas.intProp("Skip this many matches (default 0)"),
 				"limit", Schemas.intProp("Maximum files to return (default " + DEFAULT_LIMIT + ")")));
 	}
 
@@ -53,6 +53,7 @@ public class ListFilesTool implements ApplicationLevelTool {
 		String folderPath = Args.stringArg(args, "folder", "/");
 		boolean recursive = Args.boolArg(args, "recursive", true);
 		String filter = Args.stringArg(args, "filter", "").toLowerCase();
+		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
 		ProjectData data = project.getProjectData();
@@ -61,35 +62,30 @@ public class ListFilesTool implements ApplicationLevelTool {
 			return Results.error("No project folder '" + folderPath + "'");
 		}
 
-		List<String> lines = new ArrayList<>();
-		int[] total = new int[1];
-		collect(folder, recursive, filter, limit, lines, total);
+		List<String> matches = new ArrayList<>();
+		collect(folder, recursive, filter, matches);
 
-		if (lines.isEmpty()) {
+		if (matches.isEmpty()) {
 			return Results.ok("No files" + (filter.isEmpty() ? "" : " matching '" + filter + "'") +
 				" under " + folderPath);
 		}
-		String footer = total[0] > lines.size()
-				? "\n(showing " + lines.size() + " of " + total[0] + "; raise limit to see more)"
-				: "\n(" + total[0] + " files)";
-		return Results.ok(String.join("\n", lines) + footer);
+		List<String> window = matches.stream().skip(offset).limit(limit).toList();
+		return Results.ok(String.join("\n", window) + (window.isEmpty() ? "" : "\n") +
+			Results.paginationFooter(window.size(), offset, matches.size()));
 	}
 
-	private static void collect(DomainFolder folder, boolean recursive, String filter, int limit,
-			List<String> out, int[] total) {
+	private static void collect(DomainFolder folder, boolean recursive, String filter,
+			List<String> out) {
 		for (DomainFile file : folder.getFiles()) {
 			String path = file.getPathname();
 			if (!filter.isEmpty() && !path.toLowerCase().contains(filter)) {
 				continue;
 			}
-			total[0]++;
-			if (out.size() < limit) {
-				out.add(path + "  [" + file.getContentType() + "]");
-			}
+			out.add(path + "  [" + file.getContentType() + "]");
 		}
 		if (recursive) {
 			for (DomainFolder sub : folder.getFolders()) {
-				collect(sub, true, filter, limit, out, total);
+				collect(sub, true, filter, out);
 			}
 		}
 	}

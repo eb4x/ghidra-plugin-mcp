@@ -59,8 +59,10 @@ public class ListTool implements ProgramTool {
 				"filter", Schemas.stringProp(
 					"Case-insensitive substring to match against names/values"),
 				"sort", Schemas.enumProp("Sort order for kind=functions (default address)", SORTS),
-				"from", Schemas.stringProp("kind=functions: only functions with entry >= this address"),
-				"to", Schemas.stringProp("kind=functions: only functions with entry <= this address"),
+				"min_address", Schemas.stringProp(
+					"kind=functions: only functions with entry >= this address"),
+				"max_address", Schemas.stringProp(
+					"kind=functions: only functions with entry <= this address"),
 				"offset", Schemas.intProp("Skip this many matches (default 0)"),
 				"limit", Schemas.intProp("Maximum matches to return (default " +
 					DEFAULT_LIMIT + ")")),
@@ -89,13 +91,13 @@ public class ListTool implements ProgramTool {
 		Address from = null;
 		Address to = null;
 		try {
-			String fromArg = Args.stringArg(args, "from", null);
-			String toArg = Args.stringArg(args, "to", null);
-			if (fromArg != null) {
-				from = Locations.parseAddress(program, fromArg);
+			String minArg = Args.stringArg(args, "min_address", null);
+			String maxArg = Args.stringArg(args, "max_address", null);
+			if (minArg != null) {
+				from = Locations.parseAddress(program, minArg);
 			}
-			if (toArg != null) {
-				to = Locations.parseAddress(program, toArg);
+			if (maxArg != null) {
+				to = Locations.parseAddress(program, maxArg);
 			}
 		}
 		catch (IllegalArgumentException e) {
@@ -127,12 +129,11 @@ public class ListTool implements ProgramTool {
 		}
 
 		String skipNote = skipped > 0 ? "  (" + skipped + " unreadable entries skipped)" : "";
-		if (window.isEmpty()) {
+		if (total == 0) {
 			return Results.ok("No " + kind + (filter.isEmpty() ? "" : " matching '" + filter + "'") +
-				(offset > 0 ? " at offset " + offset : "") + " (" + total + " total matches)" +
 				skipNote);
 		}
-		return Results.ok(String.join("\n", window) + "\n" +
+		return Results.ok(String.join("\n", window) + (window.isEmpty() ? "" : "\n") +
 			Results.paginationFooter(window.size(), offset, total) + skipNote);
 	}
 

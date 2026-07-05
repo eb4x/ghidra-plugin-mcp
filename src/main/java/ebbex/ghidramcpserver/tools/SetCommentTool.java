@@ -27,9 +27,8 @@ public class SetCommentTool implements ProgramTool {
 
 	@Override
 	public String description() {
-		return "Set a comment at an address (or on a function's entry point). comment_type is " +
-			"one of eol, pre, post, plate, repeatable (default eol). Pass an empty 'comment' to " +
-			"clear it.";
+		return "Set a comment at an address (or on a function's entry point). kind is one of " +
+			"eol, pre, post, plate, repeatable (default eol). Pass an empty 'comment' to clear it.";
 	}
 
 	@Override
@@ -38,8 +37,9 @@ public class SetCommentTool implements ProgramTool {
 			"type", "object",
 			"properties", Map.of(
 				"address", Schemas.stringProp("Address to comment (or omit and pass 'function')"),
-				"function", Schemas.stringProp("Function name/address; comments its entry point"),
-				"comment_type", Schemas.enumProp("Which comment slot (default eol)", TYPES),
+				"function", Schemas.stringProp("Function name or an address inside it; " +
+					"comments its entry point"),
+				"kind", Schemas.enumProp("Which comment slot (default eol)", TYPES),
 				"comment", Schemas.stringProp("Comment text; empty string clears it")),
 			"required", List.of("comment"));
 	}
@@ -55,9 +55,9 @@ public class SetCommentTool implements ProgramTool {
 		if (comment == null) {
 			return Results.error("comment is required (use empty string to clear)");
 		}
-		CommentType type = parseType(Args.stringArg(args, "comment_type", "eol"));
+		CommentType type = parseType(Args.stringArg(args, "kind", "eol"));
 		if (type == null) {
-			return Results.error("comment_type must be one of " + TYPES);
+			return Results.error("kind must be one of " + TYPES);
 		}
 
 		Address address;

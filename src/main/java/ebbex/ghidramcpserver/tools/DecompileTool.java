@@ -43,10 +43,10 @@ public class DecompileTool implements ProgramTool {
 			"type", "object",
 			"properties", Map.of(
 				"function", Schemas.stringProp(
-					"Function to decompile: a name OR an address (alias: 'target'/'address')"),
-				"address", Schemas.stringProp("Alias for 'function' — an address in the function"),
+					"Function to decompile: a function name or an address inside it"),
 				"functions", Map.of("type", "array",
-					"description", "Decompile several at once (names/addresses); max " + MAX_BATCH,
+					"description", "Decompile several at once (function names or addresses " +
+						"inside them); max " + MAX_BATCH,
 					"items", Map.of("type", "string")),
 				"timeout_s", Schemas.intProp("Decompiler timeout in seconds (default " +
 					DEFAULT_TIMEOUT + ")")));
@@ -75,11 +75,12 @@ public class DecompileTool implements ProgramTool {
 			return Results.ok(sb.toString());
 		}
 
-		String target = Args.locationArg(args);
-		if (target == null) {
-			return Results.error("a function (name or address), or a 'functions' list, is required");
+		String functionRef = Args.stringArg(args, "function", null);
+		if (functionRef == null) {
+			return Results.error("'function' (a name or an address inside it), or a 'functions' " +
+				"list, is required");
 		}
-		return Results.ok(decompileOne(program, target, timeout));
+		return Results.ok(decompileOne(program, functionRef, timeout));
 	}
 
 	private String decompileOne(Program program, String ref, int timeout) {
