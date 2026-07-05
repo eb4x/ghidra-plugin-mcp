@@ -14,6 +14,7 @@ import ebbex.ghidramcpserver.tools.DisassembleTool;
 import ebbex.ghidramcpserver.tools.GetProgramInfoTool;
 import ebbex.ghidramcpserver.tools.InspectTool;
 import ebbex.ghidramcpserver.tools.ListTool;
+import ebbex.ghidramcpserver.tools.ManageTypesTool;
 import ebbex.ghidramcpserver.tools.ReadBytesTool;
 import ebbex.ghidramcpserver.tools.ReadFileTool;
 import ebbex.ghidramcpserver.tools.RenameTool;
@@ -77,6 +78,7 @@ public final class ToolRegistry {
 		// write
 		tools.addAll(editTools);
 		tools.add(new DefineTypesTool());
+		tools.add(new ManageTypesTool());
 		tools.add(new BatchTool(editTools));
 		tools.add(new FidApplyTool());
 		return List.copyOf(tools);
