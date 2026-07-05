@@ -39,11 +39,11 @@ public class CallsTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Schemas.stringProp("Function name or an address within the function"),
+				"function", Schemas.stringProp("Function name or an address inside it"),
 				"kind", Schemas.enumProp("Direction (default callees)", KINDS),
 				"offset", Schemas.intProp("Skip this many (default 0)"),
 				"limit", Schemas.intProp("Maximum to return (default " + DEFAULT_LIMIT + ")")),
-			"required", List.of("target"));
+			"required", List.of("function"));
 	}
 
 	@Override
@@ -53,9 +53,9 @@ public class CallsTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Args.stringArg(args, "target", null);
-		if (target == null) {
-			return Results.error("target is required");
+		String functionRef = Args.stringArg(args, "function", null);
+		if (functionRef == null) {
+			return Results.error("'function' (a name or an address inside it) is required");
 		}
 		String kind = Args.stringArg(args, "kind", "callees");
 		if (!KINDS.contains(kind)) {
@@ -64,7 +64,7 @@ public class CallsTool implements ProgramTool {
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
-		Function function = Locations.findFunction(program, target);
+		Function function = Locations.findFunction(program, functionRef);
 		Set<Function> related = kind.equals("callees")
 				? function.getCalledFunctions(TaskMonitor.DUMMY)
 				: function.getCallingFunctions(TaskMonitor.DUMMY);
@@ -78,11 +78,11 @@ public class CallsTool implements ProgramTool {
 			window.add(f.getEntryPoint() + "  " + f.getName());
 		}
 
-		if (window.isEmpty()) {
-			return Results.ok(function.getName() + " has no " + kind +
-				(offset > 0 ? " at offset " + offset : ""));
+		if (window.isEmpty() && offset == 0) {
+			return Results.ok(function.getName() + " has no " + kind);
 		}
 		return Results.ok(function.getName() + " " + kind + ":\n" + String.join("\n", window) +
-			"\n" + Results.paginationFooter(window.size(), offset, sorted.size()));
+			(window.isEmpty() ? "" : "\n") +
+			Results.paginationFooter(window.size(), offset, sorted.size()));
 	}
 }

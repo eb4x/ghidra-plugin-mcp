@@ -59,13 +59,12 @@ public class SetFunctionSignatureTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Schemas.stringProp(
-					"Target function: a name OR an address (alias: 'target'/'address')"),
-				"address", Schemas.stringProp("Alias for 'function'"),
+				"function", Schemas.stringProp("Function name or an address inside it"),
 				"signature", Schemas.stringProp(
 					"Full C prototype; omit to commit the decompiler-inferred prototype"),
 				"calling_convention", Schemas.stringProp(
-					"Optional calling convention name (e.g. __cdecl16far, __cdecl, __fastcall)")));
+					"Optional calling convention name (e.g. __cdecl16far, __cdecl, __fastcall)")),
+			"required", List.of("function"));
 	}
 
 	@Override
@@ -76,9 +75,9 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		String functionRef = Args.locationArg(args);
+		String functionRef = Args.stringArg(args, "function", null);
 		if (functionRef == null) {
-			return Results.error("a function (name or address) is required");
+			return Results.error("'function' (a name or an address inside it) is required");
 		}
 		Function function = Locations.findFunction(program, functionRef);
 		String signature = Args.stringArg(args, "signature", null);

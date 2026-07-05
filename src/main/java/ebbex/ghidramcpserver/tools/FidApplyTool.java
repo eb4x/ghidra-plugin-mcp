@@ -40,10 +40,10 @@ public class FidApplyTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"db", Schemas.stringProp("Host path to the .fidb database"),
+				"fidb", Schemas.stringProp("Host path to the .fidb database"),
 				"score_threshold", Schemas.intProp(
 					"Minimum match score in code units (default: Ghidra's standard threshold)")),
-			"required", List.of("db"));
+			"required", List.of("fidb"));
 	}
 
 	@Override
@@ -53,9 +53,9 @@ public class FidApplyTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String dbPath = Args.stringArg(args, "db", null);
+		String dbPath = Args.stringArg(args, "fidb", null);
 		if (dbPath == null) {
-			return Results.error("db is required");
+			return Results.error("'fidb' (a host path to the .fidb) is required");
 		}
 		File dbFile = new File(dbPath);
 		if (!dbFile.isFile()) {

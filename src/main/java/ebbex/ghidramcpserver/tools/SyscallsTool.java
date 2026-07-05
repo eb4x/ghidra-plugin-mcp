@@ -45,9 +45,8 @@ public class SyscallsTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Schemas.stringProp("Function name or an address within it"),
-				"target", Schemas.stringProp("Alias for 'function'"),
-				"address", Schemas.stringProp("Alias for 'function'")));
+				"function", Schemas.stringProp("Function name or an address inside it")),
+			"required", List.of("function"));
 	}
 
 	@Override
@@ -57,9 +56,9 @@ public class SyscallsTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String ref = Args.locationArg(args);
+		String ref = Args.stringArg(args, "function", null);
 		if (ref == null) {
-			return Results.error("a function (name or address) is required");
+			return Results.error("'function' (a name or an address inside it) is required");
 		}
 		Function function = Locations.findFunction(program, ref);
 

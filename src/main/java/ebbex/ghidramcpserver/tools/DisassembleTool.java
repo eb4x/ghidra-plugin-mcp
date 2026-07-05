@@ -39,8 +39,7 @@ public class DisassembleTool implements ProgramTool {
 			"type", "object",
 			"properties", Map.of(
 				"function", Schemas.stringProp(
-					"Whole function to disassemble: a name OR an address (alias: 'target')"),
-				"target", Schemas.stringProp("Alias for 'function'"),
+					"Whole function to disassemble: a function name or an address inside it"),
 				"address", Schemas.stringProp(
 					"Start address for a raw run of instructions (when no function is given)"),
 				"count", Schemas.intProp("Number of instructions from 'address' (default " +
@@ -54,8 +53,7 @@ public class DisassembleTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String functionArg = Args.stringArg(args, "function",
-			Args.stringArg(args, "target", null));
+		String functionArg = Args.stringArg(args, "function", null);
 		String addressArg = Args.stringArg(args, "address", null);
 		CodeUnitFormat format = CodeUnitFormat.DEFAULT;
 		StringBuilder sb = new StringBuilder();

@@ -34,7 +34,7 @@ public class CreateTool implements ProgramTool {
 	public String description() {
 		return "Create something at an address. kind=function disassembles/creates a function " +
 			"(optional 'name'); kind=label adds a label ('name' required); kind=bookmark adds a " +
-			"note bookmark ('name' is the category, 'comment' the text); kind=instructions " +
+			"note bookmark (optional 'category', 'comment' is the text); kind=instructions " +
 			"disassembles from the address (like pressing 'D'), e.g. after clear.";
 	}
 
@@ -45,7 +45,8 @@ public class CreateTool implements ProgramTool {
 			"properties", Map.of(
 				"kind", Schemas.enumProp("What to create", KINDS),
 				"address", Schemas.stringProp("Address to create at"),
-				"name", Schemas.stringProp("Label/function name, or bookmark category"),
+				"name", Schemas.stringProp("Label or function name (for kind=function|label)"),
+				"category", Schemas.stringProp("Bookmark category (for kind=bookmark)"),
 				"comment", Schemas.stringProp("Bookmark text (for kind=bookmark)")),
 			"required", List.of("kind", "address"));
 	}
@@ -71,8 +72,8 @@ public class CreateTool implements ProgramTool {
 		return switch (kind) {
 			case "function" -> createFunction(program, address, label);
 			case "label" -> createLabel(program, address, label);
-			case "bookmark" -> createBookmark(program, address, label,
-				Args.stringArg(args, "comment", ""));
+			case "bookmark" -> createBookmark(program, address,
+				Args.stringArg(args, "category", ""), Args.stringArg(args, "comment", ""));
 			case "instructions" -> disassemble(program, address);
 			default -> Results.error("unhandled kind " + kind);
 		};
@@ -105,8 +106,7 @@ public class CreateTool implements ProgramTool {
 			String category, String comment) {
 		return Transactions.modify(program, "Create bookmark", () -> {
 			BookmarkManager manager = program.getBookmarkManager();
-			manager.setBookmark(address, BookmarkType.NOTE,
-				category == null ? "" : category, comment);
+			manager.setBookmark(address, BookmarkType.NOTE, category, comment);
 			return "Created bookmark @ " + address;
 		});
 	}
