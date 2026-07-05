@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import ebbex.ghidramcpserver.tools.AnalyzeTool;
@@ -49,30 +50,35 @@ public final class ToolRegistry {
 
 	/** Program tools (inspect and edit a single program, addressed by project path). */
 	public static List<ProgramTool> programTools(Decompilers decompilers) {
-		return List.of(
-			// lifecycle
-			new AnalyzeTool(),
-			// read
-			new GetProgramInfoTool(),
-			new ListTool(),
-			new InspectTool(),
-			new DecompileTool(decompilers),
-			new DisassembleTool(),
-			new ReadBytesTool(),
-			new ReadFileTool(),
-			new XrefsTool(),
-			new CallsTool(),
-			new SyscallsTool(),
-			new SearchMemoryTool(),
-			new ClearTool(),
-			// write
+		// The single-edit tools batch dispatches to; batch reuses these instances.
+		List<ProgramTool> editTools = List.of(
 			new RenameTool(decompilers),
 			new SetCommentTool(),
 			new SetDataTypeTool(decompilers),
 			new SetFunctionSignatureTool(decompilers),
-			new DefineTypesTool(),
-			new CreateTool(),
-			new BatchTool(decompilers),
-			new FidApplyTool());
+			new CreateTool());
+
+		List<ProgramTool> tools = new ArrayList<>();
+		// lifecycle
+		tools.add(new AnalyzeTool());
+		// read
+		tools.add(new GetProgramInfoTool());
+		tools.add(new ListTool());
+		tools.add(new InspectTool());
+		tools.add(new DecompileTool(decompilers));
+		tools.add(new DisassembleTool());
+		tools.add(new ReadBytesTool());
+		tools.add(new ReadFileTool());
+		tools.add(new XrefsTool());
+		tools.add(new CallsTool());
+		tools.add(new SyscallsTool());
+		tools.add(new SearchMemoryTool());
+		tools.add(new ClearTool());
+		// write
+		tools.addAll(editTools);
+		tools.add(new DefineTypesTool());
+		tools.add(new BatchTool(editTools));
+		tools.add(new FidApplyTool());
+		return List.copyOf(tools);
 	}
 }
