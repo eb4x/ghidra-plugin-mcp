@@ -4,6 +4,7 @@ import java.util.Map;
 
 import ebbex.ghidramcpserver.McpToolDef;
 import ebbex.ghidramcpserver.util.Results;
+import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.Memory;
@@ -46,10 +47,17 @@ public class GetProgramInfoTool implements McpToolDef {
 		sb.append("Compiler spec: ").append(program.getCompilerSpec().getCompilerSpecID())
 				.append('\n');
 		sb.append("Image base: ").append(program.getImageBase()).append('\n');
-		sb.append("Analyzed: ").append(GhidraProgramUtilities.isAnalyzed(program)).append('\n');
+
+		boolean analyzed = GhidraProgramUtilities.isAnalyzed(program);
+		boolean analyzing =
+			AutoAnalysisManager.getAnalysisManager(program).isAnalyzing();
+		sb.append("Analyzed: ").append(analyzed)
+				.append(analyzing ? " (analysis in progress)" : "").append('\n');
 		sb.append("Functions: ").append(program.getFunctionManager().getFunctionCount())
 				.append('\n');
 		sb.append("Symbols: ").append(program.getSymbolTable().getNumSymbols()).append('\n');
+
+		appendFileCoverage(sb, program);
 
 		sb.append("Entry points:");
 		var entryPoints = program.getSymbolTable().getExternalEntryPointIterator();
@@ -70,5 +78,31 @@ public class GetProgramInfoTool implements McpToolDef {
 				block.isInitialized() ? "" : "(uninitialized)"));
 		}
 		return Results.ok(sb.toString());
+	}
+
+	/**
+	 * Compare the on-disk file size to the loaded (initialized) footprint. A large
+	 * excess means most of the file was never mapped — the classic signature of an
+	 * overlay/packed payload or a bound DOS extender stub (loaded image is tiny).
+	 */
+	private static void appendFileCoverage(StringBuilder sb, Program program) {
+		java.io.File file = new java.io.File(program.getExecutablePath());
+		if (!file.isFile()) {
+			return;
+		}
+		long onDisk = file.length();
+		long loaded = 0;
+		for (MemoryBlock block : program.getMemory().getBlocks()) {
+			if (block.isInitialized()) {
+				loaded += block.getSize();
+			}
+		}
+		sb.append("On disk: ").append(onDisk).append(" bytes; loaded (initialized): ")
+				.append(loaded).append(" bytes\n");
+		if (onDisk > loaded * 2 && onDisk - loaded > 4096) {
+			sb.append("  ! ~").append(onDisk - loaded)
+					.append(" bytes on disk are not mapped — likely an overlay / packed payload / " +
+						"bound DOS-extender stub. Use read_file to inspect the raw file.\n");
+		}
 	}
 }
