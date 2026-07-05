@@ -27,9 +27,11 @@ Two MCP endpoints on one port, so an agent loads only what it needs:
 `manage_files` (delete/rename/move), `import`, `fid_build`.
 
 **`/mcp/program`** (a program, addressed by project path via a required `program` arg):
-- Read/navigate: `get_program_info`, `list` (functions show caller counts, `sort=callers`
-  finds hot leaf helpers), `inspect`, `decompile`, `disassemble`, `read_bytes`, `xrefs`,
-  `calls` (call-graph callees/callers), `search_memory` (hits tagged with their function).
+- Read/navigate: `get_program_info` (also flags unmapped/overlay payload), `list`
+  (functions show caller counts, `sort=callers` finds hot leaf helpers), `inspect`,
+  `decompile`, `disassemble`, `read_bytes`, `read_file` (raw on-disk bytes past the loaded
+  image), `xrefs`, `calls` (call-graph), `syscalls` (resolve INT 21h/10h AH per site),
+  `search_memory` (hits tagged with their function).
 - Edit: `rename`, `set_comment`, `set_data_type`, `set_function_signature`,
   `define_types` (C structs/typedefs into the program), `clear` (clear code to undefined
   bytes = the "C" key), `create` (`kind=function|label|bookmark|instructions`;
