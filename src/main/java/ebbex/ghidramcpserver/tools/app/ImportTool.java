@@ -5,8 +5,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.AppLevelTool;
+import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.app.util.importer.ProgramLoader;
 import ghidra.app.util.opinion.Loaded;
 import ghidra.app.util.opinion.LoadResults;
@@ -20,7 +22,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * Import a file from the host filesystem into the project (Ghidra picks the best
  * loader). Does not run analysis &mdash; use the program tool {@code analyze} afterwards.
  */
-public class ImportTool implements AppLevelTool {
+public class ImportTool implements ApplicationLevelTool {
 
 	@Override
 	public String name() {
@@ -39,8 +41,8 @@ public class ImportTool implements AppLevelTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"source", Results.stringProp("Absolute path to the file on the host filesystem"),
-				"folder", Results.stringProp("Destination project folder (default '/')")),
+				"source", Schemas.stringProp("Absolute path to the file on the host filesystem"),
+				"folder", Schemas.stringProp("Destination project folder (default '/')")),
 			"required", List.of("source"));
 	}
 
@@ -52,7 +54,7 @@ public class ImportTool implements AppLevelTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Project project)
 			throws Exception {
-		String source = Results.stringArg(args, "source", null);
+		String source = Args.stringArg(args, "source", null);
 		if (source == null || source.isBlank()) {
 			return Results.error("source is required");
 		}
@@ -60,7 +62,7 @@ public class ImportTool implements AppLevelTool {
 		if (!file.isFile()) {
 			return Results.error("Not a file on the host: " + source);
 		}
-		String folder = Results.stringArg(args, "folder", "/");
+		String folder = Args.stringArg(args, "folder", "/");
 
 		List<String> created = new ArrayList<>();
 		try (LoadResults<Program> results = ProgramLoader.builder()

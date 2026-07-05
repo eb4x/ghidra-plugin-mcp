@@ -2,7 +2,7 @@ package ebbex.ghidramcpserver.tools;
 
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Results;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.program.model.address.Address;
@@ -13,7 +13,7 @@ import ghidra.program.util.GhidraProgramUtilities;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Program metadata snapshot: name, arch, image base, memory layout, counts. */
-public class GetProgramInfoTool implements McpToolDef {
+public class GetProgramInfoTool implements ProgramTool {
 
 	@Override
 	public String name() {

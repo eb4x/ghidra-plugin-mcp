@@ -4,9 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
@@ -22,7 +24,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * {@code INT 21h} as an opaque {@code swi(0x21)}). This is the fastest way to see
  * what a 16-bit DOS routine actually does.
  */
-public class SyscallsTool implements McpToolDef {
+public class SyscallsTool implements ProgramTool {
 
 	private static final int MAX_INSTRUCTIONS = 20000;
 
@@ -43,9 +45,9 @@ public class SyscallsTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Results.stringProp("Function name or an address within it"),
-				"target", Results.stringProp("Alias for 'function'"),
-				"address", Results.stringProp("Alias for 'function'")));
+				"function", Schemas.stringProp("Function name or an address within it"),
+				"target", Schemas.stringProp("Alias for 'function'"),
+				"address", Schemas.stringProp("Alias for 'function'")));
 	}
 
 	@Override
@@ -55,11 +57,11 @@ public class SyscallsTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String ref = Results.locationArg(args);
+		String ref = Args.locationArg(args);
 		if (ref == null) {
 			return Results.error("a function (name or address) is required");
 		}
-		Function function = ProgramContext.findFunction(program, ref);
+		Function function = Locations.findFunction(program, ref);
 
 		List<String> lines = new ArrayList<>();
 		InstructionIterator it =

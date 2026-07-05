@@ -3,10 +3,12 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Decompilers;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.cmd.function.FunctionRenameOption;
@@ -29,7 +31,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * it still has a default name, and keeping its calling convention. Without a
  * 'signature' it commits the decompiler's inferred prototype instead.
  */
-public class SetFunctionSignatureTool implements McpToolDef {
+public class SetFunctionSignatureTool implements ProgramTool {
 
 	private final Decompilers decompilers;
 
@@ -57,12 +59,12 @@ public class SetFunctionSignatureTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Results.stringProp(
+				"function", Schemas.stringProp(
 					"Target function: a name OR an address (alias: 'target'/'address')"),
-				"address", Results.stringProp("Alias for 'function'"),
-				"signature", Results.stringProp(
+				"address", Schemas.stringProp("Alias for 'function'"),
+				"signature", Schemas.stringProp(
 					"Full C prototype; omit to commit the decompiler-inferred prototype"),
-				"calling_convention", Results.stringProp(
+				"calling_convention", Schemas.stringProp(
 					"Optional calling convention name (e.g. __cdecl16far, __cdecl, __fastcall)")));
 	}
 
@@ -74,13 +76,13 @@ public class SetFunctionSignatureTool implements McpToolDef {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		String functionRef = Results.locationArg(args);
+		String functionRef = Args.locationArg(args);
 		if (functionRef == null) {
 			return Results.error("a function (name or address) is required");
 		}
-		Function function = ProgramContext.findFunction(program, functionRef);
-		String signature = Results.stringArg(args, "signature", null);
-		String callingConvention = Results.stringArg(args, "calling_convention", null);
+		Function function = Locations.findFunction(program, functionRef);
+		String signature = Args.stringArg(args, "signature", null);
+		String callingConvention = Args.stringArg(args, "calling_convention", null);
 
 		if (signature == null || signature.isBlank()) {
 			return commitInferred(program, function, callingConvention);

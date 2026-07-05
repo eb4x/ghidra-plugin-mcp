@@ -3,9 +3,11 @@ package ebbex.ghidramcpserver.tools.app;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.AppLevelTool;
+import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.ProjectContext;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
@@ -13,7 +15,7 @@ import ghidra.framework.model.ProjectData;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Delete, rename, or move a file within the project. */
-public class ManageFilesTool implements AppLevelTool {
+public class ManageFilesTool implements ApplicationLevelTool {
 
 	private static final List<String> OPS = List.of("delete", "rename", "move");
 
@@ -40,10 +42,10 @@ public class ManageFilesTool implements AppLevelTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"op", Results.enumProp("What to do", OPS),
-				"path", Results.stringProp("Project file path, e.g. /malware.exe"),
-				"new_name", Results.stringProp("New leaf name (for op=rename)"),
-				"dest_folder", Results.stringProp("Destination folder path (for op=move)")),
+				"op", Schemas.enumProp("What to do", OPS),
+				"path", Schemas.stringProp("Project file path, e.g. /malware.exe"),
+				"new_name", Schemas.stringProp("New leaf name (for op=rename)"),
+				"dest_folder", Schemas.stringProp("Destination folder path (for op=move)")),
 			"required", List.of("op", "path"));
 	}
 
@@ -55,11 +57,11 @@ public class ManageFilesTool implements AppLevelTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Project project)
 			throws Exception {
-		String op = Results.stringArg(args, "op", null);
+		String op = Args.stringArg(args, "op", null);
 		if (op == null || !OPS.contains(op)) {
 			return Results.error("op must be one of " + OPS);
 		}
-		String path = Results.stringArg(args, "path", null);
+		String path = Args.stringArg(args, "path", null);
 		if (path == null) {
 			return Results.error("path is required");
 		}
@@ -74,8 +76,8 @@ public class ManageFilesTool implements AppLevelTool {
 
 		return switch (op) {
 			case "delete" -> delete(file, path);
-			case "rename" -> rename(file, Results.stringArg(args, "new_name", null));
-			case "move" -> move(data, file, Results.stringArg(args, "dest_folder", null));
+			case "rename" -> rename(file, Args.stringArg(args, "new_name", null));
+			case "move" -> move(data, file, Args.stringArg(args, "dest_folder", null));
 			default -> Results.error("unhandled op " + op);
 		};
 	}

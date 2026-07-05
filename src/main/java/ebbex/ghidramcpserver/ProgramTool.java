@@ -9,7 +9,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * A single MCP tool exposed by the server. Implementations receive the
  * currently open program; they never need to null-check it.
  */
-public interface McpToolDef {
+public interface ProgramTool {
 
 	String name();
 

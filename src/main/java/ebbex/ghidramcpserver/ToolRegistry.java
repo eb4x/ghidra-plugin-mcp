@@ -38,7 +38,7 @@ public final class ToolRegistry {
 	}
 
 	/** Application-level tools (project management, import). */
-	public static List<AppLevelTool> appTools(ProjectContext context) {
+	public static List<ApplicationLevelTool> appTools(ProjectContext context) {
 		return List.of(
 			new GetApplicationInfoTool(),
 			new ListFilesTool(),
@@ -48,7 +48,7 @@ public final class ToolRegistry {
 	}
 
 	/** Program tools (inspect and edit a single program, addressed by project path). */
-	public static List<McpToolDef> programTools(Decompilers decompilers) {
+	public static List<ProgramTool> programTools(Decompilers decompilers) {
 		return List.of(
 			// lifecycle
 			new AnalyzeTool(),

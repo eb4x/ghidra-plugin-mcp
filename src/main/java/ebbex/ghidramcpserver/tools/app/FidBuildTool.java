@@ -5,8 +5,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.AppLevelTool;
+import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.feature.fid.db.FidDB;
 import ghidra.feature.fid.db.FidFile;
 import ghidra.feature.fid.db.FidFileManager;
@@ -25,7 +27,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * more project programs, so those names can be propagated to sibling binaries of
  * the same toolchain with fid_apply. All source programs must share a language.
  */
-public class FidBuildTool implements AppLevelTool {
+public class FidBuildTool implements ApplicationLevelTool {
 
 	@Override
 	public String name() {
@@ -45,13 +47,13 @@ public class FidBuildTool implements AppLevelTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"db", Results.stringProp("Output host path for the .fidb (created if absent)"),
+				"db", Schemas.stringProp("Output host path for the .fidb (created if absent)"),
 				"programs", Map.of("type", "array", "description",
 					"Project file paths to ingest (default: all programs)",
 					"items", Map.of("type", "string")),
-				"library", Results.stringProp("Library family name label (default 'corpus')"),
-				"version", Results.stringProp("Library version label (default '1')"),
-				"variant", Results.stringProp("Library variant label (default 'default')")),
+				"library", Schemas.stringProp("Library family name label (default 'corpus')"),
+				"version", Schemas.stringProp("Library version label (default '1')"),
+				"variant", Schemas.stringProp("Library variant label (default 'default')")),
 			"required", List.of("db"));
 	}
 
@@ -63,7 +65,7 @@ public class FidBuildTool implements AppLevelTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Project project)
 			throws Exception {
-		String dbPath = Results.stringArg(args, "db", null);
+		String dbPath = Args.stringArg(args, "db", null);
 		if (dbPath == null) {
 			return Results.error("db is required");
 		}
@@ -88,9 +90,9 @@ public class FidBuildTool implements AppLevelTool {
 
 		LanguageID languageId = languageOf(programs.get(0));
 
-		String family = Results.stringArg(args, "library", "corpus");
-		String version = Results.stringArg(args, "version", "1");
-		String variant = Results.stringArg(args, "variant", "default");
+		String family = Args.stringArg(args, "library", "corpus");
+		String version = Args.stringArg(args, "version", "1");
+		String variant = Args.stringArg(args, "variant", "default");
 
 		FidFileManager fidManager = FidFileManager.getInstance();
 		File dbFile = new File(dbPath);

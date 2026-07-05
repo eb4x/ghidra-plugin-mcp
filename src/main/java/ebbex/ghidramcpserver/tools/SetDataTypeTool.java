@@ -3,10 +3,12 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Decompilers;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
@@ -27,7 +29,7 @@ import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Apply a data type: define/retype data, a variable, a parameter, or a return type. */
-public class SetDataTypeTool implements McpToolDef {
+public class SetDataTypeTool implements ProgramTool {
 
 	private static final List<String> TARGETS =
 		List.of("data", "local_variable", "parameter", "return");
@@ -56,12 +58,12 @@ public class SetDataTypeTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Results.enumProp("What to type", TARGETS),
-				"type", Results.stringProp("C data type string"),
-				"address", Results.stringProp("Address (for target=data)"),
-				"function", Results.stringProp(
+				"target", Schemas.enumProp("What to type", TARGETS),
+				"type", Schemas.stringProp("C data type string"),
+				"address", Schemas.stringProp("Address (for target=data)"),
+				"function", Schemas.stringProp(
 					"Function name/address (for local_variable|parameter|return)"),
-				"variable_name", Results.stringProp(
+				"variable_name", Schemas.stringProp(
 					"Variable name (for local_variable|parameter)")),
 			"required", List.of("target", "type"));
 	}
@@ -74,8 +76,8 @@ public class SetDataTypeTool implements McpToolDef {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		String target = Results.stringArg(args, "target", null);
-		String typeString = Results.stringArg(args, "type", null);
+		String target = Args.stringArg(args, "target", null);
+		String typeString = Args.stringArg(args, "type", null);
 		if (target == null || !TARGETS.contains(target)) {
 			return Results.error("target must be one of " + TARGETS);
 		}
@@ -98,11 +100,11 @@ public class SetDataTypeTool implements McpToolDef {
 
 	private McpSchema.CallToolResult applyToData(Program program, Map<String, Object> args,
 			DataType dataType) {
-		String addressArg = Results.stringArg(args, "address", null);
+		String addressArg = Args.stringArg(args, "address", null);
 		if (addressArg == null) {
 			return Results.error("address is required for target=data");
 		}
-		Address address = ProgramContext.parseAddress(program, addressArg);
+		Address address = Locations.parseAddress(program, addressArg);
 		return Transactions.modify(program, "Set data type", () -> {
 			DataUtilities.createData(program, address, dataType, -1,
 				ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
@@ -112,11 +114,11 @@ public class SetDataTypeTool implements McpToolDef {
 
 	private McpSchema.CallToolResult applyToReturn(Program program, Map<String, Object> args,
 			DataType dataType) {
-		String functionRef = Results.stringArg(args, "function", null);
+		String functionRef = Args.stringArg(args, "function", null);
 		if (functionRef == null) {
 			return Results.error("function is required for target=return");
 		}
-		Function function = ProgramContext.findFunction(program, functionRef);
+		Function function = Locations.findFunction(program, functionRef);
 		return Transactions.modify(program, "Set return type", () -> {
 			function.setReturnType(dataType, SourceType.USER_DEFINED);
 			return "Set return type of " + function.getName() + " to " + dataType.getName();
@@ -125,12 +127,12 @@ public class SetDataTypeTool implements McpToolDef {
 
 	private McpSchema.CallToolResult applyToVariable(Program program, Map<String, Object> args,
 			DataType dataType) {
-		String functionRef = Results.stringArg(args, "function", null);
-		String variableName = Results.stringArg(args, "variable_name", null);
+		String functionRef = Args.stringArg(args, "function", null);
+		String variableName = Args.stringArg(args, "variable_name", null);
 		if (functionRef == null || variableName == null) {
 			return Results.error("function and variable_name are required");
 		}
-		Function function = ProgramContext.findFunction(program, functionRef);
+		Function function = Locations.findFunction(program, functionRef);
 
 		Variable dbVariable = findDbVariable(function, variableName);
 		if (dbVariable != null) {

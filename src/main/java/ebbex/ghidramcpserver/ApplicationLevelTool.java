@@ -10,7 +10,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * (managing files, importing) rather than on a single open program. Exposed
  * under the {@code /mcp/application-level} endpoint.
  */
-public interface AppLevelTool {
+public interface ApplicationLevelTool {
 
 	String name();
 

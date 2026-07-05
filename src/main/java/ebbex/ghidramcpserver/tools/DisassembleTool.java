@@ -2,9 +2,11 @@ package ebbex.ghidramcpserver.tools;
 
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.CodeUnitFormat;
 import ghidra.program.model.listing.Function;
@@ -14,7 +16,7 @@ import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Disassembly listing for a function, or a run of instructions from an address. */
-public class DisassembleTool implements McpToolDef {
+public class DisassembleTool implements ProgramTool {
 
 	private static final int DEFAULT_COUNT = 32;
 	private static final int MAX_COUNT = 4096;
@@ -36,12 +38,12 @@ public class DisassembleTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Results.stringProp(
+				"function", Schemas.stringProp(
 					"Whole function to disassemble: a name OR an address (alias: 'target')"),
-				"target", Results.stringProp("Alias for 'function'"),
-				"address", Results.stringProp(
+				"target", Schemas.stringProp("Alias for 'function'"),
+				"address", Schemas.stringProp(
 					"Start address for a raw run of instructions (when no function is given)"),
-				"count", Results.intProp("Number of instructions from 'address' (default " +
+				"count", Schemas.intProp("Number of instructions from 'address' (default " +
 					DEFAULT_COUNT + ")")));
 	}
 
@@ -52,14 +54,14 @@ public class DisassembleTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String functionArg = Results.stringArg(args, "function",
-			Results.stringArg(args, "target", null));
-		String addressArg = Results.stringArg(args, "address", null);
+		String functionArg = Args.stringArg(args, "function",
+			Args.stringArg(args, "target", null));
+		String addressArg = Args.stringArg(args, "address", null);
 		CodeUnitFormat format = CodeUnitFormat.DEFAULT;
 		StringBuilder sb = new StringBuilder();
 
 		if (functionArg != null) {
-			Function function = ProgramContext.findFunction(program, functionArg);
+			Function function = Locations.findFunction(program, functionArg);
 			sb.append(function.getName()).append(" @ ").append(function.getEntryPoint())
 					.append('\n');
 			int emitted = appendFunctionInstructions(sb, program, function, format);
@@ -71,8 +73,8 @@ public class DisassembleTool implements McpToolDef {
 			}
 		}
 		else if (addressArg != null) {
-			int count = Math.min(MAX_COUNT, Math.max(1, Results.intArg(args, "count", DEFAULT_COUNT)));
-			Address start = ProgramContext.parseAddress(program, addressArg);
+			int count = Math.min(MAX_COUNT, Math.max(1, Args.intArg(args, "count", DEFAULT_COUNT)));
+			Address start = Locations.parseAddress(program, addressArg);
 			InstructionIterator it = program.getListing().getInstructions(start, true);
 			appendInstructions(sb, it, format, count);
 		}

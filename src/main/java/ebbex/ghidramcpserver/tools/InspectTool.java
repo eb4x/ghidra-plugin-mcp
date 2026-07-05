@@ -2,9 +2,11 @@ package ebbex.ghidramcpserver.tools;
 
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
@@ -16,7 +18,7 @@ import ghidra.program.model.symbol.Symbol;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Everything known at one location: symbols, function, data, comments, xref counts. */
-public class InspectTool implements McpToolDef {
+public class InspectTool implements ProgramTool {
 
 	@Override
 	public String name() {
@@ -35,7 +37,7 @@ public class InspectTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Results.stringProp("Address or symbol name to inspect")),
+				"target", Schemas.stringProp("Address or symbol name to inspect")),
 			"required", java.util.List.of("target"));
 	}
 
@@ -46,11 +48,11 @@ public class InspectTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Results.stringArg(args, "target", null);
+		String target = Args.stringArg(args, "target", null);
 		if (target == null) {
 			return Results.error("target is required");
 		}
-		Address address = ProgramContext.findLocation(program, target);
+		Address address = Locations.findLocation(program, target);
 		StringBuilder sb = new StringBuilder();
 		sb.append("Address: ").append(address).append('\n');
 

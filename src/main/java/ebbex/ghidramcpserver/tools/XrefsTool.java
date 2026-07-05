@@ -4,9 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
@@ -16,7 +18,7 @@ import ghidra.program.model.symbol.ReferenceManager;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Cross-references to and/or from an address, symbol, or function. */
-public class XrefsTool implements McpToolDef {
+public class XrefsTool implements ProgramTool {
 
 	private static final List<String> DIRECTIONS = List.of("to", "from", "both");
 	private static final int DEFAULT_LIMIT = 100;
@@ -37,10 +39,10 @@ public class XrefsTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Results.stringProp("Address, symbol name, or function name"),
-				"direction", Results.enumProp("Which references to show (default 'to')", DIRECTIONS),
-				"offset", Results.intProp("Skip this many (default 0)"),
-				"limit", Results.intProp("Maximum to return (default " + DEFAULT_LIMIT + ")")),
+				"target", Schemas.stringProp("Address, symbol name, or function name"),
+				"direction", Schemas.enumProp("Which references to show (default 'to')", DIRECTIONS),
+				"offset", Schemas.intProp("Skip this many (default 0)"),
+				"limit", Schemas.intProp("Maximum to return (default " + DEFAULT_LIMIT + ")")),
 			"required", List.of("target"));
 	}
 
@@ -51,18 +53,18 @@ public class XrefsTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Results.stringArg(args, "target", null);
+		String target = Args.stringArg(args, "target", null);
 		if (target == null) {
 			return Results.error("target is required");
 		}
-		String direction = Results.stringArg(args, "direction", "to");
+		String direction = Args.stringArg(args, "direction", "to");
 		if (!DIRECTIONS.contains(direction)) {
 			return Results.error("direction must be one of " + DIRECTIONS);
 		}
-		int offset = Math.max(0, Results.intArg(args, "offset", 0));
-		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
+		int offset = Math.max(0, Args.intArg(args, "offset", 0));
+		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
-		Address address = ProgramContext.findLocation(program, target);
+		Address address = Locations.findLocation(program, target);
 		ReferenceManager refs = program.getReferenceManager();
 
 		List<String> all = new ArrayList<>();
