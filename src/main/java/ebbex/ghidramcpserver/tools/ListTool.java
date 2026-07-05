@@ -7,7 +7,9 @@ import java.util.List;
 import java.util.Map;
 
 import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.util.ProgramContext;
 import ebbex.ghidramcpserver.util.Results;
+import ghidra.program.model.address.Address;
 import ghidra.program.model.data.StringDataInstance;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
@@ -55,6 +57,8 @@ public class ListTool implements McpToolDef {
 				"filter", Results.stringProp(
 					"Case-insensitive substring to match against names/values"),
 				"sort", Results.enumProp("Sort order for kind=functions (default address)", SORTS),
+				"from", Results.stringProp("kind=functions: only functions with entry >= this address"),
+				"to", Results.stringProp("kind=functions: only functions with entry <= this address"),
 				"offset", Results.intProp("Skip this many matches (default 0)"),
 				"limit", Results.intProp("Maximum matches to return (default " +
 					DEFAULT_LIMIT + ")")),
@@ -80,7 +84,23 @@ public class ListTool implements McpToolDef {
 		int offset = Math.max(0, Results.intArg(args, "offset", 0));
 		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
 
-		Iterator<String> lines = lines(kind, program, sort);
+		Address from = null;
+		Address to = null;
+		try {
+			String fromArg = Results.stringArg(args, "from", null);
+			String toArg = Results.stringArg(args, "to", null);
+			if (fromArg != null) {
+				from = ProgramContext.parseAddress(program, fromArg);
+			}
+			if (toArg != null) {
+				to = ProgramContext.parseAddress(program, toArg);
+			}
+		}
+		catch (IllegalArgumentException e) {
+			return Results.error(e.getMessage());
+		}
+
+		Iterator<String> lines = lines(kind, program, sort, from, to);
 
 		List<String> window = new ArrayList<>();
 		int total = 0;
@@ -114,9 +134,10 @@ public class ListTool implements McpToolDef {
 			Results.paginationFooter(window.size(), offset, total) + skipNote);
 	}
 
-	private Iterator<String> lines(String kind, Program program, String sort) {
+	private Iterator<String> lines(String kind, Program program, String sort, Address from,
+			Address to) {
 		return switch (kind) {
-			case "functions" -> functionLines(program, sort).iterator();
+			case "functions" -> functionLines(program, sort, from, to).iterator();
 			case "symbols" -> map(program.getSymbolTable().getAllSymbols(true),
 				s -> s.getAddress() + "  " + s.getName(true) + "  [" + s.getSymbolType() + "]");
 			case "strings" -> map(
@@ -140,10 +161,19 @@ public class ListTool implements McpToolDef {
 	}
 
 	/** Function lines carry a caller count and are sortable by address, name, or callers. */
-	private List<String> functionLines(Program program, String sort) {
+	private List<String> functionLines(Program program, String sort, Address from, Address to) {
 		ReferenceManager refs = program.getReferenceManager();
 		List<Function> functions = new ArrayList<>();
-		program.getFunctionManager().getFunctions(true).forEach(functions::add);
+		for (Function f : program.getFunctionManager().getFunctions(true)) {
+			Address entry = f.getEntryPoint();
+			if (from != null && entry.compareTo(from) < 0) {
+				continue;
+			}
+			if (to != null && entry.compareTo(to) > 0) {
+				continue;
+			}
+			functions.add(f);
+		}
 
 		Comparator<Function> comparator = switch (sort) {
 			case "name" -> Comparator.comparing(Function::getName, String.CASE_INSENSITIVE_ORDER);
