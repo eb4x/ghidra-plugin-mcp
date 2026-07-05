@@ -53,6 +53,9 @@ public class McpToolSmokeScript extends GhidraScript {
 			// analyze runs on a background thread (holding a program transaction) and
 			// saves when done; wait for it to settle before editing or saving ourselves.
 			waitForAnalysis(program);
+			// One-shot path: an unknown analyzer name reports the available ones (exercises
+			// arg parsing + the analyzer enumeration). The RTLink retrofit is the real user.
+			prog("analyze", Map.of("analyzer", "No Such Analyzer"), program);
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
 			prog("decompile", Map.of("function", "_init"), program);
