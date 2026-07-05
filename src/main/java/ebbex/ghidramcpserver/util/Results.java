@@ -39,6 +39,21 @@ public final class Results {
 		return v == null ? defaultValue : v.toString();
 	}
 
+	/**
+	 * The "which function/location" argument, accepting whichever of the common names
+	 * the caller used (a function name or an address is valid for either).
+	 */
+	public static String locationArg(Map<String, Object> args) {
+		String v = stringArg(args, "function", null);
+		if (v == null) {
+			v = stringArg(args, "target", null);
+		}
+		if (v == null) {
+			v = stringArg(args, "address", null);
+		}
+		return v;
+	}
+
 	public static int intArg(Map<String, Object> args, String key, int defaultValue) {
 		Object v = args.get(key);
 		if (v == null) {

@@ -41,10 +41,11 @@ public class DecompileTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Results.stringProp("Function name or an address within the function"),
+				"function", Results.stringProp(
+					"Function to decompile: a name OR an address (alias: 'target'/'address')"),
+				"address", Results.stringProp("Alias for 'function' — an address in the function"),
 				"timeout_s", Results.intProp("Decompiler timeout in seconds (default " +
-					DEFAULT_TIMEOUT + ")")),
-			"required", List.of("function"));
+					DEFAULT_TIMEOUT + ")")));
 	}
 
 	@Override
@@ -54,9 +55,9 @@ public class DecompileTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Results.stringArg(args, "function", null);
+		String target = Results.locationArg(args);
 		if (target == null) {
-			return Results.error("function is required");
+			return Results.error("a function (name or address) is required");
 		}
 		int timeout = Results.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
 		Function function = ProgramContext.findFunction(program, target);
