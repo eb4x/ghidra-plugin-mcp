@@ -18,6 +18,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class DecompileTool implements McpToolDef {
 
 	private static final int DEFAULT_TIMEOUT = 30;
+	private static final int MAX_BATCH = 12;
 
 	private final Decompilers decompilers;
 
@@ -44,6 +45,9 @@ public class DecompileTool implements McpToolDef {
 				"function", Results.stringProp(
 					"Function to decompile: a name OR an address (alias: 'target'/'address')"),
 				"address", Results.stringProp("Alias for 'function' — an address in the function"),
+				"functions", Map.of("type", "array",
+					"description", "Decompile several at once (names/addresses); max " + MAX_BATCH,
+					"items", Map.of("type", "string")),
 				"timeout_s", Results.intProp("Decompiler timeout in seconds (default " +
 					DEFAULT_TIMEOUT + ")")));
 	}
@@ -55,25 +59,50 @@ public class DecompileTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
+		int timeout = Results.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
+		DecompInterface di = decompilers.get(program);
+
+		Object many = args.get("functions");
+		if (many instanceof List<?> list && !list.isEmpty()) {
+			StringBuilder sb = new StringBuilder();
+			int n = Math.min(list.size(), MAX_BATCH);
+			for (int i = 0; i < n; i++) {
+				sb.append(decompileOne(program, di, String.valueOf(list.get(i)), timeout))
+						.append("\n");
+			}
+			if (list.size() > MAX_BATCH) {
+				sb.append("(").append(list.size() - MAX_BATCH)
+						.append(" more not decompiled — cap is ").append(MAX_BATCH).append(")\n");
+			}
+			return Results.ok(sb.toString());
+		}
+
 		String target = Results.locationArg(args);
 		if (target == null) {
-			return Results.error("a function (name or address) is required");
+			return Results.error("a function (name or address), or a 'functions' list, is required");
 		}
-		int timeout = Results.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
-		Function function = ProgramContext.findFunction(program, target);
+		return Results.ok(decompileOne(program, di, target, timeout));
+	}
 
-		DecompInterface di = decompilers.get(program);
+	private String decompileOne(Program program, DecompInterface di, String ref, int timeout) {
+		Function function;
+		try {
+			function = ProgramContext.findFunction(program, ref);
+		}
+		catch (Exception e) {
+			return "// " + ref + ": " + e.getMessage();
+		}
 		DecompileResults results = di.decompileFunction(function, timeout, TaskMonitor.DUMMY);
 		if (results != null && results.getDecompiledFunction() != null) {
 			String c = results.getDecompiledFunction().getC();
 			if (c != null && !c.isBlank()) {
-				return Results.ok(c);
+				return c;
 			}
 		}
 		String message = results == null ? "no result" : results.getErrorMessage();
 		if (message == null || message.isBlank()) {
 			message = di.getLastMessage();
 		}
-		return Results.error("Decompilation failed for " + function.getName() + ": " + message);
+		return "// Decompilation failed for " + function.getName() + ": " + message;
 	}
 }
