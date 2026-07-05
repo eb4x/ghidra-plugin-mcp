@@ -4,8 +4,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.app.util.cparser.C.CParser;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.listing.Program;
@@ -16,7 +18,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * type manager from a C source snippet. Lets you materialize types like a 16-bit
  * {@code FILE} so they can then be used by set_function_signature / set_data_type.
  */
-public class DefineTypesTool implements McpToolDef {
+public class DefineTypesTool implements ProgramTool {
 
 	@Override
 	public String name() {
@@ -36,7 +38,7 @@ public class DefineTypesTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"source", Results.stringProp("C declarations to parse into the program")),
+				"source", Schemas.stringProp("C declarations to parse into the program")),
 			"required", List.of("source"));
 	}
 
@@ -48,7 +50,7 @@ public class DefineTypesTool implements McpToolDef {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		String source = Results.stringArg(args, "source", null);
+		String source = Args.stringArg(args, "source", null);
 		if (source == null || source.isBlank()) {
 			return Results.error("source is required");
 		}

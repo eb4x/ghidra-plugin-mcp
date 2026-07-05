@@ -4,7 +4,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Results;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.program.model.listing.Program;
@@ -27,7 +27,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * some analyzers &mdash; notably the RTLink/Plus Overlay analyzer &mdash; require an
  * open transaction and NPE without one.
  */
-public class AnalyzeTool implements McpToolDef {
+public class AnalyzeTool implements ProgramTool {
 
 	private final Set<String> analyzing = ConcurrentHashMap.newKeySet();
 

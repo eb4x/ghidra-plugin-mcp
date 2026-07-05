@@ -6,9 +6,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.data.StringDataInstance;
 import ghidra.program.model.listing.Data;
@@ -25,7 +27,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * One consolidated enumeration tool: functions, symbols, strings, imports,
  * exports, segments, data, and namespaces, with filtering and pagination.
  */
-public class ListTool implements McpToolDef {
+public class ListTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("functions", "symbols", "strings",
 		"imports", "exports", "segments", "data", "namespaces");
@@ -53,14 +55,14 @@ public class ListTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"kind", Results.enumProp("What to list", KINDS),
-				"filter", Results.stringProp(
+				"kind", Schemas.enumProp("What to list", KINDS),
+				"filter", Schemas.stringProp(
 					"Case-insensitive substring to match against names/values"),
-				"sort", Results.enumProp("Sort order for kind=functions (default address)", SORTS),
-				"from", Results.stringProp("kind=functions: only functions with entry >= this address"),
-				"to", Results.stringProp("kind=functions: only functions with entry <= this address"),
-				"offset", Results.intProp("Skip this many matches (default 0)"),
-				"limit", Results.intProp("Maximum matches to return (default " +
+				"sort", Schemas.enumProp("Sort order for kind=functions (default address)", SORTS),
+				"from", Schemas.stringProp("kind=functions: only functions with entry >= this address"),
+				"to", Schemas.stringProp("kind=functions: only functions with entry <= this address"),
+				"offset", Schemas.intProp("Skip this many matches (default 0)"),
+				"limit", Schemas.intProp("Maximum matches to return (default " +
 					DEFAULT_LIMIT + ")")),
 			"required", List.of("kind"));
 	}
@@ -72,28 +74,28 @@ public class ListTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String kind = Results.stringArg(args, "kind", null);
+		String kind = Args.stringArg(args, "kind", null);
 		if (kind == null || !KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
 		}
-		String sort = Results.stringArg(args, "sort", "address");
+		String sort = Args.stringArg(args, "sort", "address");
 		if (!SORTS.contains(sort)) {
 			return Results.error("sort must be one of " + SORTS);
 		}
-		String filter = Results.stringArg(args, "filter", "").toLowerCase();
-		int offset = Math.max(0, Results.intArg(args, "offset", 0));
-		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
+		String filter = Args.stringArg(args, "filter", "").toLowerCase();
+		int offset = Math.max(0, Args.intArg(args, "offset", 0));
+		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
 		Address from = null;
 		Address to = null;
 		try {
-			String fromArg = Results.stringArg(args, "from", null);
-			String toArg = Results.stringArg(args, "to", null);
+			String fromArg = Args.stringArg(args, "from", null);
+			String toArg = Args.stringArg(args, "to", null);
 			if (fromArg != null) {
-				from = ProgramContext.parseAddress(program, fromArg);
+				from = Locations.parseAddress(program, fromArg);
 			}
 			if (toArg != null) {
-				to = ProgramContext.parseAddress(program, toArg);
+				to = Locations.parseAddress(program, toArg);
 			}
 		}
 		catch (IllegalArgumentException e) {

@@ -2,6 +2,7 @@ package ebbex.ghidramcpserver.util;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
@@ -23,8 +24,7 @@ public class ProjectContext {
 	/** consumer token for reference-counted domain object opens */
 	private final Object consumer = this;
 	private final Map<String, Program> openByPath = new ConcurrentHashMap<>();
-	private final Map<String, java.util.concurrent.locks.ReentrantLock> writeLocks =
-		new ConcurrentHashMap<>();
+	private final Map<String, ReentrantLock> writeLocks = new ConcurrentHashMap<>();
 
 	public Project project() {
 		return AppInfo.getActiveProject();
@@ -35,8 +35,8 @@ public class ProjectContext {
 	 * mutating tool calls can't race on save(); reads never take this lock, and writes
 	 * to different programs stay concurrent.
 	 */
-	public java.util.concurrent.locks.ReentrantLock writeLock(String path) {
-		return writeLocks.computeIfAbsent(path, p -> new java.util.concurrent.locks.ReentrantLock());
+	public ReentrantLock writeLock(String path) {
+		return writeLocks.computeIfAbsent(path, p -> new ReentrantLock());
 	}
 
 	/**

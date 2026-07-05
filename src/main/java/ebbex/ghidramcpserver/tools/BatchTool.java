@@ -3,9 +3,11 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -16,9 +18,9 @@ import io.modelcontextprotocol.spec.McpSchema;
  * the whole call) no interleaving with other writers. Each edit is dispatched to
  * the matching single-edit tool; a failing edit is reported and the rest continue.
  */
-public class BatchTool implements McpToolDef {
+public class BatchTool implements ProgramTool {
 
-	private final Map<String, McpToolDef> ops;
+	private final Map<String, ProgramTool> ops;
 
 	public BatchTool(Decompilers decompilers) {
 		this.ops = Map.of(
@@ -52,7 +54,7 @@ public class BatchTool implements McpToolDef {
 					"description", "Edits to apply in order; each is {op, ...op-args}",
 					"items", Map.of(
 						"type", "object",
-						"properties", Map.of("op", Results.enumProp(
+						"properties", Map.of("op", Schemas.enumProp(
 							"Which edit", List.of(ops.keySet().toArray(new String[0])))),
 						"required", List.of("op")))),
 			"required", List.of("edits"));
@@ -88,8 +90,8 @@ public class BatchTool implements McpToolDef {
 			}
 			@SuppressWarnings("unchecked")
 			Map<String, Object> edit = (Map<String, Object>) raw;
-			String op = Results.stringArg(edit, "op", null);
-			McpToolDef tool = op == null ? null : ops.get(op);
+			String op = Args.stringArg(edit, "op", null);
+			ProgramTool tool = op == null ? null : ops.get(op);
 			if (tool == null) {
 				report.append("[").append(i).append("] ERROR: unknown op '").append(op)
 						.append("' (expected ").append(ops.keySet()).append(")\n");
