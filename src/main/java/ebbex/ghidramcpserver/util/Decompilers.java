@@ -1,25 +1,129 @@
 package ebbex.ghidramcpserver.util;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Semaphore;
 
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileOptions;
+import ghidra.app.decompiler.DecompileResults;
+import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.util.task.TaskMonitor;
 
 /**
- * Keeps one open {@link DecompInterface} per program. Decompiling different
- * programs runs in parallel (each interface is independent); concurrent calls
- * against the same program serialize on that interface's own synchronized
- * {@code decompileFunction}. Interfaces are held open until the plugin is
- * disposed (or the program is explicitly released) since opening one is costly.
+ * A small pool of {@link DecompInterface}s per program. Each interface is a separate
+ * decompiler process, so up to {@code poolSize} functions of the same program can
+ * decompile in parallel — a single interface serializes on its synchronized
+ * {@code decompileFunction}, which is what bottlenecks a many-agents-one-program
+ * fan-out. Each pool grows lazily up to the cap and reuses idle interfaces.
+ *
+ * <p>{@link DecompileResults} (and the {@code HighFunction} it carries) are a detached
+ * snapshot, so callers may keep using them after the interface returns to the pool.
  */
 public class Decompilers {
 
-	private final Map<Program, DecompInterface> byProgram = new ConcurrentHashMap<>();
+	private final int poolSize;
+	private final Map<Program, Pool> pools = new ConcurrentHashMap<>();
 
-	public DecompInterface get(Program program) {
-		return byProgram.computeIfAbsent(program, Decompilers::open);
+	public Decompilers() {
+		this(defaultPoolSize());
+	}
+
+	public Decompilers(int poolSize) {
+		this.poolSize = Math.max(1, poolSize);
+	}
+
+	/**
+	 * Decompile a function using an interface from the program's pool. Blocks if all
+	 * {@code poolSize} interfaces are busy (natural backpressure), then reuses one.
+	 */
+	public DecompileResults decompile(Program program, Function function, int timeoutSeconds) {
+		Pool pool = pools.computeIfAbsent(program, p -> new Pool(p));
+		DecompInterface di = pool.checkout();
+		try {
+			return di.decompileFunction(function, timeoutSeconds, TaskMonitor.DUMMY);
+		}
+		finally {
+			pool.checkin(di);
+		}
+	}
+
+	/** Dispose and forget the pool for one program (e.g. when its file is released). */
+	public void release(Program program) {
+		Pool pool = pools.remove(program);
+		if (pool != null) {
+			pool.dispose();
+		}
+	}
+
+	public void dispose() {
+		for (Pool pool : pools.values()) {
+			pool.dispose();
+		}
+		pools.clear();
+	}
+
+	/** Pool size = half the cores (2..8), overridable with -Dmcp.decompiler.pool=N. */
+	private static int defaultPoolSize() {
+		String override = System.getProperty("mcp.decompiler.pool");
+		if (override != null) {
+			try {
+				return Integer.parseInt(override.trim());
+			}
+			catch (NumberFormatException ignored) {
+				// fall through to the computed default
+			}
+		}
+		int cores = Runtime.getRuntime().availableProcessors();
+		return Math.max(2, Math.min(8, cores / 2));
+	}
+
+	private final class Pool {
+		private final Program program;
+		private final Semaphore permits = new Semaphore(poolSize);
+		private final Queue<DecompInterface> idle = new ConcurrentLinkedQueue<>();
+		private final List<DecompInterface> all = new ArrayList<>();
+
+		Pool(Program program) {
+			this.program = program;
+		}
+
+		DecompInterface checkout() {
+			permits.acquireUninterruptibly();
+			DecompInterface di = idle.poll();
+			if (di == null) {
+				di = open(program);
+				synchronized (all) {
+					all.add(di);
+				}
+			}
+			return di;
+		}
+
+		void checkin(DecompInterface di) {
+			idle.offer(di);
+			permits.release();
+		}
+
+		void dispose() {
+			synchronized (all) {
+				for (DecompInterface di : all) {
+					try {
+						di.dispose();
+					}
+					catch (Exception ignored) {
+						// best effort on shutdown
+					}
+				}
+				all.clear();
+			}
+			idle.clear();
+		}
 	}
 
 	private static DecompInterface open(Program program) {
@@ -36,25 +140,5 @@ public class Decompilers {
 			throw new IllegalStateException("Failed to open decompiler: " + message);
 		}
 		return di;
-	}
-
-	/** Dispose and forget the decompiler for one program (e.g. when its file is released). */
-	public void release(Program program) {
-		DecompInterface di = byProgram.remove(program);
-		if (di != null) {
-			di.dispose();
-		}
-	}
-
-	public void dispose() {
-		for (DecompInterface di : byProgram.values()) {
-			try {
-				di.dispose();
-			}
-			catch (Exception e) {
-				// best effort on shutdown
-			}
-		}
-		byProgram.clear();
 	}
 }

@@ -8,7 +8,6 @@ import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.ProgramContext;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Transactions;
-import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
@@ -20,7 +19,6 @@ import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
-import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Rename any nameable thing: function, label, data, parameter, or local variable. */
@@ -168,8 +166,7 @@ public class RenameTool implements McpToolDef {
 	}
 
 	private HighSymbol findHighSymbol(Program program, Function function, String name) {
-		DecompInterface di = decompilers.get(program);
-		DecompileResults results = di.decompileFunction(function, 30, TaskMonitor.DUMMY);
+		DecompileResults results = decompilers.decompile(program, function, 30);
 		HighFunction high = results != null ? results.getHighFunction() : null;
 		if (high == null) {
 			return null;
