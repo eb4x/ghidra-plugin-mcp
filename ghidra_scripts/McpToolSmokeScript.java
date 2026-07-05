@@ -64,6 +64,8 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
 			prog("rename", Map.of("kind", "function", "function", "_init",
 				"new_name", "mcp_renamed_init"), program);
+			// manage_types: not-found path (deterministic; no custom types guaranteed here).
+			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);
 			df.save(TaskMonitor.DUMMY);
 			prog("list", Map.of("kind", "functions", "filter", "mcp_renamed_init"), program);
 		}
