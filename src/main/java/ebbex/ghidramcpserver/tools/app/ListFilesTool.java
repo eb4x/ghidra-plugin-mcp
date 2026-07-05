@@ -4,8 +4,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.AppLevelTool;
+import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
@@ -13,7 +15,7 @@ import ghidra.framework.model.ProjectData;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** List the files (and folders) in the project, with their content types. */
-public class ListFilesTool implements AppLevelTool {
+public class ListFilesTool implements ApplicationLevelTool {
 
 	private static final int DEFAULT_LIMIT = 200;
 
@@ -34,11 +36,11 @@ public class ListFilesTool implements AppLevelTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"folder", Results.stringProp("Project folder to list (default '/')"),
+				"folder", Schemas.stringProp("Project folder to list (default '/')"),
 				"recursive", Map.of("type", "boolean",
 					"description", "Recurse into subfolders (default true)"),
-				"filter", Results.stringProp("Case-insensitive substring to match against paths"),
-				"limit", Results.intProp("Maximum files to return (default " + DEFAULT_LIMIT + ")")));
+				"filter", Schemas.stringProp("Case-insensitive substring to match against paths"),
+				"limit", Schemas.intProp("Maximum files to return (default " + DEFAULT_LIMIT + ")")));
 	}
 
 	@Override
@@ -48,10 +50,10 @@ public class ListFilesTool implements AppLevelTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Project project) {
-		String folderPath = Results.stringArg(args, "folder", "/");
-		boolean recursive = Results.boolArg(args, "recursive", true);
-		String filter = Results.stringArg(args, "filter", "").toLowerCase();
-		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
+		String folderPath = Args.stringArg(args, "folder", "/");
+		boolean recursive = Args.boolArg(args, "recursive", true);
+		String filter = Args.stringArg(args, "filter", "").toLowerCase();
+		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
 		ProjectData data = project.getProjectData();
 		DomainFolder folder = data.getFolder(folderPath);

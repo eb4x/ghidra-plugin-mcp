@@ -5,8 +5,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
@@ -14,7 +16,7 @@ import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Scan memory for a byte pattern (with wildcards) or an encoded string. */
-public class SearchMemoryTool implements McpToolDef {
+public class SearchMemoryTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("bytes", "text");
 	private static final int DEFAULT_LIMIT = 32;
@@ -36,10 +38,10 @@ public class SearchMemoryTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"pattern", Results.stringProp("Hex bytes with optional '??' wildcards, or text"),
-				"kind", Results.enumProp("How to interpret 'pattern' (default 'bytes')", KINDS),
-				"offset", Results.intProp("Skip this many matches (for paging; default 0)"),
-				"limit", Results.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")")),
+				"pattern", Schemas.stringProp("Hex bytes with optional '??' wildcards, or text"),
+				"kind", Schemas.enumProp("How to interpret 'pattern' (default 'bytes')", KINDS),
+				"offset", Schemas.intProp("Skip this many matches (for paging; default 0)"),
+				"limit", Schemas.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")")),
 			"required", List.of("pattern"));
 	}
 
@@ -50,16 +52,16 @@ public class SearchMemoryTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String pattern = Results.stringArg(args, "pattern", null);
+		String pattern = Args.stringArg(args, "pattern", null);
 		if (pattern == null || pattern.isBlank()) {
 			return Results.error("pattern is required");
 		}
-		String kind = Results.stringArg(args, "kind", "bytes");
+		String kind = Args.stringArg(args, "kind", "bytes");
 		if (!KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
 		}
-		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
-		int offset = Math.max(0, Results.intArg(args, "offset", 0));
+		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
+		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 
 		byte[] values;
 		byte[] masks;

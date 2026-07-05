@@ -3,9 +3,11 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.CommentType;
@@ -14,7 +16,7 @@ import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Set or clear any comment type at an address (or on a function's entry). */
-public class SetCommentTool implements McpToolDef {
+public class SetCommentTool implements ProgramTool {
 
 	private static final List<String> TYPES = List.of("eol", "pre", "post", "plate", "repeatable");
 
@@ -35,10 +37,10 @@ public class SetCommentTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"address", Results.stringProp("Address to comment (or omit and pass 'function')"),
-				"function", Results.stringProp("Function name/address; comments its entry point"),
-				"comment_type", Results.enumProp("Which comment slot (default eol)", TYPES),
-				"comment", Results.stringProp("Comment text; empty string clears it")),
+				"address", Schemas.stringProp("Address to comment (or omit and pass 'function')"),
+				"function", Schemas.stringProp("Function name/address; comments its entry point"),
+				"comment_type", Schemas.enumProp("Which comment slot (default eol)", TYPES),
+				"comment", Schemas.stringProp("Comment text; empty string clears it")),
 			"required", List.of("comment"));
 	}
 
@@ -49,23 +51,23 @@ public class SetCommentTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String comment = Results.stringArg(args, "comment", null);
+		String comment = Args.stringArg(args, "comment", null);
 		if (comment == null) {
 			return Results.error("comment is required (use empty string to clear)");
 		}
-		CommentType type = parseType(Results.stringArg(args, "comment_type", "eol"));
+		CommentType type = parseType(Args.stringArg(args, "comment_type", "eol"));
 		if (type == null) {
 			return Results.error("comment_type must be one of " + TYPES);
 		}
 
 		Address address;
-		String addressArg = Results.stringArg(args, "address", null);
-		String functionArg = Results.stringArg(args, "function", null);
+		String addressArg = Args.stringArg(args, "address", null);
+		String functionArg = Args.stringArg(args, "function", null);
 		if (addressArg != null) {
-			address = ProgramContext.parseAddress(program, addressArg);
+			address = Locations.parseAddress(program, addressArg);
 		}
 		else if (functionArg != null) {
-			Function function = ProgramContext.findFunction(program, functionArg);
+			Function function = Locations.findFunction(program, functionArg);
 			address = function.getEntryPoint();
 		}
 		else {

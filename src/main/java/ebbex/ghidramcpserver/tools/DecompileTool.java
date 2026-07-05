@@ -3,17 +3,19 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Decompilers;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Decompile a function to C. */
-public class DecompileTool implements McpToolDef {
+public class DecompileTool implements ProgramTool {
 
 	private static final int DEFAULT_TIMEOUT = 30;
 	private static final int MAX_BATCH = 12;
@@ -40,13 +42,13 @@ public class DecompileTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"function", Results.stringProp(
+				"function", Schemas.stringProp(
 					"Function to decompile: a name OR an address (alias: 'target'/'address')"),
-				"address", Results.stringProp("Alias for 'function' — an address in the function"),
+				"address", Schemas.stringProp("Alias for 'function' — an address in the function"),
 				"functions", Map.of("type", "array",
 					"description", "Decompile several at once (names/addresses); max " + MAX_BATCH,
 					"items", Map.of("type", "string")),
-				"timeout_s", Results.intProp("Decompiler timeout in seconds (default " +
+				"timeout_s", Schemas.intProp("Decompiler timeout in seconds (default " +
 					DEFAULT_TIMEOUT + ")")));
 	}
 
@@ -57,7 +59,7 @@ public class DecompileTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		int timeout = Results.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
+		int timeout = Args.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
 
 		Object many = args.get("functions");
 		if (many instanceof List<?> list && !list.isEmpty()) {
@@ -73,7 +75,7 @@ public class DecompileTool implements McpToolDef {
 			return Results.ok(sb.toString());
 		}
 
-		String target = Results.locationArg(args);
+		String target = Args.locationArg(args);
 		if (target == null) {
 			return Results.error("a function (name or address), or a 'functions' list, is required");
 		}
@@ -83,7 +85,7 @@ public class DecompileTool implements McpToolDef {
 	private String decompileOne(Program program, String ref, int timeout) {
 		Function function;
 		try {
-			function = ProgramContext.findFunction(program, ref);
+			function = Locations.findFunction(program, ref);
 		}
 		catch (Exception e) {
 			return "// " + ref + ": " + e.getMessage();

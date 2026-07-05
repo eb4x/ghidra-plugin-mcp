@@ -5,8 +5,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.ProjectContext;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.framework.model.Project;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
@@ -17,8 +19,8 @@ import io.modelcontextprotocol.spec.McpSchema;
  * Builds the MCP endpoints (tool groups) and their per-tool call handlers.
  *
  * <ul>
- * <li>{@code application-level} &mdash; {@link AppLevelTool}s bound to the active project.</li>
- * <li>{@code program} &mdash; {@link McpToolDef}s; every tool's schema is augmented with a
+ * <li>{@code application-level} &mdash; {@link ApplicationLevelTool}s bound to the active project.</li>
+ * <li>{@code program} &mdash; {@link ProgramTool}s; every tool's schema is augmented with a
  * required {@code program} project-path argument, resolved on demand and saved after writes.</li>
  * </ul>
  */
@@ -28,7 +30,7 @@ public final class Endpoints {
 	}
 
 	public static List<McpHttpServer.Endpoint> build(ProjectContext context,
-			List<AppLevelTool> appTools, List<McpToolDef> programTools) {
+			List<ApplicationLevelTool> appTools, List<ProgramTool> programTools) {
 		return List.of(
 			new McpHttpServer.Endpoint("application-level", "ghidra-application-level",
 				appTools.stream().map(t -> appSpec(context, t)).toList()),
@@ -39,7 +41,7 @@ public final class Endpoints {
 	// ---- application-level group ----
 
 	private static McpServerFeatures.SyncToolSpecification appSpec(ProjectContext context,
-			AppLevelTool tool) {
+			ApplicationLevelTool tool) {
 		McpSchema.Tool mcpTool = McpSchema.Tool.builder(tool.name(), tool.inputSchema())
 				.description(tool.description())
 				.annotations(McpSchema.ToolAnnotations.builder()
@@ -69,7 +71,7 @@ public final class Endpoints {
 	// ---- program group ----
 
 	private static McpServerFeatures.SyncToolSpecification programSpec(ProjectContext context,
-			McpToolDef tool) {
+			ProgramTool tool) {
 		McpSchema.Tool mcpTool = McpSchema.Tool.builder(tool.name(), augmentWithProgram(tool))
 				.description(tool.description() +
 					" The 'program' argument is a project file path, e.g. /malware.exe.")
@@ -85,7 +87,7 @@ public final class Endpoints {
 						return Results.error("No project is open in Ghidra");
 					}
 					Map<String, Object> args = arguments(request);
-					String path = Results.stringArg(args, "program", null);
+					String path = Args.stringArg(args, "program", null);
 					if (path == null || path.isBlank()) {
 						return Results.error("'program' (a project file path) is required");
 					}
@@ -124,7 +126,7 @@ public final class Endpoints {
 				.build();
 	}
 
-	private static McpSchema.CallToolResult runTool(McpToolDef tool, Map<String, Object> args,
+	private static McpSchema.CallToolResult runTool(ProgramTool tool, Map<String, Object> args,
 			Program program) {
 		try {
 			return tool.execute(args, program);
@@ -136,7 +138,7 @@ public final class Endpoints {
 	}
 
 	/** Return a copy of the tool's schema with a required {@code program} string added. */
-	private static Map<String, Object> augmentWithProgram(McpToolDef tool) {
+	private static Map<String, Object> augmentWithProgram(ProgramTool tool) {
 		Map<String, Object> schema = new LinkedHashMap<>(tool.inputSchema());
 
 		Object propsObj = schema.get("properties");
@@ -144,7 +146,7 @@ public final class Endpoints {
 		if (propsObj instanceof Map<?, ?> existing) {
 			existing.forEach((k, v) -> properties.put(String.valueOf(k), v));
 		}
-		properties.put("program", Results.stringProp("Project file path of the target program"));
+		properties.put("program", Schemas.stringProp("Project file path of the target program"));
 		schema.put("properties", properties);
 
 		List<Object> required = new ArrayList<>();

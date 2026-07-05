@@ -5,8 +5,10 @@ import java.io.RandomAccessFile;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -16,7 +18,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * payloads appended past the loaded image (e.g. bound DOS extenders), which
  * read_bytes (address-space only) cannot see.
  */
-public class ReadFileTool implements McpToolDef {
+public class ReadFileTool implements ProgramTool {
 
 	private static final int MAX_LENGTH = 4096;
 
@@ -38,8 +40,8 @@ public class ReadFileTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"offset", Results.intProp("Byte offset into the file"),
-				"length", Results.intProp("Number of bytes (max " + MAX_LENGTH + ")")),
+				"offset", Schemas.intProp("Byte offset into the file"),
+				"length", Schemas.intProp("Number of bytes (max " + MAX_LENGTH + ")")),
 			"required", List.of("offset", "length"));
 	}
 
@@ -51,11 +53,11 @@ public class ReadFileTool implements McpToolDef {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		long offset = Results.intArg(args, "offset", -1);
+		long offset = Args.intArg(args, "offset", -1);
 		if (offset < 0) {
 			return Results.error("offset is required (>= 0)");
 		}
-		int length = Results.intArg(args, "length", 0);
+		int length = Args.intArg(args, "length", 0);
 		if (length <= 0) {
 			return Results.error("length must be positive");
 		}

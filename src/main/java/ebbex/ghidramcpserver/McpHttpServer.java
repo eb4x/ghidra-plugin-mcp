@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.eclipse.jetty.ee11.servlet.ServletContextHandler;
@@ -40,7 +41,7 @@ public class McpHttpServer {
 	private final List<Endpoint> endpoints;
 
 	private Server jetty;
-	private final java.util.List<McpSyncServer> mcpServers = new java.util.ArrayList<>();
+	private final List<McpSyncServer> mcpServers = new ArrayList<>();
 
 	public McpHttpServer(String host, int port, List<Endpoint> endpoints) {
 		this.host = host;

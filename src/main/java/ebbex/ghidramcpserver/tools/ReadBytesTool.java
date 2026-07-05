@@ -3,15 +3,17 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Raw memory dump as hex + ASCII. */
-public class ReadBytesTool implements McpToolDef {
+public class ReadBytesTool implements ProgramTool {
 
 	private static final int MAX_LENGTH = 4096;
 
@@ -31,8 +33,8 @@ public class ReadBytesTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"address", Results.stringProp("Start address"),
-				"length", Results.intProp("Number of bytes (max " + MAX_LENGTH + ")")),
+				"address", Schemas.stringProp("Start address"),
+				"length", Schemas.intProp("Number of bytes (max " + MAX_LENGTH + ")")),
 			"required", List.of("address", "length"));
 	}
 
@@ -44,17 +46,17 @@ public class ReadBytesTool implements McpToolDef {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		String addressArg = Results.stringArg(args, "address", null);
+		String addressArg = Args.stringArg(args, "address", null);
 		if (addressArg == null) {
 			return Results.error("address is required");
 		}
-		int length = Results.intArg(args, "length", 0);
+		int length = Args.intArg(args, "length", 0);
 		if (length <= 0) {
 			return Results.error("length must be positive");
 		}
 		length = Math.min(length, MAX_LENGTH);
 
-		Address start = ProgramContext.parseAddress(program, addressArg);
+		Address start = Locations.parseAddress(program, addressArg);
 		byte[] buffer = new byte[length];
 		int read = program.getMemory().getBytes(start, buffer);
 

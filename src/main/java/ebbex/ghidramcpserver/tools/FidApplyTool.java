@@ -4,8 +4,10 @@ import java.io.File;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.feature.fid.cmd.ApplyFidEntriesCommand;
 import ghidra.feature.fid.db.FidFileManager;
 import ghidra.feature.fid.service.FidService;
@@ -18,7 +20,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * code-hash matches a named function in the database. Pairs with fid_build: label
  * one binary, then propagate to others of the same language/toolchain.
  */
-public class FidApplyTool implements McpToolDef {
+public class FidApplyTool implements ProgramTool {
 
 	@Override
 	public String name() {
@@ -38,8 +40,8 @@ public class FidApplyTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"db", Results.stringProp("Host path to the .fidb database"),
-				"score_threshold", Results.intProp(
+				"db", Schemas.stringProp("Host path to the .fidb database"),
+				"score_threshold", Schemas.intProp(
 					"Minimum match score in code units (default: Ghidra's standard threshold)")),
 			"required", List.of("db"));
 	}
@@ -51,7 +53,7 @@ public class FidApplyTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String dbPath = Results.stringArg(args, "db", null);
+		String dbPath = Args.stringArg(args, "db", null);
 		if (dbPath == null) {
 			return Results.error("db is required");
 		}
@@ -79,7 +81,7 @@ public class FidApplyTool implements McpToolDef {
 
 		FidService service = new FidService();
 		float score = args.containsKey("score_threshold")
-				? Results.intArg(args, "score_threshold", 0)
+				? Args.intArg(args, "score_threshold", 0)
 				: service.getDefaultScoreThreshold();
 		float multi = service.getDefaultMultiNameThreshold();
 

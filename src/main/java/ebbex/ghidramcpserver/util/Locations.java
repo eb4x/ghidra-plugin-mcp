@@ -12,9 +12,9 @@ import ghidra.program.model.symbol.SymbolIterator;
  * project path in {@link ProjectContext}); there is no notion of a "current"
  * program.
  */
-public final class ProgramContext {
+public final class Locations {
 
-	private ProgramContext() {
+	private Locations() {
 	}
 
 	/** Parse a hex address string (with or without 0x / segment prefix). */

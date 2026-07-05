@@ -3,10 +3,12 @@ package ebbex.ghidramcpserver.tools;
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Decompilers;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
@@ -22,7 +24,7 @@ import ghidra.program.model.symbol.Symbol;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Rename any nameable thing: function, label, data, parameter, or local variable. */
-public class RenameTool implements McpToolDef {
+public class RenameTool implements ProgramTool {
 
 	private static final List<String> TARGETS =
 		List.of("function", "label", "data", "parameter", "local_variable");
@@ -50,13 +52,13 @@ public class RenameTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Results.enumProp("What to rename", TARGETS),
-				"new_name", Results.stringProp("The new name"),
-				"address", Results.stringProp(
+				"target", Schemas.enumProp("What to rename", TARGETS),
+				"new_name", Schemas.stringProp("The new name"),
+				"address", Schemas.stringProp(
 					"Address of the function/label/data (for target=function|label|data)"),
-				"function", Results.stringProp(
+				"function", Schemas.stringProp(
 					"Function name or address (for target=parameter|local_variable)"),
-				"old_name", Results.stringProp(
+				"old_name", Schemas.stringProp(
 					"Current variable name (for target=parameter|local_variable)")),
 			"required", List.of("target", "new_name"));
 	}
@@ -68,8 +70,8 @@ public class RenameTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Results.stringArg(args, "target", null);
-		String newName = Results.stringArg(args, "new_name", null);
+		String target = Args.stringArg(args, "target", null);
+		String newName = Args.stringArg(args, "new_name", null);
 		if (target == null || !TARGETS.contains(target)) {
 			return Results.error("target must be one of " + TARGETS);
 		}
@@ -87,12 +89,12 @@ public class RenameTool implements McpToolDef {
 
 	private McpSchema.CallToolResult renameFunction(Program program, Map<String, Object> args,
 			String newName) {
-		String ref = Results.stringArg(args, "address",
-			Results.stringArg(args, "function", null));
+		String ref = Args.stringArg(args, "address",
+			Args.stringArg(args, "function", null));
 		if (ref == null) {
 			return Results.error("address (or function) is required");
 		}
-		Function function = ProgramContext.findFunction(program, ref);
+		Function function = Locations.findFunction(program, ref);
 		return Transactions.modify(program, "Rename function", () -> {
 			String old = function.getName();
 			function.setName(newName, SourceType.USER_DEFINED);
@@ -103,11 +105,11 @@ public class RenameTool implements McpToolDef {
 
 	private McpSchema.CallToolResult renameSymbol(Program program, Map<String, Object> args,
 			String newName) {
-		String addressArg = Results.stringArg(args, "address", null);
+		String addressArg = Args.stringArg(args, "address", null);
 		if (addressArg == null) {
 			return Results.error("address is required");
 		}
-		Address address = ProgramContext.parseAddress(program, addressArg);
+		Address address = Locations.parseAddress(program, addressArg);
 		Symbol symbol = program.getSymbolTable().getPrimarySymbol(address);
 		if (symbol == null) {
 			return Results.error("No symbol at " + address);
@@ -121,12 +123,12 @@ public class RenameTool implements McpToolDef {
 
 	private McpSchema.CallToolResult renameVariable(Program program, Map<String, Object> args,
 			String newName) {
-		String functionRef = Results.stringArg(args, "function", null);
-		String oldName = Results.stringArg(args, "old_name", null);
+		String functionRef = Args.stringArg(args, "function", null);
+		String oldName = Args.stringArg(args, "old_name", null);
 		if (functionRef == null || oldName == null) {
 			return Results.error("function and old_name are required for variable renames");
 		}
-		Function function = ProgramContext.findFunction(program, functionRef);
+		Function function = Locations.findFunction(program, functionRef);
 
 		// Parameters and simple stack locals exist on the database function directly.
 		Variable dbVariable = findDbVariable(function, oldName);

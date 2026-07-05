@@ -6,16 +6,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import ebbex.ghidramcpserver.McpToolDef;
-import ebbex.ghidramcpserver.util.ProgramContext;
+import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
+import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Function-level call graph: the functions a function calls, or that call it. */
-public class CallsTool implements McpToolDef {
+public class CallsTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("callees", "callers");
 	private static final int DEFAULT_LIMIT = 100;
@@ -37,10 +39,10 @@ public class CallsTool implements McpToolDef {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Results.stringProp("Function name or an address within the function"),
-				"kind", Results.enumProp("Direction (default callees)", KINDS),
-				"offset", Results.intProp("Skip this many (default 0)"),
-				"limit", Results.intProp("Maximum to return (default " + DEFAULT_LIMIT + ")")),
+				"target", Schemas.stringProp("Function name or an address within the function"),
+				"kind", Schemas.enumProp("Direction (default callees)", KINDS),
+				"offset", Schemas.intProp("Skip this many (default 0)"),
+				"limit", Schemas.intProp("Maximum to return (default " + DEFAULT_LIMIT + ")")),
 			"required", List.of("target"));
 	}
 
@@ -51,18 +53,18 @@ public class CallsTool implements McpToolDef {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Results.stringArg(args, "target", null);
+		String target = Args.stringArg(args, "target", null);
 		if (target == null) {
 			return Results.error("target is required");
 		}
-		String kind = Results.stringArg(args, "kind", "callees");
+		String kind = Args.stringArg(args, "kind", "callees");
 		if (!KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
 		}
-		int offset = Math.max(0, Results.intArg(args, "offset", 0));
-		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
+		int offset = Math.max(0, Args.intArg(args, "offset", 0));
+		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
-		Function function = ProgramContext.findFunction(program, target);
+		Function function = Locations.findFunction(program, target);
 		Set<Function> related = kind.equals("callees")
 				? function.getCalledFunctions(TaskMonitor.DUMMY)
 				: function.getCallingFunctions(TaskMonitor.DUMMY);
