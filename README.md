@@ -5,7 +5,7 @@ server inside Ghidra. MCP clients (AI coding agents, etc.) connect over streamab
 HTTP and inspect or edit the program currently open in the CodeBrowser.
 
 The design goal is a **small, orthogonal tool set** — one tool per intention, with
-`kind`/`target` enum parameters instead of dozens of near-duplicate tools — to keep
+`kind`/`op` enum parameters instead of dozens of near-duplicate tools — to keep
 the client's context lean (cf. [bethington/ghidra-mcp#307](https://github.com/bethington/ghidra-mcp/issues/307)).
 
 ## Architecture
@@ -24,7 +24,7 @@ the client's context lean (cf. [bethington/ghidra-mcp#307](https://github.com/be
 Two MCP endpoints on one port, so an agent loads only what it needs:
 
 **`/mcp/application-level`** (the project): `get_application_info`, `list_files`,
-`manage_files` (delete/rename/move), `import`, `fid_build`.
+`manage_files` (delete/rename/move), `import` (host path via `file`), `fid_build`.
 
 **`/mcp/program`** (a program, addressed by project path via a required `program` arg):
 - Read/navigate: `get_program_info` (also flags unmapped/overlay payload), `list`
@@ -38,22 +38,39 @@ Two MCP endpoints on one port, so an agent loads only what it needs:
   `instructions` re-disassembles = the "D" key), `analyze`, `fid_apply`, and `batch`
   (many edits in one call).
 
+Parameter conventions (uniform across tools):
+- **Operands are typed by the Ghidra concept they resolve to** — `function` (a function
+  name or an address inside it), `location` (an address or symbol name; inspect/xrefs),
+  `address` (strictly an address). No aliases; each tool accepts exactly the parameters
+  its schema declares.
+- Name-or-address strings resolve in one fixed order: address-shaped input
+  (`seg:off`, `0x`-prefixed) resolves as an address first, then an indexed symbol-name
+  lookup, then bare hex as a last resort. `segment:offset` is the canonical form the
+  tools also emit.
+- **Enum discriminators are `kind`** ("what kind of thing": list, calls, search_memory,
+  create, rename, set_data_type, set_comment) or **`op`** ("which action": batch,
+  manage_files). Reference direction stays `direction` (xrefs, matching Ghidra's
+  references to/from).
+- Listings page with `offset`/`limit` (+ optional `filter` substring); an offset past
+  the end returns an empty page with the pagination footer, never an error.
+
 Notes:
 - `set_function_signature` applies a full C prototype — return type, params, **and** the
   name — in one call (e.g. `FILE *fopen(const char *path, const char *mode)`; `const` is
   ignored, unknown types must be created first with `define_types`). Omit the signature to
   commit the decompiler's inferred prototype.
-- `fid_build` ingests the named functions of one or more programs into a `.fidb`;
-  `fid_apply` propagates those names (and signatures) to a same-language binary that shares
-  code. Ghidra's own FID databases cover only Visual-Studio PE, so this is how you get FID
-  for other toolchains.
+- `fid_build` ingests the named functions of one or more programs into a `.fidb`
+  (host path via `fidb`); `fid_apply` propagates those names (and signatures) to a
+  same-language binary that shares code. Ghidra's own FID databases cover only
+  Visual-Studio PE, so this is how you get FID for other toolchains.
 
 Consolidation examples:
 - `list` takes `kind=functions|symbols|strings|imports|exports|segments|data|namespaces`
-  with `filter`/`offset`/`limit`.
-- `rename` takes `target=function|label|data|parameter|local_variable`.
-- `set_data_type` covers defining data, retyping variables/parameters, and return types.
-- `set_comment` handles all five comment types (`eol|pre|post|plate|repeatable`).
+  with `filter`/`offset`/`limit` (and `min_address`/`max_address` for functions).
+- `rename` takes `kind=function|label|data|parameter|local_variable`.
+- `set_data_type` (`kind=data|local_variable|parameter|return`) covers defining data,
+  retyping variables/parameters, and return types.
+- `set_comment` handles all five comment slots (`kind=eol|pre|post|plate|repeatable`).
 
 ## Build & install
 
@@ -115,11 +132,10 @@ $GHIDRA_INSTALL_DIR/support/analyzeHeadless /tmp/mcpsmoke smoke \
 
 ## Known limitations (PoC)
 
-- One server per host port: if a second CodeBrowser opens, its plugin instance finds
-  the port taken, logs a warning, and does not serve. (No shared singleton manager yet.)
-- Operates only on the program active in the CodeBrowser (no multi-program targeting).
+- One server per host port: if the port is taken at startup (e.g. a second Ghidra
+  instance), the plugin logs a warning and does not serve — free the port and use
+  Tools → MCPServer → Restart Server, or set `-Dmcp.server.port`.
 - A few functions can hit an upstream Ghidra decompiler error ("Unable to find unique
   hash for varnode", e.g. `main` in some coreutils binaries). `decompile` reports it as
   an error; other tools are unaffected.
-- Deferred: byte patching / assembly, struct definition from C source, program
-  open/close, and a config UI.
+- Deferred: byte patching / assembly, project open/close, and a config UI.

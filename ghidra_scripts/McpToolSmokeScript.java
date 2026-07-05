@@ -6,11 +6,12 @@
 import java.util.List;
 import java.util.Map;
 
-import ebbex.ghidramcpserver.AppLevelTool;
-import ebbex.ghidramcpserver.McpToolDef;
+import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.ToolRegistry;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.ProjectContext;
+import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
@@ -21,13 +22,14 @@ import io.modelcontextprotocol.spec.McpSchema;
 
 public class McpToolSmokeScript extends GhidraScript {
 
-	private List<AppLevelTool> appTools;
-	private List<McpToolDef> programTools;
+	private List<ApplicationLevelTool> appTools;
+	private List<ProgramTool> programTools;
 
 	@Override
 	protected void run() throws Exception {
-		appTools = ToolRegistry.appTools();
-		programTools = ToolRegistry.programTools(new Decompilers());
+		Decompilers decompilers = new Decompilers();
+		appTools = ToolRegistry.appTools(new ProjectContext(decompilers));
+		programTools = ToolRegistry.programTools(decompilers);
 
 		Project project = state.getProject();
 		println("=== project = " + project.getName() +
@@ -35,7 +37,7 @@ public class McpToolSmokeScript extends GhidraScript {
 
 		// ---- application-level tools ----
 		app("get_application_info", Map.of(), project);
-		app("import", Map.of("source", "/bin/ls", "folder", "/"), project);
+		app("import", Map.of("file", "/bin/ls", "folder", "/"), project);
 		app("list_files", Map.of(), project);
 
 		// ---- open the imported program by its project path ----
@@ -48,10 +50,16 @@ public class McpToolSmokeScript extends GhidraScript {
 		try {
 			// ---- program tools ----
 			prog("analyze", Map.of(), program);
+			// analyze runs on a background thread (holding a program transaction) and
+			// saves when done; wait for it to settle before editing or saving ourselves.
+			waitForAnalysis(program);
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
 			prog("decompile", Map.of("function", "_init"), program);
-			prog("rename", Map.of("target", "function", "function", "_init",
+			prog("inspect", Map.of("location", "_init"), program);
+			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
+			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
+			prog("rename", Map.of("kind", "function", "function", "_init",
 				"new_name", "mcp_renamed_init"), program);
 			df.save(TaskMonitor.DUMMY);
 			prog("list", Map.of("kind", "functions", "filter", "mcp_renamed_init"), program);
@@ -77,15 +85,26 @@ public class McpToolSmokeScript extends GhidraScript {
 		}
 	}
 
+	private void waitForAnalysis(Program program) throws Exception {
+		AutoAnalysisManager mgr = AutoAnalysisManager.getAnalysisManager(program);
+		long deadline = System.currentTimeMillis() + 180_000;
+		while ((mgr.isAnalyzing() || program.getCurrentTransactionInfo() != null ||
+			program.isChanged()) && System.currentTimeMillis() < deadline) {
+			Thread.sleep(500);
+		}
+		println("=== analysis settled (analyzing=" + mgr.isAnalyzing() + ", changed=" +
+			program.isChanged() + ") ===");
+	}
+
 	private void app(String name, Map<String, Object> args, Project project) throws Exception {
-		AppLevelTool tool =
+		ApplicationLevelTool tool =
 			appTools.stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow();
 		println("\n----- app:" + name + " " + args + " -----");
 		print(tool.execute(args, project));
 	}
 
 	private void prog(String name, Map<String, Object> args, Program program) throws Exception {
-		McpToolDef tool =
+		ProgramTool tool =
 			programTools.stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow();
 		println("\n----- program:" + name + " " + args + " -----");
 		print(tool.execute(args, program));
