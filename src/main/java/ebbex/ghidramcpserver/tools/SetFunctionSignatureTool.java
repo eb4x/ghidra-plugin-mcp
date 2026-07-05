@@ -10,7 +10,6 @@ import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.cmd.function.FunctionRenameOption;
-import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.data.DataTypeConflictHandler;
@@ -145,8 +144,7 @@ public class SetFunctionSignatureTool implements McpToolDef {
 
 	private McpSchema.CallToolResult commitInferred(Program program, Function function,
 			String callingConvention) {
-		DecompInterface di = decompilers.get(program);
-		DecompileResults results = di.decompileFunction(function, 30, TaskMonitor.DUMMY);
+		DecompileResults results = decompilers.decompile(program, function, 30);
 		HighFunction high = results != null ? results.getHighFunction() : null;
 		if (high == null) {
 			return Results.error("Decompiler produced no high function for " + function.getName());

@@ -7,11 +7,9 @@ import ebbex.ghidramcpserver.McpToolDef;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.ProgramContext;
 import ebbex.ghidramcpserver.util.Results;
-import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
-import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Decompile a function to C. */
@@ -60,15 +58,13 @@ public class DecompileTool implements McpToolDef {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
 		int timeout = Results.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
-		DecompInterface di = decompilers.get(program);
 
 		Object many = args.get("functions");
 		if (many instanceof List<?> list && !list.isEmpty()) {
 			StringBuilder sb = new StringBuilder();
 			int n = Math.min(list.size(), MAX_BATCH);
 			for (int i = 0; i < n; i++) {
-				sb.append(decompileOne(program, di, String.valueOf(list.get(i)), timeout))
-						.append("\n");
+				sb.append(decompileOne(program, String.valueOf(list.get(i)), timeout)).append("\n");
 			}
 			if (list.size() > MAX_BATCH) {
 				sb.append("(").append(list.size() - MAX_BATCH)
@@ -81,10 +77,10 @@ public class DecompileTool implements McpToolDef {
 		if (target == null) {
 			return Results.error("a function (name or address), or a 'functions' list, is required");
 		}
-		return Results.ok(decompileOne(program, di, target, timeout));
+		return Results.ok(decompileOne(program, target, timeout));
 	}
 
-	private String decompileOne(Program program, DecompInterface di, String ref, int timeout) {
+	private String decompileOne(Program program, String ref, int timeout) {
 		Function function;
 		try {
 			function = ProgramContext.findFunction(program, ref);
@@ -92,7 +88,7 @@ public class DecompileTool implements McpToolDef {
 		catch (Exception e) {
 			return "// " + ref + ": " + e.getMessage();
 		}
-		DecompileResults results = di.decompileFunction(function, timeout, TaskMonitor.DUMMY);
+		DecompileResults results = decompilers.decompile(program, function, timeout);
 		if (results != null && results.getDecompiledFunction() != null) {
 			String c = results.getDecompiledFunction().getC();
 			if (c != null && !c.isBlank()) {
@@ -100,9 +96,7 @@ public class DecompileTool implements McpToolDef {
 			}
 		}
 		String message = results == null ? "no result" : results.getErrorMessage();
-		if (message == null || message.isBlank()) {
-			message = di.getLastMessage();
-		}
-		return "// Decompilation failed for " + function.getName() + ": " + message;
+		return "// Decompilation failed for " + function.getName() + ": " +
+			(message == null || message.isBlank() ? "unknown" : message);
 	}
 }
