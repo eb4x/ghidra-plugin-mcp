@@ -23,8 +23,15 @@ public class ProjectContext {
 
 	/** consumer token for reference-counted domain object opens */
 	private final Object consumer = this;
+	private final Decompilers decompilers;
 	private final Map<String, Program> openByPath = new ConcurrentHashMap<>();
 	private final Map<String, ReentrantLock> writeLocks = new ConcurrentHashMap<>();
+
+	/** Decompiler pools are tied to open programs, so this context disposes a
+	 * program's pool whenever it releases the program. */
+	public ProjectContext(Decompilers decompilers) {
+		this.decompilers = decompilers;
+	}
 
 	public Project project() {
 		return AppInfo.getActiveProject();
@@ -77,8 +84,11 @@ public class ProjectContext {
 	/** Drop this context's hold on one program (e.g. before deleting/moving its file). */
 	public synchronized void release(String path) {
 		Program program = openByPath.remove(path);
-		if (program != null && !program.isClosed()) {
-			program.release(consumer);
+		if (program != null) {
+			decompilers.release(program);
+			if (!program.isClosed()) {
+				program.release(consumer);
+			}
 		}
 		writeLocks.remove(path);
 	}
@@ -87,6 +97,7 @@ public class ProjectContext {
 	public synchronized void releaseAll() {
 		for (Program program : openByPath.values()) {
 			try {
+				decompilers.release(program);
 				program.release(consumer);
 			}
 			catch (Exception e) {

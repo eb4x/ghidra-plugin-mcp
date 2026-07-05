@@ -1,11 +1,11 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Args;
-import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.listing.Program;
@@ -22,13 +22,12 @@ public class BatchTool implements ProgramTool {
 
 	private final Map<String, ProgramTool> ops;
 
-	public BatchTool(Decompilers decompilers) {
-		this.ops = Map.of(
-			"rename", new RenameTool(decompilers),
-			"set_comment", new SetCommentTool(),
-			"set_data_type", new SetDataTypeTool(decompilers),
-			"set_function_signature", new SetFunctionSignatureTool(decompilers),
-			"create", new CreateTool());
+	/** Dispatches to the same single-edit tool instances the endpoint registers. */
+	public BatchTool(List<ProgramTool> editTools) {
+		this.ops = new LinkedHashMap<>();
+		for (ProgramTool tool : editTools) {
+			ops.put(tool.name(), tool);
+		}
 	}
 
 	@Override

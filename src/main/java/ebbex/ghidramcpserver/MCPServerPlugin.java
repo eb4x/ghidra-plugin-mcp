@@ -46,8 +46,8 @@ public class MCPServerPlugin extends Plugin implements ApplicationLevelPlugin {
 	private static final String PORT_PROPERTY = "mcp.server.port";
 	private static final String MENU_TITLE = "MCPServer";
 
-	private final ProjectContext projectContext = new ProjectContext();
 	private final Decompilers decompilers = new Decompilers();
+	private final ProjectContext projectContext = new ProjectContext(decompilers);
 	private final List<McpHttpServer.Endpoint> endpoints = Endpoints.build(projectContext,
 		ToolRegistry.appTools(projectContext), ToolRegistry.programTools(decompilers));
 	private final int port = Integer.getInteger(PORT_PROPERTY, DEFAULT_PORT);
