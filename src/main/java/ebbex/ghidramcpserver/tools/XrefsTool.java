@@ -39,11 +39,11 @@ public class XrefsTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Schemas.stringProp("Address, symbol name, or function name"),
+				"location", Schemas.stringProp("Address or symbol name"),
 				"direction", Schemas.enumProp("Which references to show (default 'to')", DIRECTIONS),
 				"offset", Schemas.intProp("Skip this many (default 0)"),
 				"limit", Schemas.intProp("Maximum to return (default " + DEFAULT_LIMIT + ")")),
-			"required", List.of("target"));
+			"required", List.of("location"));
 	}
 
 	@Override
@@ -53,9 +53,9 @@ public class XrefsTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Args.stringArg(args, "target", null);
-		if (target == null) {
-			return Results.error("target is required");
+		String location = Args.stringArg(args, "location", null);
+		if (location == null) {
+			return Results.error("'location' (an address or symbol name) is required");
 		}
 		String direction = Args.stringArg(args, "direction", "to");
 		if (!DIRECTIONS.contains(direction)) {
@@ -64,7 +64,7 @@ public class XrefsTool implements ProgramTool {
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
-		Address address = Locations.findLocation(program, target);
+		Address address = Locations.findLocation(program, location);
 		ReferenceManager refs = program.getReferenceManager();
 
 		List<String> all = new ArrayList<>();
@@ -81,10 +81,11 @@ public class XrefsTool implements ProgramTool {
 		}
 
 		if (all.isEmpty()) {
-			return Results.ok("No " + direction + " references for " + target + " (" + address + ")");
+			return Results.ok("No " + direction + " references for " + location + " (" + address +
+				")");
 		}
 		List<String> window = all.stream().skip(offset).limit(limit).toList();
-		return Results.ok(String.join("\n", window) + "\n" +
+		return Results.ok(String.join("\n", window) + (window.isEmpty() ? "" : "\n") +
 			Results.paginationFooter(window.size(), offset, all.size()));
 	}
 

@@ -37,9 +37,10 @@ public class FidBuildTool implements ApplicationLevelTool {
 	@Override
 	public String description() {
 		return "Build a Function ID database (.fidb) from the named functions of project " +
-			"program(s), for later fid_apply to sibling binaries. Give 'db' (output host path) and " +
-			"optionally 'programs' (project paths; defaults to every program in the project). All " +
-			"sources must share one language. Only user-named functions become useful signatures.";
+			"program(s), for later fid_apply to sibling binaries. Give 'fidb' (output host path) " +
+			"and optionally 'programs' (project paths; defaults to every program in the project). " +
+			"All sources must share one language. Only user-named functions become useful " +
+			"signatures.";
 	}
 
 	@Override
@@ -47,14 +48,14 @@ public class FidBuildTool implements ApplicationLevelTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"db", Schemas.stringProp("Output host path for the .fidb (created if absent)"),
+				"fidb", Schemas.stringProp("Output host path for the .fidb (created if absent)"),
 				"programs", Map.of("type", "array", "description",
 					"Project file paths to ingest (default: all programs)",
 					"items", Map.of("type", "string")),
 				"library", Schemas.stringProp("Library family name label (default 'corpus')"),
 				"version", Schemas.stringProp("Library version label (default '1')"),
 				"variant", Schemas.stringProp("Library variant label (default 'default')")),
-			"required", List.of("db"));
+			"required", List.of("fidb"));
 	}
 
 	@Override
@@ -65,9 +66,9 @@ public class FidBuildTool implements ApplicationLevelTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Project project)
 			throws Exception {
-		String dbPath = Args.stringArg(args, "db", null);
+		String dbPath = Args.stringArg(args, "fidb", null);
 		if (dbPath == null) {
-			return Results.error("db is required");
+			return Results.error("'fidb' (an output host path) is required");
 		}
 
 		List<DomainFile> programs = new ArrayList<>();
@@ -90,7 +91,7 @@ public class FidBuildTool implements ApplicationLevelTool {
 
 		LanguageID languageId = languageOf(programs.get(0));
 
-		String family = Args.stringArg(args, "library", "corpus");
+		String library = Args.stringArg(args, "library", "corpus");
 		String version = Args.stringArg(args, "version", "1");
 		String variant = Args.stringArg(args, "variant", "default");
 
@@ -108,7 +109,7 @@ public class FidBuildTool implements ApplicationLevelTool {
 		String message;
 		try {
 			FidService service = new FidService();
-			FidPopulateResult result = service.createNewLibraryFromPrograms(fidDb, family, version,
+			FidPopulateResult result = service.createNewLibraryFromPrograms(fidDb, library, version,
 				variant, programs, /*functionFilter*/ null, languageId, /*linkLibraries*/ null,
 				/*commonSymbols*/ List.of(), TaskMonitor.DUMMY);
 			fidDb.saveDatabase("Saving", TaskMonitor.DUMMY);

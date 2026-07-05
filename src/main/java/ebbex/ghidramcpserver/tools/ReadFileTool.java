@@ -40,9 +40,9 @@ public class ReadFileTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"offset", Schemas.intProp("Byte offset into the file"),
+				"file_offset", Schemas.intProp("Byte offset into the file"),
 				"length", Schemas.intProp("Number of bytes (max " + MAX_LENGTH + ")")),
-			"required", List.of("offset", "length"));
+			"required", List.of("file_offset", "length"));
 	}
 
 	@Override
@@ -53,9 +53,9 @@ public class ReadFileTool implements ProgramTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program)
 			throws Exception {
-		long offset = Args.intArg(args, "offset", -1);
+		long offset = Args.intArg(args, "file_offset", -1);
 		if (offset < 0) {
-			return Results.error("offset is required (>= 0)");
+			return Results.error("file_offset is required (>= 0)");
 		}
 		int length = Args.intArg(args, "length", 0);
 		if (length <= 0) {
@@ -71,7 +71,8 @@ public class ReadFileTool implements ProgramTool {
 		}
 		long fileLen = file.length();
 		if (offset >= fileLen) {
-			return Results.error("offset " + offset + " is past end of file (" + fileLen + " bytes)");
+			return Results.error("file_offset " + offset + " is past end of file (" + fileLen +
+				" bytes)");
 		}
 
 		int toRead = (int) Math.min(length, fileLen - offset);

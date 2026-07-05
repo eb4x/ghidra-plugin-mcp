@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.List;
 import java.util.Map;
 
 import ebbex.ghidramcpserver.ProgramTool;
@@ -37,8 +38,8 @@ public class InspectTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"target", Schemas.stringProp("Address or symbol name to inspect")),
-			"required", java.util.List.of("target"));
+				"location", Schemas.stringProp("Address or symbol name")),
+			"required", List.of("location"));
 	}
 
 	@Override
@@ -48,11 +49,11 @@ public class InspectTool implements ProgramTool {
 
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
-		String target = Args.stringArg(args, "target", null);
-		if (target == null) {
-			return Results.error("target is required");
+		String location = Args.stringArg(args, "location", null);
+		if (location == null) {
+			return Results.error("'location' (an address or symbol name) is required");
 		}
-		Address address = Locations.findLocation(program, target);
+		Address address = Locations.findLocation(program, location);
 		StringBuilder sb = new StringBuilder();
 		sb.append("Address: ").append(address).append('\n');
 
