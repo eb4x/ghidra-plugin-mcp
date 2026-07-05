@@ -38,7 +38,8 @@ public class SearchMemoryTool implements McpToolDef {
 			"properties", Map.of(
 				"pattern", Results.stringProp("Hex bytes with optional '??' wildcards, or text"),
 				"kind", Results.enumProp("How to interpret 'pattern' (default 'bytes')", KINDS),
-				"limit", Results.intProp("Maximum matches (default " + DEFAULT_LIMIT + ")")),
+				"offset", Results.intProp("Skip this many matches (for paging; default 0)"),
+				"limit", Results.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")")),
 			"required", List.of("pattern"));
 	}
 
@@ -58,6 +59,7 @@ public class SearchMemoryTool implements McpToolDef {
 			return Results.error("kind must be one of " + KINDS);
 		}
 		int limit = Math.max(1, Results.intArg(args, "limit", DEFAULT_LIMIT));
+		int offset = Math.max(0, Results.intArg(args, "offset", 0));
 
 		byte[] values;
 		byte[] masks;
@@ -79,32 +81,62 @@ public class SearchMemoryTool implements McpToolDef {
 		List<String> hits = new ArrayList<>();
 		Address at = program.getMinAddress();
 		Address end = program.getMaxAddress();
-		while (at != null && hits.size() < limit) {
+		int index = 0;
+		boolean more = false;
+		while (at != null) {
 			Address found = program.getMemory().findBytes(at, end, values, masks, true,
 				TaskMonitor.DUMMY);
 			if (found == null) {
 				break;
 			}
-			hits.add(found + describeContainer(program, found));
+			if (index >= offset) {
+				if (hits.size() < limit) {
+					hits.add(found + describeContainer(program, found));
+				}
+				else {
+					more = true;
+					break;
+				}
+			}
+			index++;
 			at = found.next();
 		}
 
 		if (hits.isEmpty()) {
-			return Results.ok("No matches for " + kind + " pattern");
+			return Results.ok("No matches for " + kind + " pattern" +
+				(offset > 0 ? " at offset " + offset : ""));
 		}
-		return Results.ok(String.join("\n", hits) +
-			(hits.size() == limit ? "\n(stopped at limit " + limit + ")" : "\n(" + hits.size() +
-				" matches)"));
+		String footer = more
+				? "\n(" + hits.size() + " matches from offset " + offset +
+					"; more available — raise 'limit' or page with 'offset')"
+				: "\n(" + hits.size() + " matches from offset " + offset + "; end of results)";
+		return Results.ok(String.join("\n", hits) + footer);
 	}
 
-	/** "  in <function>+0x.." when the hit falls inside a function, else "". */
+	/**
+	 * "  in &lt;function&gt;+0x.." when the hit falls inside a function, else "".
+	 * The +offset is only shown when it is sane — in 16-bit segmented programs a hit and
+	 * a function entry can live under different segment bases, which makes the raw address
+	 * subtraction produce a garbage (huge/negative) offset, so we suppress it there.
+	 */
 	private static String describeContainer(Program program, Address address) {
 		Function function = program.getFunctionManager().getFunctionContaining(address);
 		if (function == null) {
 			return "";
 		}
-		long offset = address.subtract(function.getEntryPoint());
-		return "  in " + function.getName() + (offset != 0 ? "+0x" + Long.toHexString(offset) : "");
+		Address entry = function.getEntryPoint();
+		if (address.getAddressSpace().equals(entry.getAddressSpace())) {
+			try {
+				long offset = address.subtract(entry);
+				if (offset > 0 && offset <= function.getBody().getNumAddresses()) {
+					return "  in " + function.getName() + "+0x" + Long.toHexString(offset);
+				}
+			}
+			catch (Exception e) {
+				// fall through to name-only
+			}
+		}
+		return "  in " + function.getName();
 	}
 
 	/** Returns {values, masks}; a wildcard byte has value 0 and mask 0. */
