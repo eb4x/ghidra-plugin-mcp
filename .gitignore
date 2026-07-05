@@ -1,0 +1,13 @@
+.gradle/
+build/
+dist/
+lib/
+bin/
+.settings/
+.classpath
+.project
+os/
+
+# local dev config (contains a machine-specific bearer token / local settings)
+.mcp.json
+.claude/
