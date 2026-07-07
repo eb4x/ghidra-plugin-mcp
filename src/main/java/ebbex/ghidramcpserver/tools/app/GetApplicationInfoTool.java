@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools.app;
 
+import java.io.File;
 import java.util.Map;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
@@ -42,6 +43,10 @@ public class GetApplicationInfoTool implements ApplicationLevelTool {
 			"Location: " + project.getProjectLocator().getLocation() + "\n" +
 			"Folders: " + counts[1] + "\n" +
 			"Files: " + counts[0];
+		File logFile = ReadLogTool.applicationLogFile();
+		if (logFile != null) {
+			message += "\nLog: " + logFile.getAbsolutePath() + "  (read with read_log)";
+		}
 		return Results.ok(message);
 	}
 

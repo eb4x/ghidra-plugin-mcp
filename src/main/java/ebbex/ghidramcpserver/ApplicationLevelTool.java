@@ -21,5 +21,14 @@ public interface ApplicationLevelTool {
 	/** True if the tool does not modify the project. */
 	boolean isReadOnly();
 
+	/**
+	 * True if the tool needs an open project to run. When false, the endpoint invokes the tool
+	 * even with no project open (and passes {@code null} for the project) — e.g. a log reader
+	 * that must work before any project exists.
+	 */
+	default boolean requiresProject() {
+		return true;
+	}
+
 	McpSchema.CallToolResult execute(Map<String, Object> args, Project project) throws Exception;
 }
