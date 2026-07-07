@@ -66,6 +66,9 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("inspect", Map.of("location", "_init"), program);
 			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
+			// clear kind=local_variable: exercise the delete branch (not-found path is deterministic).
+			prog("clear", Map.of("kind", "local_variable", "function", "_init",
+				"variable_name", "__mcp_no_such_local__"), program);
 			prog("rename", Map.of("kind", "function", "function", "_init",
 				"new_name", "mcp_renamed_init"), program);
 
