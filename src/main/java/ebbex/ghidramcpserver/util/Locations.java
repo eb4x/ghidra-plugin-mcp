@@ -1,8 +1,13 @@
 package ebbex.ghidramcpserver.util;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.SegmentedAddress;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolIterator;
 import ghidra.program.model.symbol.SymbolType;
@@ -20,12 +25,22 @@ import ghidra.program.model.symbol.SymbolType;
  */
 public final class Locations {
 
+	/**
+	 * A decompiler-synthesized global name for an unnamed memory location: a short type
+	 * prefix, the literal {@code Ram}, then the location's <em>flat/linear</em> address
+	 * (e.g. {@code bRam00035e3e}, {@code uRam00001234}). These are display names, not real
+	 * symbols, so a name copy-pasted out of a decompile is otherwise unresolvable; group 1
+	 * is the flat hex, which the address factory maps back to a real (segmented) address.
+	 */
+	private static final Pattern RAM_GLOBAL =
+		Pattern.compile("(?i)^[a-z]{0,3}ram([0-9a-f]{4,8})$");
+
 	private Locations() {
 	}
 
 	/** Parse a hex address string (with or without 0x / segment prefix). */
 	public static Address parseAddress(Program program, String addressString) {
-		Address address = program.getAddressFactory().getAddress(addressString);
+		Address address = toAddress(program, addressString);
 		if (address == null) {
 			throw new IllegalArgumentException("Invalid address: " + addressString);
 		}
@@ -70,7 +85,8 @@ public final class Locations {
 		if (symbols.hasNext()) {
 			return symbols.next().getAddress();
 		}
-		Address bareHex = program.getAddressFactory().getAddress(nameOrAddress);
+		// Bare hex, or a decompiler 'Ram' global name copy-pasted from a decompile.
+		Address bareHex = toAddress(program, nameOrAddress);
 		if (bareHex != null) {
 			return bareHex;
 		}
@@ -90,10 +106,48 @@ public final class Locations {
 	}
 
 	private static Function functionContaining(Program program, String addressString) {
-		Address address = program.getAddressFactory().getAddress(addressString);
+		Address address = toAddress(program, addressString);
 		if (address == null) {
 			return null;
 		}
 		return program.getFunctionManager().getFunctionContaining(address);
+	}
+
+	/**
+	 * The address for a string via the address factory, or {@code null}. Falls back to the
+	 * decompiler's {@code <prefix>Ram<flat-hex>} global naming (see {@link #RAM_GLOBAL}) so a
+	 * name copied straight out of a decompile resolves to the same physical byte the factory
+	 * would give for that flat address.
+	 */
+	private static Address toAddress(Program program, String s) {
+		Address address = program.getAddressFactory().getAddress(s);
+		if (address != null) {
+			return address;
+		}
+		Matcher matcher = RAM_GLOBAL.matcher(s);
+		if (matcher.matches()) {
+			Address flat = program.getAddressFactory().getAddress("0x" + matcher.group(1));
+			return flat == null ? null : inContainingSegment(program, flat);
+		}
+		return null;
+	}
+
+	/**
+	 * Re-express a flat-derived segmented address using the base segment of the memory block
+	 * that contains it (DGROUP/DS, e.g. {@code 2b5a}, for data globals) rather than the address
+	 * factory's canonical segment, so it echoes as the {@code seg:off} a caller sees in
+	 * disassembly. Same physical byte either way. Falls back to the input when it is not
+	 * segmented or not inside a block.
+	 */
+	private static Address inContainingSegment(Program program, Address flat) {
+		if (!(flat instanceof SegmentedAddress segmented)) {
+			return flat;
+		}
+		MemoryBlock block = program.getMemory().getBlock(flat);
+		if (block != null && block.getStart() instanceof SegmentedAddress blockStart) {
+			// normalize() returns the address unchanged if the offset does not fit the segment.
+			return segmented.normalize(blockStart.getSegment());
+		}
+		return flat;
 	}
 }

@@ -111,7 +111,9 @@ public class RenameTool implements ProgramTool {
 		Address address = Locations.parseAddress(program, addressArg);
 		Symbol symbol = program.getSymbolTable().getPrimarySymbol(address);
 		if (symbol == null) {
-			return Results.error("No symbol at " + address);
+			return Results.error("No symbol at " + address + " to rename — this address has no " +
+				"symbol yet (e.g. a bare byte in a data/BSS block). Use create kind=label to make " +
+				"a new label at an address.");
 		}
 		return Transactions.modify(program, "Rename symbol", () -> {
 			String old = symbol.getName();
