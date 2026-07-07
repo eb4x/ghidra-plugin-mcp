@@ -38,6 +38,8 @@ public class McpToolSmokeScript extends GhidraScript {
 
 		// ---- application-level tools ----
 		app("get_application_info", Map.of(), project);
+		app("read_log", Map.of("tail", 5), project);
+		app("read_log", Map.of("tail", 20, "filter", "log"), project);
 		app("import", Map.of("file", "/bin/ls", "folder", "/"), project);
 		app("list_files", Map.of(), project);
 

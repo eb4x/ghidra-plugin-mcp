@@ -30,6 +30,7 @@ import ebbex.ghidramcpserver.tools.app.GetApplicationInfoTool;
 import ebbex.ghidramcpserver.tools.app.ImportTool;
 import ebbex.ghidramcpserver.tools.app.ListFilesTool;
 import ebbex.ghidramcpserver.tools.app.ManageFilesTool;
+import ebbex.ghidramcpserver.tools.app.ReadLogTool;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.ProjectContext;
 
@@ -43,6 +44,7 @@ public final class ToolRegistry {
 	public static List<ApplicationLevelTool> appTools(ProjectContext context) {
 		return List.of(
 			new GetApplicationInfoTool(),
+			new ReadLogTool(),
 			new ListFilesTool(),
 			new ManageFilesTool(context),
 			new ImportTool(),
