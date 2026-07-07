@@ -13,7 +13,9 @@ import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Listing;
+import ghidra.program.model.listing.Parameter;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.listing.Variable;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Symbol;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -80,6 +82,12 @@ public class InspectTool implements ProgramTool {
 					.append("\n  entry ").append(function.getEntryPoint()).append(", body ")
 					.append(function.getBody().getNumAddresses()).append(" bytes, ")
 					.append(callers).append(" callers\n");
+			// The persisted variable records, when inspecting the function itself. These are
+			// what a variable rename writes; showing storage/first-use/source makes a
+			// successful rename distinguishable from one the decompiler silently reverted.
+			if (address.equals(function.getEntryPoint())) {
+				appendVariables(sb, function);
+			}
 		}
 
 		Listing listing = program.getListing();
@@ -101,6 +109,30 @@ public class InspectTool implements ProgramTool {
 		sb.append("Xrefs: ").append(toCount).append(" to, ").append(fromCount).append(" from\n");
 
 		return Results.ok(sb.toString());
+	}
+
+	/** List the function's persisted parameters and locals (DB records, not decompiler view). */
+	private static void appendVariables(StringBuilder sb, Function function) {
+		Parameter[] parameters = function.getParameters();
+		Variable[] locals = function.getLocalVariables();
+		if (parameters.length == 0 && locals.length == 0) {
+			return;
+		}
+		sb.append("Variables:\n");
+		for (Parameter parameter : parameters) {
+			appendVariable(sb, "param", parameter);
+		}
+		for (Variable local : locals) {
+			appendVariable(sb, "local", local);
+		}
+	}
+
+	private static void appendVariable(StringBuilder sb, String kind, Variable variable) {
+		sb.append("  ").append(kind).append("  ").append(variable.getName()).append("  ")
+				.append(variable.getDataType().getName()).append("  ")
+				.append(variable.getVariableStorage()).append("  fu=0x")
+				.append(Integer.toHexString(variable.getFirstUseOffset())).append("  ")
+				.append(variable.getSource()).append('\n');
 	}
 
 	private static void appendComment(StringBuilder sb, Listing listing, Address address,

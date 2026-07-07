@@ -62,6 +62,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
 			prog("decompile", Map.of("function", "_init"), program);
+			prog("decompile", Map.of("function", "_init", "dump_symbols", true), program);
 			prog("inspect", Map.of("location", "_init"), program);
 			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
