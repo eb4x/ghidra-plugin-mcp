@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -15,8 +16,11 @@ import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.pcode.DynamicEntry;
 import ghidra.program.model.pcode.HighFunction;
+import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.pcode.PcodeBlockBasic;
+import ghidra.program.model.pcode.SymbolEntry;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Decompile a function to C. */
@@ -66,7 +70,10 @@ public class DecompileTool implements ProgramTool {
 						"inside them); max " + MAX_BATCH,
 					"items", Map.of("type", "string")),
 				"timeout_s", Schemas.intProp("Decompiler timeout in seconds (default " +
-					DEFAULT_TIMEOUT + ")")));
+					DEFAULT_TIMEOUT + ")"),
+				"dump_symbols", Schemas.boolProp("Also append the decompiler's HighSymbol table " +
+					"(each local/param's name, storage, and — for dynamic locals — hash and pc " +
+					"address); for debugging variable mapping/rename persistence (default false)")));
 	}
 
 	@Override
@@ -77,13 +84,15 @@ public class DecompileTool implements ProgramTool {
 	@Override
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
 		int timeout = Args.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
+		boolean dumpSymbols = Args.boolArg(args, "dump_symbols", false);
 
 		Object many = args.get("functions");
 		if (many instanceof List<?> list && !list.isEmpty()) {
 			StringBuilder sb = new StringBuilder();
 			int n = Math.min(list.size(), MAX_BATCH);
 			for (int i = 0; i < n; i++) {
-				sb.append(decompileOne(program, String.valueOf(list.get(i)), timeout)).append("\n");
+				sb.append(decompileOne(program, String.valueOf(list.get(i)), timeout, dumpSymbols))
+						.append("\n");
 			}
 			if (list.size() > MAX_BATCH) {
 				sb.append("(").append(list.size() - MAX_BATCH)
@@ -97,10 +106,10 @@ public class DecompileTool implements ProgramTool {
 			return Results.error("'function' (a name or an address inside it), or a 'functions' " +
 				"list, is required");
 		}
-		return Results.ok(decompileOne(program, functionRef, timeout));
+		return Results.ok(decompileOne(program, functionRef, timeout, dumpSymbols));
 	}
 
-	private String decompileOne(Program program, String ref, int timeout) {
+	private String decompileOne(Program program, String ref, int timeout, boolean dumpSymbols) {
 		Function function;
 		try {
 			function = Locations.findFunction(program, ref);
@@ -112,12 +121,40 @@ public class DecompileTool implements ProgramTool {
 		if (results != null && results.getDecompiledFunction() != null) {
 			String c = results.getDecompiledFunction().getC();
 			if (c != null && !c.isBlank()) {
-				return coverageHeader(program, function, results) + c;
+				String out = coverageHeader(program, function, results) + c;
+				return dumpSymbols ? out + symbolDump(results.getHighFunction()) : out;
 			}
 		}
 		String message = results == null ? "no result" : results.getErrorMessage();
 		return "// Decompilation failed for " + function.getName() + ": " +
 			(message == null || message.isBlank() ? "unknown" : message);
+	}
+
+	/**
+	 * A compact dump of the decompiler's local/parameter {@link HighSymbol}s — the mapping the
+	 * Java side computes and hands the decompiler process. Dynamic locals (no fixed storage)
+	 * show their hash and pc address, which is what a rename-persistence bug turns on.
+	 */
+	private static String symbolDump(HighFunction high) {
+		if (high == null) {
+			return "\n// -- decompiler symbols: none (no high function) --\n";
+		}
+		StringBuilder sb = new StringBuilder("\n// -- decompiler symbols --\n");
+		Iterator<HighSymbol> symbols = high.getLocalSymbolMap().getSymbols();
+		while (symbols.hasNext()) {
+			HighSymbol symbol = symbols.next();
+			sb.append("// ").append(symbol.getName()).append("  ").append(symbol.getStorage())
+					.append("  ").append(symbol.getDataType().getName());
+			if (symbol.getFirstWholeMap() instanceof DynamicEntry dynamic) {
+				sb.append("  hash=0x").append(Long.toHexString(dynamic.getHash()));
+				Address pc = symbol.getPCAddress();
+				if (pc != null && pc != Address.NO_ADDRESS) {
+					sb.append(" pc=").append(pc);
+				}
+			}
+			sb.append('\n');
+		}
+		return sb.toString();
 	}
 
 	/**
