@@ -53,7 +53,7 @@ public final class Endpoints {
 				.tool(mcpTool)
 				.callHandler((exchange, request) -> {
 					Project project = context.project();
-					if (project == null) {
+					if (tool.requiresProject() && project == null) {
 						return Results.error("No project is open in Ghidra");
 					}
 					Map<String, Object> args = arguments(request);
