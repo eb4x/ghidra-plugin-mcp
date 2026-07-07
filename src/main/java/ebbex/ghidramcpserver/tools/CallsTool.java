@@ -79,6 +79,15 @@ public class CallsTool implements ProgramTool {
 		}
 
 		if (window.isEmpty() && offset == 0) {
+			// A bare zero for callers is ambiguous: calls resolved through jump-table/far-call
+			// dispatch or register-indirect targets never become function-level call edges, so
+			// zero callers is not proof the function is uncalled.
+			if (kind.equals("callers")) {
+				return Results.ok(function.getName() + " has no callers.\nNote: Ghidra does not " +
+					"track unresolved computed/indirect calls (jump-table/far-call dispatch, " +
+					"register-indirect). Zero callers is NOT proof it is uncalled — confirm by " +
+					"searching the raw call encoding with search_memory kind=bytes.");
+			}
 			return Results.ok(function.getName() + " has no " + kind);
 		}
 		return Results.ok(function.getName() + " " + kind + ":\n" + String.join("\n", window) +
