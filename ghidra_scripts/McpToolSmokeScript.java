@@ -16,6 +16,7 @@ import ghidra.app.script.GhidraScript;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
+import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -64,8 +65,45 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
 			prog("rename", Map.of("kind", "function", "function", "_init",
 				"new_name", "mcp_renamed_init"), program);
+
+			// ---- set_data_type kind=struct: supplied layout + inferred ----
+			Function structFn = null;
+			String structVar = null;
+			for (Function f : program.getFunctionManager().getFunctions(true)) {
+				if (f.getParameterCount() > 0) {
+					structFn = f;
+					structVar = f.getParameter(0).getName();
+					break;
+				}
+			}
+			if (structFn == null) {
+				println("!! no function with a parameter to exercise kind=struct");
+			}
+			else {
+				prog("set_data_type", Map.of(
+					"kind", "struct",
+					"function", structFn.getName(),
+					"variable_name", structVar,
+					"struct", Map.of(
+						"name", "mcp_smoke_struct",
+						"size", 16,
+						"fields", List.of(
+							Map.of("offset", 0, "name", "first", "type", "uint"),
+							Map.of("offset", 4, "name", "flag_a", "type", "byte", "bits", 3),
+							Map.of("offset", 4, "name", "flag_b", "type", "byte", "bits", 5),
+							Map.of("offset", 8, "name", "second", "type", "ushort")))),
+					program);
+				// Inferred path (omit 'struct'): a clean "could not infer" is expected here
+				// unless structVar is dereferenced at offsets in structFn.
+				prog("set_data_type", Map.of(
+					"kind", "struct",
+					"function", structFn.getName(),
+					"variable_name", structVar), program);
+			}
+
 			// manage_types: not-found path (deterministic; no custom types guaranteed here).
 			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);
+
 			df.save(TaskMonitor.DUMMY);
 			prog("list", Map.of("kind", "functions", "filter", "mcp_renamed_init"), program);
 		}

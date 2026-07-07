@@ -53,6 +53,25 @@ public class Decompilers {
 		}
 	}
 
+	/**
+	 * Lease a live interface from the program's pool for the duration of {@code body},
+	 * then return it to the pool. Unlike {@link #decompile}, the interface stays checked
+	 * out while the callback runs — needed by callers that must keep decompiling with the
+	 * same interface (e.g. {@code FillOutStructureHelper} recursing into CALLs). Blocks if
+	 * all interfaces are busy, same backpressure as {@link #decompile}.
+	 */
+	public <T> T withInterface(Program program,
+			java.util.function.Function<DecompInterface, T> body) {
+		Pool pool = pools.computeIfAbsent(program, p -> new Pool(p));
+		DecompInterface di = pool.checkout();
+		try {
+			return body.apply(di);
+		}
+		finally {
+			pool.checkin(di);
+		}
+	}
+
 	/** Dispose and forget the pool for one program (e.g. when its file is released). */
 	public void release(Program program) {
 		Pool pool = pools.remove(program);
