@@ -12,6 +12,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
 import ghidra.program.model.symbol.ReferenceManager;
@@ -81,6 +82,16 @@ public class XrefsTool implements ProgramTool {
 		}
 
 		if (all.isEmpty()) {
+			// The "who references this?" direction is the one where a bare zero is ambiguous:
+			// Ghidra doesn't materialize references for unresolved computed/indirect accesses,
+			// so zero direct refs is not proof the target is unused.
+			if (direction.equals("to") || direction.equals("both")) {
+				return Results.ok("No direct '" + direction + "' references for " + location +
+					" (" + address + ").\nNote: Ghidra does not track unresolved computed/" +
+					"indirect references (jump tables, far calls, register-relative data). Zero " +
+					"direct refs is NOT proof the target is unused — confirm by searching the raw " +
+					"call/pointer encoding with search_memory kind=bytes.");
+			}
 			return Results.ok("No " + direction + " references for " + location + " (" + address +
 				")");
 		}
@@ -96,6 +107,8 @@ public class XrefsTool implements ProgramTool {
 				? "  in " + containing.getName() + "+" +
 					(address.subtract(containing.getEntryPoint()))
 				: "";
-		return tag + "  " + address + "  [" + ref.getReferenceType() + "]" + context;
+		RefType type = ref.getReferenceType();
+		String nature = type.isComputed() ? " computed" : type.isIndirect() ? " indirect" : "";
+		return tag + "  " + address + "  [" + type + nature + "]" + context;
 	}
 }
