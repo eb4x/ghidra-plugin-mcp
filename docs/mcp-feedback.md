@@ -56,7 +56,7 @@ root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hin
 `inspect` Variables section, `decompile dump_symbols`, and `clear kind=local_variable`._
 
 ## 2026-07-08 — batch — "Unable to lock due to active transaction" yet the edits applied
-- **Task:** Colony_Create annotation pass — two `batch` calls (49 and 13 edits) of
+- **Task:** colony_create annotation pass — two `batch` calls (49 and 13 edits) of
   renames/signatures/labels/comments.
 - **Friction:** Both times `batch` threw
   `java.io.IOException: Unable to lock due to active transaction` — and both times
@@ -73,7 +73,7 @@ root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hin
   what actually landed before retrying; treat rename retries as idempotent no-ops.
 
 ## 2026-07-08 — set_function_signature — wrong calling convention silently kept, args garble
-- **Task:** Give the 281f far trampolines real prototypes so Colony_Create's call
+- **Task:** Give the 281f far trampolines real prototypes so colony_create's call
   sites decompile with true arguments.
 - **Friction:** `set_function_signature` applied 2-param prototypes cleanly but
   kept the functions' (wrong) near convention, so parameters mapped to
@@ -94,7 +94,7 @@ root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hin
   (legacy playbook used `fm.createThunkFunction` from a script; there is no
   script-execution tool by design).
 - **Expected:** e.g. `create kind=thunk` with `address` + `target`.
-- **Workaround:** Renamed the stubs `jmp_Dialog_RunByKey` / `jmp_Dialog_RunFromText`
+- **Workaround:** Renamed the stubs `jmp_dialog_run_by_key` / `jmp_dialog_run_from_text`
   with plate comments carrying the original stub identity.
 
 ## 2026-07-08 — gap — no struct-field rename
@@ -146,3 +146,60 @@ root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hin
   manual thunk tool only wired the call graph (which the analyzer now does) and never
   delivered decompile-as-target, so it was retired. Use the RTLink One-Shot analyzer for stub
   thunking.
+
+## 2026-07-08 — gap — no way to delete a symbol/label
+- **Task:** Naming-convention sweep: `g_players` existed at both 2b5a:540e (real
+  array base, verified via `savegame_read_file` fread dest) and 2b5a:540f (stale
+  off-by-one label). Wanted to delete the stray.
+- **Friction:** No delete op anywhere: `rename` has no "remove" semantics
+  (`new_name: ""` did not delete — the call timed out and left the label), `clear`
+  only does code-units/local-variables, `create` only creates.
+- **Expected:** `clear kind=label` (or `symbol`) with `address`, symmetric with
+  `create kind=label`.
+- **Workaround:** Renamed the strays `g_players_stale_dup` /
+  `g_indian_relations_stale_dup` with EOL comments saying to delete them.
+
+## 2026-07-08 — batch — 264-edit rename batch: response timed out, edits applied; write lock stuck ~5 min
+- **Task:** Convention sweep applying 264 renames in two `batch` calls (132 + 132).
+- **Friction:** First 132-edit batch returned fine (~all renames echoed). Second
+  batch call **timed out client-side but fully applied** (verified via `inspect` on
+  first and last targets). Afterwards every write tool (`rename`, `batch`) timed out
+  for ~5 minutes while `read_log` showed an exponential-backoff "Invoking analysis
+  worker (Wait for Analysis)" loop; reads (`inspect`, `search_memory`) kept working.
+  One retry ~4 min later also died ("Unable to connect", session reset); the next
+  retry succeeded cleanly.
+- **Expected:** batch to bound its post-edit save/analysis wait (or return
+  "applied, save pending") instead of holding the write lock past the MCP client
+  timeout; a way to query "is the program busy/locked".
+- **Workaround:** Verified effects with `inspect` before retrying (rename-by-address
+  retries are idempotent), polled `read_log`, waited out the lock.
+
+## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
+- **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
+  finding which one code references.
+- **Friction:** `inspect` reported "Xrefs: 0 to" for heavily-used globals
+  (`g_players`, `g_savegameHead`, …) — 16-bit DS-relative operands evidently carry
+  no xrefs, so neither `inspect` nor `xrefs` can answer "who uses this global".
+- **Expected:** Some path from a DS global to its readers/writers.
+- **Workaround:** `search_memory` for the address-immediate byte pattern
+  (`68 0e 54` = PUSH 0x540e) — worked, and the hit list's "in <function>+0x…"
+  tagging made it painless. Decompile of the reader confirmed.
+
+## 2026-07-08 — application-level / decompile — no "save program" tool; thunk body reads as un-thunked
+- **Task:** Iterate on the RTLink analyzer: edit → restart Ghidra (no hot-swap) →
+  One Shot on VICEROY.EXE → verify thunk/convention state.
+- **Friction:** (1) There is no "save program" tool. Restarting Ghidra to load an
+  analyzer rebuild silently drops any unsaved DB state, and I couldn't force a save
+  or query "are there unsaved changes"; combined with a second agent on the same
+  shared instance, DB state (names) appeared to flip across restarts. (2)
+  `ghidra-program decompile` on an in-place thunk (made via `setThunkedFunction` on a
+  function that keeps its `CALLF+JMPF` body) renders the thunk's *own* body with a
+  "WARNING: Bad instruction" line — it reads as "not a thunk", causing a wrong
+  conclusion; only a direct `isThunk` check (via a temporary analyzer log) disproved
+  it. `inspect` also doesn't surface thunk-ness / thunked-target.
+- **Expected:** a `save`/`is_dirty` capability (or a documented auto-save contract),
+  and for `inspect` to report `isThunk` + thunked-function so thunk status doesn't
+  have to be inferred from decompiler output.
+- **Workaround:** imported a fresh private copy (`/rtlink-session-test/VICEROY.EXE`)
+  to test in isolation; added temporary `MessageLog` tracing in the analyzer to read
+  `isThunk()` straight from the FunctionDB.
