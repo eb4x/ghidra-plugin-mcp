@@ -17,6 +17,8 @@ import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.FunctionDefinitionDataType;
 import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
@@ -116,7 +118,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 				throw new IllegalStateException(cmd.getStatusMsg());
 			}
 			return "Applied signature to " + function.getName() + ": " +
-				function.getSignature().getPrototypeString();
+				function.getSignature().getPrototypeString() + farReturnWarning(program, function);
 		});
 	}
 
@@ -157,7 +159,43 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			HighFunctionDBUtil.commitParamsToDatabase(high, true, ReturnCommitOption.COMMIT,
 				SourceType.USER_DEFINED);
 			return "Committed inferred prototype for " + function.getName() + ": " +
-				function.getSignature().getPrototypeString();
+				function.getSignature().getPrototypeString() + farReturnWarning(program, function);
 		});
+	}
+
+	/**
+	 * A warning appended when the function's body contains a far return (RETF) but its calling
+	 * convention is a near one. In 16-bit code a near convention puts the first stack parameter
+	 * at {@code Stack[0x2]} instead of {@code Stack[0x4]} (a far return pops an extra segment
+	 * word), so call sites decompile with a garbled leading argument. Empty when there is no
+	 * mismatch (far convention, or no RETF found).
+	 */
+	private static String farReturnWarning(Program program, Function function) {
+		String convention = function.getCallingConventionName();
+		if (convention != null && convention.toLowerCase().contains("far")) {
+			return "";
+		}
+		if (!hasFarReturn(program, function)) {
+			return "";
+		}
+		return "\n⚠ body contains a far return (RETF) but the calling convention is '" + convention +
+			"' (near) — stack parameters may be misplaced (near uses Stack[0x2], far Stack[0x4]); " +
+			"re-apply with calling_convention=__cdecl16far if call sites show a garbled first argument.";
+	}
+
+	private static boolean hasFarReturn(Program program, Function function) {
+		InstructionIterator it =
+			program.getListing().getInstructions(function.getEntryPoint(), true);
+		while (it.hasNext()) {
+			Instruction instruction = it.next();
+			if (program.getFunctionManager()
+					.getFunctionContaining(instruction.getAddress()) != function) {
+				break;
+			}
+			if ("RETF".equalsIgnoreCase(instruction.getMnemonicString())) {
+				return true;
+			}
+		}
+		return false;
 	}
 }

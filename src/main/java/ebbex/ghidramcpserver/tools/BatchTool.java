@@ -6,10 +6,10 @@ import java.util.Map;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.ProjectContext;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.listing.Program;
-import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /**
@@ -115,7 +115,9 @@ public class BatchTool implements ProgramTool {
 					.append(firstLine(result)).append('\n');
 		}
 
-		program.getDomainFile().save(TaskMonitor.DUMMY);
+		// Let edit-triggered auto-analysis settle before saving, else the save can fail with
+		// "active transaction" while the edits are already committed (see ProjectContext).
+		ProjectContext.saveSettled(program);
 		return Results.ok(ok + " ok, " + failed + " failed:\n" + report);
 	}
 

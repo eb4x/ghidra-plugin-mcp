@@ -10,7 +10,9 @@ import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ghidra.program.model.data.Composite;
 import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -24,7 +26,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  */
 public class ManageTypesTool implements ProgramTool {
 
-	private static final List<String> OPS = List.of("rename", "delete");
+	private static final List<String> OPS = List.of("rename", "delete", "rename_field");
 
 	@Override
 	public String name() {
@@ -36,7 +38,9 @@ public class ManageTypesTool implements ProgramTool {
 		return "Manage type definitions in the program's data type manager (types are created " +
 			"with define_types and applied with set_data_type). op=rename renames the type 'name' " +
 			"to 'new_name'. op=delete removes the type 'name' entirely; anything still using it " +
-			"reverts to an undefined type. 'name' matches by simple type name across categories; " +
+			"reverts to an undefined type. op=rename_field renames a field of the struct/union " +
+			"'name' — identify the field by 'field' (its current name, or a byte offset like 0x1a) " +
+			"and give the 'new_name'. 'name' matches by simple type name across categories; " +
 			"if more than one matches, the call reports them and does nothing.";
 	}
 
@@ -47,7 +51,10 @@ public class ManageTypesTool implements ProgramTool {
 			"properties", Map.of(
 				"op", Schemas.enumProp("Which action", OPS),
 				"name", Schemas.stringProp("Current type name (simple name, e.g. \"colony\")"),
-				"new_name", Schemas.stringProp("New type name (for op=rename)")),
+				"new_name", Schemas.stringProp("New name (type name for op=rename; field name for " +
+					"op=rename_field)"),
+				"field", Schemas.stringProp("Field to rename (current name, or byte offset like " +
+					"0x1a) — for op=rename_field")),
 			"required", List.of("op", "name"));
 	}
 
@@ -83,8 +90,60 @@ public class ManageTypesTool implements ProgramTool {
 		return switch (op) {
 			case "rename" -> rename(program, dataType, args);
 			case "delete" -> delete(program, dtm, dataType);
+			case "rename_field" -> renameField(program, dataType, args);
 			default -> Results.error("unhandled op " + op);
 		};
+	}
+
+	private McpSchema.CallToolResult renameField(Program program, DataType dataType,
+			Map<String, Object> args) {
+		if (!(dataType instanceof Composite composite)) {
+			return Results.error("'" + dataType.getName() + "' is not a struct/union; " +
+				"op=rename_field needs a composite type");
+		}
+		String field = Args.stringArg(args, "field", null);
+		String newName = Args.stringArg(args, "new_name", null);
+		if (field == null || field.isBlank() || newName == null || newName.isBlank()) {
+			return Results.error("'field' (current name or byte offset) and 'new_name' are " +
+				"required for op=rename_field");
+		}
+		DataTypeComponent component = findComponent(composite, field);
+		if (component == null) {
+			return Results.error("No field '" + field + "' in " + composite.getName() +
+				" (match by current field name or a byte offset like 0x1a)");
+		}
+		return Transactions.modify(program, "Rename struct field", () -> {
+			String old = component.getFieldName();
+			component.setFieldName(newName);
+			return "Renamed field " +
+				(old != null ? old : "+0x" + Integer.toHexString(component.getOffset())) + " -> " +
+				newName + " in " + composite.getName();
+		});
+	}
+
+	/** Locate a field by its current name, or by a byte offset given as decimal or 0x-hex. */
+	private static DataTypeComponent findComponent(Composite composite, String field) {
+		Integer offset = parseOffset(field);
+		for (DataTypeComponent component : composite.getDefinedComponents()) {
+			if (field.equals(component.getFieldName())) {
+				return component;
+			}
+			if (offset != null && component.getOffset() == offset) {
+				return component;
+			}
+		}
+		return null;
+	}
+
+	private static Integer parseOffset(String s) {
+		try {
+			String t = s.trim();
+			return t.regionMatches(true, 0, "0x", 0, 2) ? Integer.parseInt(t.substring(2), 16)
+				: Integer.parseInt(t);
+		}
+		catch (NumberFormatException e) {
+			return null;
+		}
 	}
 
 	private McpSchema.CallToolResult rename(Program program, DataType dataType,

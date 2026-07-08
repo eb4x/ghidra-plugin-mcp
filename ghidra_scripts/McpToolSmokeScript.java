@@ -105,10 +105,19 @@ public class McpToolSmokeScript extends GhidraScript {
 					"kind", "struct",
 					"function", structFn.getName(),
 					"variable_name", structVar), program);
+				// manage_types op=rename_field on the struct just built (by name, then by offset).
+				prog("manage_types", Map.of("op", "rename_field", "name", "mcp_smoke_struct",
+					"field", "first", "new_name", "first_renamed"), program);
+				prog("manage_types", Map.of("op", "rename_field", "name", "mcp_smoke_struct",
+					"field", "0x8", "new_name", "second_renamed"), program);
 			}
 
 			// manage_types: not-found path (deterministic; no custom types guaranteed here).
 			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);
+			// batch: exercises the settle-then-save path (ProjectContext.saveSettled).
+			prog("batch", Map.of("edits", List.of(
+				Map.of("op", "rename", "kind", "function", "function", "mcp_renamed_init",
+					"new_name", "mcp_batch_renamed"))), program);
 
 			df.save(TaskMonitor.DUMMY);
 			prog("list", Map.of("kind", "functions", "filter", "mcp_renamed_init"), program);
