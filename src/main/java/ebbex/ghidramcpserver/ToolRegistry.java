@@ -18,6 +18,7 @@ import ebbex.ghidramcpserver.tools.ManageTypesTool;
 import ebbex.ghidramcpserver.tools.ReadBytesTool;
 import ebbex.ghidramcpserver.tools.ReadFileTool;
 import ebbex.ghidramcpserver.tools.RenameTool;
+import ebbex.ghidramcpserver.tools.SaveTool;
 import ebbex.ghidramcpserver.tools.SearchMemoryTool;
 import ebbex.ghidramcpserver.tools.SetCommentTool;
 import ebbex.ghidramcpserver.tools.SetDataTypeTool;
@@ -78,6 +79,7 @@ public final class ToolRegistry {
 		tools.add(new SearchMemoryTool());
 		tools.add(new ClearTool());
 		// write
+		tools.add(new SaveTool());
 		tools.addAll(editTools);
 		tools.add(new DefineTypesTool());
 		tools.add(new ManageTypesTool());

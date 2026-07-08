@@ -115,10 +115,11 @@ public class BatchTool implements ProgramTool {
 					.append(firstLine(result)).append('\n');
 		}
 
-		// Let edit-triggered auto-analysis settle before saving, else the save can fail with
-		// "active transaction" while the edits are already committed (see ProjectContext).
-		ProjectContext.saveSettled(program);
-		return Results.ok(ok + " ok, " + failed + " failed:\n" + report);
+		// Save once at the end, bounded so a big batch never holds the write lock for minutes
+		// (see ProjectContext.saveSettled); a deferred save just annotates the report.
+		boolean saved = ProjectContext.saveSettled(program);
+		McpSchema.CallToolResult result = Results.ok(ok + " ok, " + failed + " failed:\n" + report);
+		return saved ? result : Results.appendNote(result, ProjectContext.SAVE_DEFERRED_NOTE);
 	}
 
 	private static String firstLine(McpSchema.CallToolResult result) {

@@ -16,6 +16,19 @@ public final class Results {
 		return McpSchema.CallToolResult.builder().addTextContent(message).isError(true).build();
 	}
 
+	/** Return a copy of {@code result} with {@code note} appended on its own line (keeps isError). */
+	public static McpSchema.CallToolResult appendNote(McpSchema.CallToolResult result, String note) {
+		StringBuilder sb = new StringBuilder();
+		for (McpSchema.Content content : result.content()) {
+			if (content instanceof McpSchema.TextContent text) {
+				sb.append(text.text());
+			}
+		}
+		sb.append('\n').append(note);
+		return McpSchema.CallToolResult.builder().addTextContent(sb.toString())
+				.isError(Boolean.TRUE.equals(result.isError())).build();
+	}
+
 	/** Footer line for paginated listings. */
 	public static String paginationFooter(int shown, int offset, int total) {
 		if (total <= shown && offset == 0) {
