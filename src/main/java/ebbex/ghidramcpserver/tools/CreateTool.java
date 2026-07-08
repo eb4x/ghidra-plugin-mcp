@@ -11,9 +11,11 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.app.cmd.function.CreateFunctionCmd;
+import ghidra.app.cmd.function.CreateThunkFunctionCmd;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.BookmarkManager;
 import ghidra.program.model.listing.BookmarkType;
+import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.util.task.TaskMonitor;
@@ -23,7 +25,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class CreateTool implements ProgramTool {
 
 	private static final List<String> KINDS =
-		List.of("function", "label", "bookmark", "instructions");
+		List.of("function", "label", "bookmark", "instructions", "thunk");
 
 	@Override
 	public String name() {
@@ -35,7 +37,9 @@ public class CreateTool implements ProgramTool {
 		return "Create something at an address. kind=function disassembles/creates a function " +
 			"(optional 'name'); kind=label adds a label ('name' required); kind=bookmark adds a " +
 			"note bookmark (optional 'category', 'comment' is the text); kind=instructions " +
-			"disassembles from the address (like pressing 'D'), e.g. after clear.";
+			"disassembles from the address (like pressing 'D'), e.g. after clear; kind=thunk makes " +
+			"the function at 'address' a thunk of 'target' (name or address of the thunked function) " +
+			"— for wiring un-thunked dispatch stubs to their real target.";
 	}
 
 	@Override
@@ -47,7 +51,9 @@ public class CreateTool implements ProgramTool {
 				"address", Schemas.stringProp("Address to create at"),
 				"name", Schemas.stringProp("Label or function name (for kind=function|label)"),
 				"category", Schemas.stringProp("Bookmark category (for kind=bookmark)"),
-				"comment", Schemas.stringProp("Bookmark text (for kind=bookmark)")),
+				"comment", Schemas.stringProp("Bookmark text (for kind=bookmark)"),
+				"target", Schemas.stringProp(
+					"Function this thunks to: a name or an address inside it (for kind=thunk)")),
 			"required", List.of("kind", "address"));
 	}
 
@@ -75,8 +81,35 @@ public class CreateTool implements ProgramTool {
 			case "bookmark" -> createBookmark(program, address,
 				Args.stringArg(args, "category", ""), Args.stringArg(args, "comment", ""));
 			case "instructions" -> disassemble(program, address);
+			case "thunk" -> createThunk(program, address, Args.stringArg(args, "target", null));
 			default -> Results.error("unhandled kind " + kind);
 		};
+	}
+
+	private McpSchema.CallToolResult createThunk(Program program, Address address, String targetRef) {
+		if (targetRef == null || targetRef.isBlank()) {
+			return Results.error("'target' (the function this thunks to) is required for kind=thunk");
+		}
+		Function target = Locations.findFunction(program, targetRef);
+		return Transactions.modify(program, "Create thunk", () -> {
+			Function existing = program.getFunctionManager().getFunctionAt(address);
+			if (existing != null) {
+				// Directly set the thunk relationship — CreateThunkFunctionCmd tries to infer the
+				// thunk from the entry's instructions, which fails on unresolved-stub bad bytes.
+				existing.setThunkedFunction(target);
+				return "Set " + existing.getName() + " @ " + address + " as a thunk to " +
+					target.getName() + " (" + target.getEntryPoint() + ")";
+			}
+			// No function yet at the address — create one that thunks the target.
+			CreateThunkFunctionCmd cmd =
+				new CreateThunkFunctionCmd(address, null, target.getEntryPoint());
+			if (!cmd.applyTo(program, TaskMonitor.DUMMY)) {
+				throw new IllegalStateException(cmd.getStatusMsg());
+			}
+			Function thunk = program.getFunctionManager().getFunctionAt(address);
+			return "Created thunk @ " + address + " -> " + target.getName() +
+				(thunk != null ? " (" + thunk.getName() + ")" : "");
+		});
 	}
 
 	private McpSchema.CallToolResult createFunction(Program program, Address address,
