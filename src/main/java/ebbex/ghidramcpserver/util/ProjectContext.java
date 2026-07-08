@@ -1,13 +1,16 @@
 package ebbex.ghidramcpserver.util;
 
+import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
+import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
 import ghidra.program.model.listing.Program;
+import ghidra.util.SystemUtilities;
 import ghidra.util.task.TaskMonitor;
 
 /**
@@ -77,8 +80,46 @@ public class ProjectContext {
 	public synchronized void save(String path) throws Exception {
 		Program program = openByPath.get(path);
 		if (program != null && !program.isClosed()) {
-			program.getDomainFile().save(TaskMonitor.DUMMY);
+			saveSettled(program);
 		}
+	}
+
+	/**
+	 * Save a program, first letting any edit-triggered auto-analysis finish. An edit (rename,
+	 * signature/variable change) fires {@code FUNCTION_CHANGED} events that make the
+	 * {@link AutoAnalysisManager} schedule follow-on analysis on a background thread, and that
+	 * analysis holds its own transaction. Saving while it is open fails with "Unable to lock due
+	 * to active transaction" even though the edits already committed — the confusing "error yet
+	 * applied" a batch of edits used to hit. So flush the deferred events, wait for analysis to
+	 * drain (a real wait, not a busy-loop), flush again, then save; a bounded retry absorbs any
+	 * late follow-on analysis. Must run off the Swing EDT (waitForAnalysis requires it).
+	 *
+	 * <p>Only the GUI has this race: there auto-analysis runs on a background thread with its own
+	 * transaction. In headless, analysis runs synchronously (no race) and {@code waitForAnalysis}
+	 * would itself start analysis and write task-times outside any transaction — a
+	 * {@code NoTransactionException} — so it is skipped there.
+	 */
+	public static void saveSettled(Program program) throws Exception {
+		DomainFile file = program.getDomainFile();
+		program.flushEvents();
+		if (!SystemUtilities.isInHeadlessMode()) {
+			AutoAnalysisManager analysis = AutoAnalysisManager.getAnalysisManager(program);
+			IOException lastError = null;
+			for (int attempt = 0; attempt < 3; attempt++) {
+				analysis.waitForAnalysis(null, TaskMonitor.DUMMY);
+				program.flushEvents();
+				try {
+					file.save(TaskMonitor.DUMMY);
+					return;
+				}
+				catch (IOException e) {
+					// A follow-on analysis transaction opened between the wait and the save; retry.
+					lastError = e;
+				}
+			}
+			throw lastError;
+		}
+		file.save(TaskMonitor.DUMMY);
 	}
 
 	/** Drop this context's hold on one program (e.g. before deleting/moving its file). */

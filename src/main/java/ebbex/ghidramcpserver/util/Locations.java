@@ -1,8 +1,10 @@
 package ebbex.ghidramcpserver.util;
 
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import ghidra.app.util.NamespaceUtils;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.SegmentedAddress;
 import ghidra.program.model.listing.Function;
@@ -69,6 +71,14 @@ public final class Locations {
 		if (byBareHex != null) {
 			return byBareHex;
 		}
+		Address namespaced = namespaceSymbol(program, nameOrAddress);
+		if (namespaced != null) {
+			Function containing =
+				program.getFunctionManager().getFunctionContaining(namespaced);
+			if (containing != null) {
+				return containing;
+			}
+		}
 		throw new IllegalArgumentException("No function named or containing address '" +
 			nameOrAddress + "'");
 	}
@@ -89,6 +99,11 @@ public final class Locations {
 		Address bareHex = toAddress(program, nameOrAddress);
 		if (bareHex != null) {
 			return bareHex;
+		}
+		// A namespace-qualified name like 'switchD_1000:2c03::caseD_6' the decompiler prints.
+		Address namespaced = namespaceSymbol(program, nameOrAddress);
+		if (namespaced != null) {
+			return namespaced;
 		}
 		throw new IllegalArgumentException("No symbol or address '" + nameOrAddress + "'");
 	}
@@ -111,6 +126,20 @@ public final class Locations {
 			return null;
 		}
 		return program.getFunctionManager().getFunctionContaining(address);
+	}
+
+	/**
+	 * The address of a namespace-qualified symbol path like {@code switchD_1000:2c03::caseD_6}
+	 * (the form the decompiler prints for switch-case labels), resolved through
+	 * {@link NamespaceUtils#getSymbols}. Returns null when the string has no {@code ::} path or
+	 * no such symbol exists. First match wins.
+	 */
+	private static Address namespaceSymbol(Program program, String name) {
+		if (!name.contains("::")) {
+			return null;
+		}
+		List<Symbol> symbols = NamespaceUtils.getSymbols(name, program);
+		return symbols.isEmpty() ? null : symbols.get(0).getAddress();
 	}
 
 	/**
