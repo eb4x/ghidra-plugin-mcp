@@ -109,12 +109,18 @@ public final class Endpoints {
 					try {
 						McpSchema.CallToolResult result = runTool(tool, args, program);
 						if (!tool.managesSave() && !Boolean.TRUE.equals(result.isError())) {
+							boolean saved;
 							try {
-								context.save(path);
+								saved = context.save(path);
 							}
 							catch (Exception e) {
 								return Results.error("Edit applied but saving '" + path +
 									"' failed: " + e.getMessage());
+							}
+							if (!saved) {
+								// Edits are committed in memory; the save was deferred because the
+								// program is busy. Don't hold the lock waiting — tell the caller.
+								return Results.appendNote(result, ProjectContext.SAVE_DEFERRED_NOTE);
 							}
 						}
 						return result;

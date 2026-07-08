@@ -119,6 +119,14 @@ public class McpToolSmokeScript extends GhidraScript {
 				Map.of("op", "rename", "kind", "function", "function", "mcp_renamed_init",
 					"new_name", "mcp_batch_renamed"))), program);
 
+			// clear kind=label (create a scratch label then delete it) + the save tool.
+			String scratchAddr = program.getMinAddress().toString();
+			prog("create", Map.of("kind", "label", "address", scratchAddr,
+				"name", "mcp_smoke_label"), program);
+			prog("clear", Map.of("kind", "label", "address", scratchAddr,
+				"name", "mcp_smoke_label"), program);
+			prog("save", Map.of(), program);
+
 			df.save(TaskMonitor.DUMMY);
 			prog("list", Map.of("kind", "functions", "filter", "mcp_renamed_init"), program);
 		}
