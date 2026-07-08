@@ -50,6 +50,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _No open entries. Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (8 entries as of 2026-07-07): the
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (12 entries as of 2026-07-08): the
 `decompile` coverage header, `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer
-root-cause, `read_log`, `xRam…` global resolution, and the bare-address rename hint._
+root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hint, the
+`inspect` Variables section, `decompile dump_symbols`, and `clear kind=local_variable`._
