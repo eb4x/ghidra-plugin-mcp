@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -14,16 +15,26 @@ import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.cmd.function.FunctionRenameOption;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.util.parser.FunctionSignatureParser;
+import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeConflictHandler;
+import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.FunctionDefinitionDataType;
+import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.listing.ParameterImpl;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.listing.ReturnParameterImpl;
+import ghidra.program.model.listing.Variable;
+import ghidra.program.model.listing.VariableStorage;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighFunctionDBUtil.ReturnCommitOption;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.util.data.DataTypeParser;
+import ghidra.util.data.DataTypeParser.AllowedDataTypes;
+import ghidra.util.exception.InvalidInputException;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -52,8 +63,12 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			"'FILE *fopen(const char *path, const char *mode)' to apply return type + params in " +
 			"one call (also renames the function if it still has a default FUN_ name, and keeps " +
 			"its calling convention). Omit 'signature' to instead commit the decompiler's inferred " +
-			"prototype (turns undefined(void) into the recovered parameters). Referenced types " +
-			"must already exist — define them first with define_types.";
+			"prototype (turns undefined(void) into the recovered parameters). Or, for mixed-" +
+			"convention / register-argument functions, pass a 'parameters' array with per-param " +
+			"'storage' — a register (AX), a register pair (DX:AX, high:low), or a stack slot " +
+			"(Stack[0x4]) — and/or a 'return' {type, storage} (e.g. a far pointer in DX:AX, which can " +
+			"be set on its own); this pins custom storage exactly (a C signature can't). Referenced " +
+			"types must already exist — define them first with define_types.";
 	}
 
 	@Override
@@ -65,7 +80,28 @@ public class SetFunctionSignatureTool implements ProgramTool {
 				"signature", Schemas.stringProp(
 					"Full C prototype; omit to commit the decompiler-inferred prototype"),
 				"calling_convention", Schemas.stringProp(
-					"Optional calling convention name (e.g. __cdecl16far, __cdecl, __fastcall)")),
+					"Optional calling convention name (e.g. __cdecl16far, __cdecl, __fastcall)"),
+				"parameters", Map.of(
+					"type", "array",
+					"description", "Params with custom storage, in order (alternative to 'signature'); " +
+						"each {name, type, storage}. storage is a register (AX), a pair (DX:AX, " +
+						"high:low), or a stack slot (Stack[0x4]).",
+					"items", Map.of(
+						"type", "object",
+						"properties", Map.of(
+							"name", Schemas.stringProp("Parameter name"),
+							"type", Schemas.stringProp("Parameter data type (must already exist)"),
+							"storage", Schemas.stringProp(
+								"Register (AX), pair (DX:AX), or stack slot (Stack[0x4])")),
+						"required", List.of("name", "type", "storage"))),
+				"return", Map.of(
+					"type", "object",
+					"description", "Custom return storage {type, storage}, e.g. a far pointer returned " +
+						"in DX:AX; may be given with 'parameters' or on its own to fix just the return",
+					"properties", Map.of(
+						"type", Schemas.stringProp("Return data type"),
+						"storage", Schemas.stringProp(
+							"Register (AX), pair (DX:AX), or stack slot")))),
 			"required", List.of("function"));
 	}
 
@@ -85,10 +121,154 @@ public class SetFunctionSignatureTool implements ProgramTool {
 		String signature = Args.stringArg(args, "signature", null);
 		String callingConvention = Args.stringArg(args, "calling_convention", null);
 
-		if (signature == null || signature.isBlank()) {
+		Object parametersObj = args.get("parameters");
+		Object returnObj = args.get("return");
+		boolean hasParameters = parametersObj instanceof List<?> list && !list.isEmpty();
+		boolean hasReturn = returnObj instanceof Map<?, ?> map && !map.isEmpty();
+		boolean hasSignature = signature != null && !signature.isBlank();
+		if ((hasParameters || hasReturn) && hasSignature) {
+			return Results.error(
+				"provide either a C 'signature' or structured 'parameters'/'return', not both");
+		}
+		if (hasParameters || hasReturn) {
+			return applyCustomStorage(program, function, parametersObj, returnObj, callingConvention);
+		}
+		if (!hasSignature) {
 			return commitInferred(program, function, callingConvention);
 		}
 		return applyPrototype(program, function, signature, callingConvention);
+	}
+
+	/** name/type/storage for one parameter or the return (parsed before the write). */
+	private record StorageSpec(String name, String type, String storage) {
+	}
+
+	private McpSchema.CallToolResult applyCustomStorage(Program program, Function function,
+			Object rawParamsObj, Object returnObj, String callingConvention) {
+		List<StorageSpec> specs = new ArrayList<>();
+		if (rawParamsObj instanceof List<?> rawParams) {
+			for (int i = 0; i < rawParams.size(); i++) {
+				if (!(rawParams.get(i) instanceof Map<?, ?> raw)) {
+					return Results.error(
+						"parameters[" + i + "] must be an object {name, type, storage}");
+				}
+				@SuppressWarnings("unchecked")
+				Map<String, Object> p = (Map<String, Object>) raw;
+				String name = Args.stringArg(p, "name", null);
+				String type = Args.stringArg(p, "type", null);
+				String storage = Args.stringArg(p, "storage", null);
+				if (name == null || type == null || storage == null) {
+					return Results.error("parameters[" + i + "] needs 'name', 'type', and 'storage'");
+				}
+				specs.add(new StorageSpec(name, type, storage));
+			}
+		}
+
+		StorageSpec returnSpec = null;
+		if (returnObj instanceof Map<?, ?> raw) {
+			@SuppressWarnings("unchecked")
+			Map<String, Object> r = (Map<String, Object>) raw;
+			String type = Args.stringArg(r, "type", null);
+			String storage = Args.stringArg(r, "storage", null);
+			if (type == null || storage == null) {
+				return Results.error("'return' needs 'type' and 'storage'");
+			}
+			returnSpec = new StorageSpec("<return>", type, storage);
+		}
+		else if (returnObj != null) {
+			return Results.error("'return' must be an object {type, storage}");
+		}
+
+		StorageSpec finalReturnSpec = returnSpec;
+		return Transactions.modify(program, "Set custom storage", () -> {
+			List<Variable> params = new ArrayList<>();
+			List<String> echo = new ArrayList<>();
+			if (specs.isEmpty()) {
+				// return-only: keep the current parameters (frozen to their current storage).
+				for (Variable current : function.getParameters()) {
+					params.add(current);
+					echo.add(current.getName() + "@" + current.getVariableStorage() + ":" +
+						current.getDataType().getName());
+				}
+			}
+			for (StorageSpec spec : specs) {
+				DataType type = parseType(program, spec.type());
+				VariableStorage storage = parseStorage(program, spec.storage(), type);
+				params.add(new ParameterImpl(spec.name(), type, storage, program));
+				echo.add(spec.name() + "@" + storage + ":" + type.getName());
+			}
+			Variable returnVar;
+			String retEcho;
+			if (finalReturnSpec != null) {
+				DataType retType = parseType(program, finalReturnSpec.type());
+				VariableStorage retStorage = parseStorage(program, finalReturnSpec.storage(), retType);
+				returnVar = new ReturnParameterImpl(retType, retStorage, program);
+				retEcho = " -> " + retStorage + ":" + retType.getName();
+			}
+			else {
+				returnVar = function.getReturn();
+				retEcho = "";
+			}
+			function.updateFunction(callingConvention, returnVar, params,
+				Function.FunctionUpdateType.CUSTOM_STORAGE, true, SourceType.USER_DEFINED);
+			return "Set custom storage on " + function.getName() + ": " +
+				String.join(", ", echo) + retEcho;
+		});
+	}
+
+	/**
+	 * Resolve a storage spec: a stack slot ({@code Stack[0x4]} / {@code stack:0x4}), a compound
+	 * register pair ({@code DX:AX}, most-significant register first), or a single register
+	 * ({@code AX}). The {@code type} supplies the size for a stack slot.
+	 */
+	private static VariableStorage parseStorage(Program program, String spec, DataType type)
+			throws InvalidInputException {
+		String s = spec.trim();
+		String lower = s.toLowerCase();
+		if (lower.startsWith("stack[")) {
+			int close = s.indexOf(']');
+			int open = s.indexOf('[');
+			return new VariableStorage(program,
+				parseOffset(close > open ? s.substring(open + 1, close) : ""), type.getLength());
+		}
+		if (lower.startsWith("stack:")) {
+			return new VariableStorage(program, parseOffset(s.substring(6)), type.getLength());
+		}
+		if (s.contains(":")) {
+			String[] parts = s.split(":");
+			Register[] registers = new Register[parts.length];
+			for (int i = 0; i < parts.length; i++) {
+				registers[i] = requireRegister(program, parts[i].trim());
+			}
+			return new VariableStorage(program, registers);
+		}
+		return new VariableStorage(program, requireRegister(program, s));
+	}
+
+	private static Register requireRegister(Program program, String name)
+			throws InvalidInputException {
+		Register register = program.getRegister(name);
+		if (register == null) {
+			throw new InvalidInputException("unknown register/storage '" + name +
+				"' — expected a register (AX), a pair (DX:AX), or a stack slot (Stack[0x4])");
+		}
+		return register;
+	}
+
+	private static int parseOffset(String text) throws InvalidInputException {
+		String s = text.trim();
+		try {
+			return s.toLowerCase().startsWith("0x") ? Integer.parseInt(s.substring(2), 16)
+					: Integer.parseInt(s);
+		}
+		catch (NumberFormatException e) {
+			throw new InvalidInputException("bad stack offset '" + text + "'");
+		}
+	}
+
+	private static DataType parseType(Program program, String typeString) throws Exception {
+		DataTypeManager dtm = program.getDataTypeManager();
+		return new DataTypeParser(dtm, dtm, null, AllowedDataTypes.ALL).parse(typeString);
 	}
 
 	private McpSchema.CallToolResult applyPrototype(Program program, Function function,
