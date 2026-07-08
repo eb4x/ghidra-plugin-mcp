@@ -50,7 +50,9 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (23 entries): the `decompile` coverage header,
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (24 entries): the `set_function_signature`
+custom per-param storage (register / register-pair / stack) + custom `return` storage,
+the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
 resolution, the bare-address rename hint, `inspect` Variables + thunk-status, `decompile dump_symbols`,
 `clear kind=local_variable|label|function`, `manage_types op=rename_field`, `create kind=function
@@ -67,22 +69,3 @@ deferring save + `save` tool, and the create-kind=thunk experiment (removed)._
 - **Workaround:** `search_memory` for the address-immediate byte pattern
   (`68 0e 54` = PUSH 0x540e) — worked, and the hit list's "in <function>+0x…"
   tagging made it painless. Decompile of the reader confirmed.
-
-## 2026-07-08 — gap — no custom (register) parameter storage; register-passed params un-nameable
-- **Task:** pretty up `surface_fill_rect` (`1b9e:000a`), a 16-bit graphics primitive with a
-  **mixed convention** — x in AX, y in DX, width in BX (registers), color/height/descriptor on
-  the stack. Wanted to name all inputs, including the register-passed x/y/width.
-- **Friction:** only the stack params surfaced as named variables. `width` (BX) and the segment
-  (DX) could be reached via `rename kind=local_variable` on the decompiler's `in_BX`/`in_DX`
-  aliases, but the **x coordinate (AX) never appears as a variable at all** — it is stored to a
-  stack slot and consumed by-address into `surface_clip_rect`, so there is nothing to rename.
-  `set_function_signature` can't help: a C prototype forces all params to stack storage, which is
-  wrong here and would corrupt the (correct) decompile. There is no way to declare custom storage
-  (`x @ AX, y @ DX, width @ BX`) over MCP.
-- **Expected:** either a `set_function_signature` option to pin per-param storage (register or
-  stack), or a `rename`/param tool that can create a named param bound to an input register.
-- **Workaround:** renamed the reachable `in_BX`/`in_DX` aliases and documented the full register
-  contract (AX=x, DX=y, BX=width) in the function's plate comment instead. Related: `surface_pixel_addr`
-  (`1a4e:0008`) returns a **far pointer in DX:AX** (segment in DX = `desc[+6]`), but its recovered
-  return type is plain `int`, so DX is invisible in C and the caller's `normalize_far_ptr(off, seg)`
-  reads a phantom `in_DX`; a DX:AX / far-pointer return type would model it, but I only annotated it.

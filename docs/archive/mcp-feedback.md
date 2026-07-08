@@ -480,3 +480,29 @@ FUN_112b_0790` stayed intact. This was the last unreconciled address vs the clea
 mid-computation boundary, confirmed by disassembly at the join. No `batch` save-lock dodge or human
 GUI action needed.
 
+
+## 2026-07-08 — gap — no custom (register) parameter storage; register-passed params un-nameable
+- **Task:** pretty up `surface_fill_rect` (`1b9e:000a`), a 16-bit graphics primitive with a
+  **mixed convention** — x in AX, y in DX, width in BX (registers), color/height/descriptor on
+  the stack. Wanted to name all inputs, including the register-passed x/y/width.
+- **Friction:** only the stack params surfaced as named variables. `width` (BX) and the segment
+  (DX) could be reached via `rename kind=local_variable` on the decompiler's `in_BX`/`in_DX`
+  aliases, but the **x coordinate (AX) never appears as a variable at all** — it is stored to a
+  stack slot and consumed by-address into `surface_clip_rect`, so there is nothing to rename.
+  `set_function_signature` couldn't help: a plain C prototype forces all params to stack storage.
+  There was no way to declare custom storage (`x @ AX, y @ DX, width @ BX`) over MCP. Related:
+  `surface_pixel_addr` (`1a4e:0008`) returns a **far pointer in DX:AX** (segment in DX = `desc[+6]`),
+  but its recovered return type was plain `int`, so DX was invisible in C and the caller read a
+  phantom `in_DX`.
+- **Resolution:** `set_function_signature` now takes a `parameters` array with per-param `storage`
+  — a register (`AX`), a register pair (`DX:AX`), or a stack slot (`Stack[0x4]`) — plus an optional
+  `return` `{type, storage}`. Verified live:
+  - `surface_pixel_addr` pinned to `(x@AX, y@DX, desc@BX) -> ulong @ DX:AX`; it now decompiles as
+    the one-liner `return CONCAT22(desc->base_seg, desc->pitch*y + desc->base_off + x);` — the DX
+    segment half is fully modeled. Added a `surface_desc` struct (`define_types`) for the `desc`
+    param and applied it to `g_screenBufDesc1`.
+  - `surface_fill_rect` pinned to `(x@AX, y@DX, width@BX)` + the six stack params. The phantom
+    `dst_seg`/`in_DX` disappeared, and the decompiler now recognizes the four stack words as the
+    descriptor: `surface_pixel_addr(x, y, (surface_desc *)&dst_height)`.
+  - Gotcha: a pre-existing local named `width` (an earlier `in_BX` rename) blocked the param name;
+    `clear kind=local_variable` on it, then the signature set, resolved it.
