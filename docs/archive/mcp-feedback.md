@@ -194,3 +194,72 @@ resolution notes cite the commits. Newest last.
 - **Bare-address rename error (commit `b3a774d`):** `rename kind=label|data` on an address
   with no symbol now says to use `create kind=label` to make a new label, instead of a bare
   "No symbol at X".
+
+## 2026-07-07 — no way to inspect a function's local-variable records — DB-vs-decompiler divergence invisible
+- **Task:** Debugging why a decompiler local rename silently reverts
+  (`decompiler_quirk.md`): needed to see what `rename kind=local_variable` actually
+  wrote to the program DB for `Colony_Create` — the variable's storage (register /
+  stack / HASH), first-use offset, and source type.
+- **Friction:** `rename` reported success and `decompile` showed the name reverted,
+  but nothing could show the persisted `Function.getLocalVariables()` records.
+  `inspect location=Colony_Create` shows signature/comments only; `list
+  kind=symbols filter=col` returns no function-local symbols at all (labels and
+  functions only), so a successful-looking rename and a failed one are
+  indistinguishable.
+- **Expected:** either `inspect` on a function listing its DB variables (name,
+  storage, first-use address, source), or a `list kind=locals
+  function=<f>` variant.
+- **Workaround:** rebuilt the whole commit/restore pipeline outside the plugin
+  (C++ `decomp_dbg` console + reading `HighFunctionDBUtil`/`LocalSymbolMap`
+  sources) to infer what the DB must contain.
+
+## 2026-07-07 — decompiler-internals introspection gap — no equivalent of DecompInterface debug dump
+- **Task:** Same bug: needed to see what the Java side *sends* the decompiler
+  process on a decompile request (the `<mapsym>`/`<hash>` symbol encodings) to
+  compare against what the C++ side computes.
+- **Friction:** No tool exposes the decompiler XML exchange or per-variable
+  `HighSymbol`/`DynamicEntry` info (hash value, pc address, storage) for a
+  decompiled function.
+- **Expected:** a debug flag on `decompile` (dump symbol mappings, or the
+  DecompInterface debug XML) — even truncated — would have located the
+  Java/C++ hash mismatch in one call.
+- **Workaround:** hand-built a synthetic ELF, imported it, and A/B-tested rename
+  persistence on x86-64 vs x86-16 to triangulate; root-caused by reading both
+  hash implementations side by side.
+
+## 2026-07-07 — RESOLVED (plugin) — function variables now visible: inspect DB records + decompile HighSymbol dump (commit `82c81be`)
+- **DB variable records (entry 1):** `inspect` on a function entry now appends a
+  `Variables:` section listing the persisted parameters and locals — name, data type,
+  storage (`Stack[..]`/register/`HASH:<hash>`), first-use offset (`fu=`), and source type.
+  A `kind=local_variable` rename writes exactly these, so a successful rename is now
+  distinguishable from one the decompiler silently reverted. Verified live:
+  `inspect location=Colony_Create` lists the four stack params, `AX`/`AL` register locals,
+  and two `HASH:..` dynamic locals with their offsets.
+- **Decompiler-internals dump (entry 2):** `decompile` gained an opt-in `dump_symbols=true`
+  flag that appends the decompiler's HighSymbol table — each local/param's name, storage,
+  and data type, plus **hash + pc address for dynamic (hashed) locals** — enough to spot a
+  Java/C++ hash mismatch in one call. Off by default. Verified via the headless smoke run.
+
+## 2026-07-08 — no way to delete a function local variable — stale HASH locals are permanent
+- **Task:** Cleaning up after the rename-persistence bug fix (`decompiler_quirk.md`):
+  the pre-fix failed renames left dead dynamic locals in the DB whose stored hashes
+  (computed with the old broken Java convention) can never re-attach — `col_stale` +
+  `puVar2` in `Colony_Create`, `col_stale` in `Colony_ProcessTurn`. They occupy their
+  names in the function namespace (a fresh `rename ... new_name=col` fails with
+  "A Local Var symbol with name col already exists") but never appear in decompiled
+  output, so they can't be targeted for anything except another rename.
+- **Friction:** No tool deletes a local variable. `rename kind=local_variable` was the
+  only mutation available, so the best I could do was rename the corpses aside
+  (`col` → `col_stale`).
+- **Expected:** a delete op for function variables, e.g. `clear` gaining
+  `kind=local_variable` (function + variable_name) or a `manage_variables` tool —
+  equivalent to Ghidra's "Delete Variable" action / `Function.removeVariable()`.
+- **Workaround:** renamed stale variables to `*_stale` and left them in the DB.
+- **RESOLVED (plugin, commit `0d52d91`):** `clear` gained a `kind` discriminator —
+  `kind=code` (default) is the existing address-range clear; `kind=local_variable`
+  (`function` + `variable_name`) deletes the local via `Function.removeVariable` (Ghidra's
+  Delete Variable). Mirrors the `kind=local_variable` that `rename`/`set_data_type` already
+  carry. A name that resolves to a parameter is rejected with a pointer to
+  `set_function_signature`. Verified live: deleting `puVar2` from `Colony_Create` removes it
+  from the `inspect` Variables list. (The remaining named corpses — `col_stale` in
+  `Colony_Create` and `Colony_ProcessTurn` — can now be cleared the same way.)
