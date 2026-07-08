@@ -53,6 +53,7 @@ public class GetProgramInfoTool implements ProgramTool {
 			AutoAnalysisManager.getAnalysisManager(program).isAnalyzing();
 		sb.append("Analyzed: ").append(analyzed)
 				.append(analyzing ? " (analysis in progress)" : "").append('\n');
+		sb.append("Unsaved changes: ").append(program.isChanged() ? "yes" : "no").append('\n');
 		sb.append("Functions: ").append(program.getFunctionManager().getFunctionCount())
 				.append('\n');
 		sb.append("Symbols: ").append(program.getSymbolTable().getNumSymbols()).append('\n');

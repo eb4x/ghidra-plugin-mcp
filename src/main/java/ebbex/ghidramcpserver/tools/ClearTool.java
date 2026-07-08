@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -9,11 +10,14 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ghidra.app.cmd.function.DeleteFunctionCmd;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Parameter;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
+import ghidra.program.model.symbol.Symbol;
+import ghidra.program.model.symbol.SymbolType;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /**
@@ -25,7 +29,8 @@ import io.modelcontextprotocol.spec.McpSchema;
  */
 public class ClearTool implements ProgramTool {
 
-	private static final List<String> KINDS = List.of("code", "local_variable");
+	private static final List<String> KINDS =
+		List.of("code", "local_variable", "label", "function");
 
 	@Override
 	public String name() {
@@ -34,11 +39,14 @@ public class ClearTool implements ProgramTool {
 
 	@Override
 	public String description() {
-		return "Clear something out of the program. kind=code (default) clears code/data back to " +
-			"undefined bytes over a range (like pressing 'C' in Ghidra): give 'address' and either " +
+		return "Clear/delete something out of the program. kind=code (default) clears code/data back " +
+			"to undefined bytes over a range (like pressing 'C' in Ghidra): give 'address' and either " +
 			"'length' (bytes) or 'end_address', then follow with create kind=instructions to " +
 			"re-disassemble. kind=local_variable deletes the local variable 'variable_name' from " +
-			"'function' (Ghidra's Delete Variable) — for removing stale dynamic locals.";
+			"'function' (Ghidra's Delete Variable). kind=label deletes the user label at 'address' " +
+			"(pass 'name' to pick one when several share the address). kind=function deletes the " +
+			"function at 'function' but keeps its code and labels (Ghidra's Delete Function); to " +
+			"recompute a stale body, delete then re-create with create kind=function.";
 	}
 
 	@Override
@@ -51,8 +59,10 @@ public class ClearTool implements ProgramTool {
 				"length", Schemas.intProp("Number of bytes to clear (or give end_address)"),
 				"end_address", Schemas.stringProp("Inclusive end address (alternative to length)"),
 				"function", Schemas.stringProp(
-					"Function name or an address inside it (for kind=local_variable)"),
-				"variable_name", Schemas.stringProp("Local variable to delete (for kind=local_variable)")));
+					"Function name or an address inside it (for kind=local_variable|function)"),
+				"variable_name", Schemas.stringProp("Local variable to delete (for kind=local_variable)"),
+				"name", Schemas.stringProp(
+					"Which label to delete when several share the address (for kind=label)")));
 	}
 
 	@Override
@@ -66,10 +76,84 @@ public class ClearTool implements ProgramTool {
 		if (!KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
 		}
-		if (kind.equals("local_variable")) {
-			return clearLocalVariable(program, args);
+		return switch (kind) {
+			case "local_variable" -> clearLocalVariable(program, args);
+			case "label" -> clearLabel(program, args);
+			case "function" -> clearFunction(program, args);
+			default -> clearCode(program, args);
+		};
+	}
+
+	private McpSchema.CallToolResult clearLabel(Program program, Map<String, Object> args) {
+		String addressArg = Args.stringArg(args, "address", null);
+		if (addressArg == null) {
+			return Results.error("'address' is required for kind=label");
 		}
-		return clearCode(program, args);
+		Address address = Locations.parseAddress(program, addressArg);
+		String name = Args.stringArg(args, "name", null);
+
+		Symbol[] symbols = program.getSymbolTable().getSymbols(address);
+		List<Symbol> labels = new ArrayList<>();
+		for (Symbol symbol : symbols) {
+			if (symbol.getSymbolType() == SymbolType.LABEL && !symbol.isDynamic()) {
+				labels.add(symbol);
+			}
+		}
+
+		Symbol target;
+		if (name != null) {
+			target = labels.stream().filter(s -> s.getName().equals(name)).findFirst().orElse(null);
+			if (target == null) {
+				// A function symbol by that name would be silently removed by Symbol.delete() — guard.
+				for (Symbol symbol : symbols) {
+					if (symbol.getName().equals(name)
+							&& symbol.getSymbolType() == SymbolType.FUNCTION) {
+						return Results.error("'" + name + "' at " + address + " is a function symbol " +
+							"— use kind=function to delete the function");
+					}
+				}
+				return Results.error("No label named '" + name + "' at " + address);
+			}
+		}
+		else if (labels.isEmpty()) {
+			return Results.error("No user label at " + address);
+		}
+		else if (labels.size() > 1) {
+			return Results.error("Multiple labels at " + address + " (" +
+				labels.stream().map(Symbol::getName).reduce((a, b) -> a + ", " + b).orElse("") +
+				") — pass 'name' to pick one");
+		}
+		else {
+			target = labels.get(0);
+		}
+
+		Symbol toDelete = target;
+		return Transactions.modify(program, "Delete label", () -> {
+			String deleted = toDelete.getName();
+			if (!toDelete.delete()) {
+				throw new IllegalStateException("could not delete label '" + deleted + "'");
+			}
+			return "Deleted label '" + deleted + "' @ " + address;
+		});
+	}
+
+	private McpSchema.CallToolResult clearFunction(Program program, Map<String, Object> args) {
+		String functionRef = Args.stringArg(args, "function", null);
+		if (functionRef == null) {
+			return Results.error("'function' (a name or an address inside it) is required for " +
+				"kind=function");
+		}
+		Function function = Locations.findFunction(program, functionRef);
+		Address entry = function.getEntryPoint();
+		String name = function.getName();
+		return Transactions.modify(program, "Delete function", () -> {
+			// DeleteFunctionCmd promotes local user labels to global and removes only the Function
+			// object — instructions and labels are kept.
+			if (!new DeleteFunctionCmd(entry).applyTo(program)) {
+				throw new IllegalStateException("could not delete function at " + entry);
+			}
+			return "Deleted function " + name + " @ " + entry + " (code and labels kept)";
+		});
 	}
 
 	private McpSchema.CallToolResult clearCode(Program program, Map<String, Object> args) {

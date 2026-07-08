@@ -5,7 +5,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
-import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
@@ -76,50 +75,71 @@ public class ProjectContext {
 		return program;
 	}
 
-	/** Persist edits made to the program at {@code path} back to the project. */
-	public synchronized void save(String path) throws Exception {
+	/** Short default bound for the auto-save the endpoint runs after each edit. */
+	private static final long DEFAULT_SAVE_TIMEOUT_MS = 3000;
+
+	/** Suffix added to a result whose edits applied but whose save was deferred (program busy). */
+	public static final String SAVE_DEFERRED_NOTE =
+		"(save deferred — program busy; run save when idle)";
+
+	/**
+	 * Persist edits made to the program at {@code path}. Returns true if saved, false if the save
+	 * was deferred because the program was busy (see {@link #saveSettled}); a missing/closed
+	 * program counts as nothing-to-save (true).
+	 */
+	public synchronized boolean save(String path) throws Exception {
 		Program program = openByPath.get(path);
-		if (program != null && !program.isClosed()) {
-			saveSettled(program);
+		if (program == null || program.isClosed()) {
+			return true;
 		}
+		return saveSettled(program, DEFAULT_SAVE_TIMEOUT_MS);
+	}
+
+	/** Save with the short default bound. */
+	public static boolean saveSettled(Program program) throws Exception {
+		return saveSettled(program, DEFAULT_SAVE_TIMEOUT_MS);
 	}
 
 	/**
-	 * Save a program, first letting any edit-triggered auto-analysis finish. An edit (rename,
-	 * signature/variable change) fires {@code FUNCTION_CHANGED} events that make the
-	 * {@link AutoAnalysisManager} schedule follow-on analysis on a background thread, and that
-	 * analysis holds its own transaction. Saving while it is open fails with "Unable to lock due
-	 * to active transaction" even though the edits already committed — the confusing "error yet
-	 * applied" a batch of edits used to hit. So flush the deferred events, wait for analysis to
-	 * drain (a real wait, not a busy-loop), flush again, then save; a bounded retry absorbs any
-	 * late follow-on analysis. Must run off the Swing EDT (waitForAnalysis requires it).
+	 * Save a program without hanging when it is busy. An edit (rename, signature/variable change)
+	 * fires {@code FUNCTION_CHANGED} events that make Ghidra's auto-analysis schedule follow-on
+	 * analysis on a background thread holding its own transaction; a save while that transaction is
+	 * open fails the lock with "Unable to lock due to active transaction" even though the edits
+	 * already committed. Rather than block on <em>all</em> analysis (which can hold the endpoint's
+	 * write lock for minutes on a big batch and time the client out), poll the non-throwing
+	 * {@link Program#canLock()} probe with a short backoff and save the instant the lock is free.
+	 * If the program stays busy past {@code timeoutMillis}, give up and report <em>deferred</em> —
+	 * the edits persist in memory and a later save (the {@code save} tool, or the next idle edit)
+	 * writes them. Retrying is safe: the lock check fails before any DB mutation, leaving no
+	 * partial state. Must run off the Swing EDT.
 	 *
-	 * <p>Only the GUI has this race: there auto-analysis runs on a background thread with its own
-	 * transaction. In headless, analysis runs synchronously (no race) and {@code waitForAnalysis}
-	 * would itself start analysis and write task-times outside any transaction — a
-	 * {@code NoTransactionException} — so it is skipped there.
+	 * @return true if saved, false if deferred (still busy at the deadline)
 	 */
-	public static void saveSettled(Program program) throws Exception {
+	public static boolean saveSettled(Program program, long timeoutMillis) throws Exception {
 		DomainFile file = program.getDomainFile();
 		program.flushEvents();
-		if (!SystemUtilities.isInHeadlessMode()) {
-			AutoAnalysisManager analysis = AutoAnalysisManager.getAnalysisManager(program);
-			IOException lastError = null;
-			for (int attempt = 0; attempt < 3; attempt++) {
-				analysis.waitForAnalysis(null, TaskMonitor.DUMMY);
-				program.flushEvents();
+		if (SystemUtilities.isInHeadlessMode()) {
+			// Headless analysis runs synchronously on this thread — no background transaction races.
+			file.save(TaskMonitor.DUMMY);
+			return true;
+		}
+		long deadline = System.currentTimeMillis() + timeoutMillis;
+		while (true) {
+			program.flushEvents();
+			if (program.canLock()) {
 				try {
 					file.save(TaskMonitor.DUMMY);
-					return;
+					return true;
 				}
-				catch (IOException e) {
-					// A follow-on analysis transaction opened between the wait and the save; retry.
-					lastError = e;
+				catch (IOException raced) {
+					// A transaction opened between the probe and the save — fall through and retry.
 				}
 			}
-			throw lastError;
+			if (System.currentTimeMillis() >= deadline) {
+				return false;
+			}
+			Thread.sleep(100);
 		}
-		file.save(TaskMonitor.DUMMY);
 	}
 
 	/** Drop this context's hold on one program (e.g. before deleting/moving its file). */
