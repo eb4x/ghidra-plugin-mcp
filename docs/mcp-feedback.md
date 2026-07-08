@@ -203,3 +203,66 @@ root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hin
 - **Workaround:** imported a fresh private copy (`/rtlink-session-test/VICEROY.EXE`)
   to test in isolation; added temporary `MessageLog` tracing in the analyzer to read
   `isThunk()` straight from the FunctionDB.
+
+## 2026-07-08 — clear/create — no delete-function, no body override, save blocked by other txn
+- **Task:** Reconcile main `/VICEROY.EXE` to a clean fresh-import baseline: turn one
+  old-style `uint` (`112b:0790`) back into its function and merge it with a spurious
+  user function `draw_indian_village_marker` mis-anchored mid-instruction at `112b:0a04`
+  (clean has one 1234-byte function there; main had data + a mid-body function).
+- **Friction:** Three gaps, all around function-body editing:
+  1. **No delete-function op.** To merge, the spurious `0a04` function must be removed
+     (keep its code). `clear kind=code` over the range does NOT remove the function —
+     it persists / is auto-restored (the entry is a live call target), so the split
+     never goes away. Nothing exposes Ghidra's "Delete Function". I had to ask the
+     human to delete it in the GUI.
+  2. **No way to force a function-body recompute or set an explicit body range.** After
+     the split boundary was gone, `FUN_112b_0790`'s body stayed stale at 642 bytes and
+     would not absorb the freed middle block: `create kind=function` on an existing
+     function is a no-op for the body, `clear` won't drop it (call-ref auto-restores at
+     642 B), and neither `analyze "Decompiler Switch Analysis"` nor re-analysis
+     recomputes an existing body. Ghidra's GUI "Create Function" over a *selection*
+     forces a body; `create kind=function` takes only an `address` (no `end`/body-range,
+     no `recompute`/`reflow` flag), so there is no MCP equivalent.
+  3. **Save silently blocked by a concurrent transaction.** A `create` returned
+     `Edit applied but saving '/VICEROY.EXE' failed: Unable to lock due to active
+     transaction` — the edit applied in memory but did not persist (a second agent /
+     background analysis held the write lock). No way to detect/wait for the lock; a
+     bare `create` doesn't retry.
+- **Expected:** (a) a delete-function op (e.g. `clear kind=function`, or a `delete`
+  tool) that removes the function but keeps code/label; (b) either a body override on
+  `create kind=function` (`end_address`/`body` range) or a `reanalyze_function` /
+  `recreate` that forces a fresh body computation like GUI Create-Function-over-selection;
+  (c) save-lock handling — auto-retry, or a "program busy/locked" signal so the caller
+  knows the edit did not persist. `batch` (which saves once and continued past the lock)
+  was the only way to get the change to stick.
+- **Workaround:** human deleted the `0a04` function in the GUI; when the merge still
+  wouldn't take (body wouldn't recompute — main's flow genuinely splits where the clean
+  import over-merged), re-created `draw_indian_village_marker` to avoid leaving orphan
+  code, and persisted via a one-op `batch` to dodge the save-lock. Net: the essential
+  fix (data → function, trampoline thunks) landed; the exact 1234-byte merge did not.
+
+## 2026-07-08 — RESOLVED (plugin) — deletion ops, thunk-status, body range, bounded save (commit `79552ff`)
+Addresses the deletion / body-edit / save-lock cluster (the "no delete symbol/label",
+"264-edit batch lock stuck ~5 min", "no save-program tool / thunk-status", and
+"no delete-function, no body override, save blocked by other txn" entries).
+- **`clear kind=label`** — deletes a user label at `address` (pass `name` to pick one when
+  several share it); refuses a function symbol (that would delete the whole function). Verified
+  live: created + deleted a scratch label.
+- **`clear kind=function`** — deletes the function (Ghidra Delete Function) but **keeps its code
+  and labels**. Verified live: `strcpy` became a plain label with its instructions intact, then
+  re-created cleanly. Recompute-from-flow = `clear kind=function` then `create kind=function`.
+- **`create kind=function end_address`** — forces the body to an explicit inclusive range (works
+  on an existing function). Verified live restoring `strcpy`'s 50-byte body.
+- **Bounded, deferring save** — `saveSettled` no longer waits on all analysis; it polls the
+  non-throwing `canLock()` with a short backoff and, if the program stays busy, returns
+  *deferred* rather than holding the write lock for minutes. Edits that can't save immediately
+  come back with "(save deferred — program busy; run save when idle)" instead of an error; the
+  264-edit lock-stuck case is gone. New **`save`** tool flushes deferred edits (longer bound);
+  **`get_program_info`** now shows `Unsaved changes: yes|no` (and already flagged analysis in
+  progress). Verified live: edits save cleanly with no deferral note; dirty flag shows.
+- **`inspect` thunk-status** — a function that is a thunk now prints `thunk → <target>`, so it
+  isn't misread from a decompile of its own body. Verified live on `281f:0056` → `flashmsg_erase`.
+- **Not fixed (fundamental):** a bad-body overlay-dispatch stub still *decompiles* as its stub
+  body even when thunked (see the create-kind=thunk removal note) — `inspect` thunk-status is the
+  reliable signal instead. **DS-relative data-label xrefs** (the "xref counts are 0" entry) remain
+  a 16-bit limitation; `search_memory` for the address-immediate byte pattern is the path.
