@@ -135,9 +135,14 @@ root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hin
 - **set_function_signature RETF hint:** applying a near calling convention to a function
   whose body ends in `RETF` (far) now appends a ⚠ warning that stack params may be
   misplaced (`Stack[0x2]` vs `Stack[0x4]`); pass `calling_convention=__cdecl16far`.
-- **create kind=thunk** (`address` + `target`): sets the thunk relationship so the call
-  graph resolves stub → target (verified: `calls` on `281f:03fe` now resolves
-  `Dialog_RunByKey`). **Caveat:** for RTLink dispatch stubs whose body is un-decodable "bad
-  instruction data", the decompiler still renders that body rather than the target — the same
-  Ghidra limitation that leaves the analyzer's own such stubs un-followable. So the thunk is
-  wired, but "decompile as the target" is not achieved for those specific stubs.
+- **create kind=thunk** — shipped, then **removed** (commit `9602186`). The RTLink analyzer
+  was fixed to auto-thunk every statically-resolvable stub + resident trampoline (fork
+  `ad67f1fc7d`/`c5f4b407c7`), so wiring stub → target is no longer the plugin's job. And the
+  real goal — making the overlay-dispatch stubs *decompile as their targets* — is impossible:
+  their `JMPF` targets unmapped `0000:xxxx` in the resident space while the target lives in a
+  separate overlay space, so the decompiler renders the stub's bad body regardless of the
+  thunk record. Confirmed against a fresh analyzer run: `OVLSTUB_22_3744` is a proper
+  analyzer-created thunk yet still decompiles as `FUN_210d_0dab(0x281f); halt_baddata()`. A
+  manual thunk tool only wired the call graph (which the analyzer now does) and never
+  delivered decompile-as-target, so it was retired. Use the RTLink One-Shot analyzer for stub
+  thunking.
