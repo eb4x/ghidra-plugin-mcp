@@ -49,8 +49,95 @@ Append new entries at the bottom.
 
 <!-- entries below, newest last -->
 
-_No open entries. Resolved friction is archived in
+_Resolved friction is archived in
 [archive/mcp-feedback.md](archive/mcp-feedback.md) (12 entries as of 2026-07-08): the
 `decompile` coverage header, `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer
 root-cause, `read_log`, `xRam…` global resolution, the bare-address rename hint, the
 `inspect` Variables section, `decompile dump_symbols`, and `clear kind=local_variable`._
+
+## 2026-07-08 — batch — "Unable to lock due to active transaction" yet the edits applied
+- **Task:** Colony_Create annotation pass — two `batch` calls (49 and 13 edits) of
+  renames/signatures/labels/comments.
+- **Friction:** Both times `batch` threw
+  `java.io.IOException: Unable to lock due to active transaction` — and both times
+  the edits had actually been committed. The blind retry of the first batch then
+  produced 16 spurious per-edit errors (`No function named ... 'OVL22_3744'`,
+  `No parameter ... 'param_1'`) purely because the "failed" run had already
+  applied those edits, which cost a diagnosis round-trip to realize no edit had
+  been lost.
+- **Expected:** Either atomic failure (nothing applied when the tool reports an
+  exception) or a partial per-edit result list; never "error yet fully applied".
+  Looks like the exception comes from a save/lock step *after* the transaction
+  commits.
+- **Workaround:** After any batch "failure", decompile a touched function to see
+  what actually landed before retrying; treat rename retries as idempotent no-ops.
+
+## 2026-07-08 — set_function_signature — wrong calling convention silently kept, args garble
+- **Task:** Give the 281f far trampolines real prototypes so Colony_Create's call
+  sites decompile with true arguments.
+- **Friction:** `set_function_signature` applied 2-param prototypes cleanly but
+  kept the functions' (wrong) near convention, so parameters mapped to
+  `Stack[0x2]` instead of `Stack[0x4]` and every call site *still* showed a junk
+  first argument — now eating one real arg, which is worse than before. No
+  warning of the storage mismatch.
+- **Expected:** A hint in the tool result when the applied params' storage
+  conflicts with how call sites/`RETF` look, or docs noting that far functions
+  frequently need an explicit `calling_convention`.
+- **Workaround:** Re-applied every signature with
+  `calling_convention="__cdecl16far"`; `decompile dump_symbols=true` was the tool
+  that made the `Stack[0x2]` misplacement visible.
+
+## 2026-07-08 — gap — no thunk create/repair for unresolved OVLSTUB stubs
+- **Task:** Make `OVLSTUB_22_3744` / `OVLSTUB_22_36CA` (two of the analyzer's ~3
+  known un-thunked jump-table stubs) decompile as their targets.
+- **Friction:** No tool can convert a plain function into a thunk of another
+  (legacy playbook used `fm.createThunkFunction` from a script; there is no
+  script-execution tool by design).
+- **Expected:** e.g. `create kind=thunk` with `address` + `target`.
+- **Workaround:** Renamed the stubs `jmp_Dialog_RunByKey` / `jmp_Dialog_RunFromText`
+  with plate comments carrying the original stub identity.
+
+## 2026-07-08 — gap — no struct-field rename
+- **Task:** `colony_t.unkd` turned out to be the per-nation seen-pop/seen-fort
+  arrays; wanted to rename the fields so every colony decompile improves.
+- **Friction:** `manage_types` only renames/deletes whole types; redefining the
+  struct via `define_types`/`set_data_type kind=struct` risks clobbering the
+  carefully built `colony_t`.
+- **Expected:** `manage_types op=rename_field` (name + field offset/old name).
+- **Workaround:** Left field names alone; documented meaning in plate comments.
+
+## 2026-07-08 — inspect — namespaced symbol paths don't resolve
+- **Task:** Find the address of the switch-case label the trampoline `281f:0c4a`
+  jumps to.
+- **Friction:** `inspect location="switchD_1000:2c03::caseD_6"` (the exact name
+  `decompile` printed) → `No symbol or address`. Related nit: `disassemble`
+  `address="find_adjacent_water_tile"` errors — per the operand convention
+  `address` is strictly an address, but muscle memory says otherwise after
+  `location`/`function` accept names.
+- **Expected:** namespace-qualified lookup for `location` operands, or the
+  decompiler emitting resolvable names.
+- **Workaround:** `xrefs direction=from` on the trampoline's JMPF instruction
+  address gave the target (`15eb:096e`).
+
+## 2026-07-08 — RESOLVED (plugin) — batch save, thunk, field rename, namespaces, RETF hint (commit `af2e3a5`)
+- **batch "error yet applied":** the edits commit, but they fire `FUNCTION_CHANGED`
+  events → `AutoAnalysisManager` schedules background analysis holding its own
+  transaction, and the follow-up save then failed the lock. Save now settles first
+  (`ProjectContext.saveSettled`: flush events → `waitForAnalysis` → flush → save, bounded
+  retry; the single-edit save path shares it). Verified live: a rename batch returns
+  "2 ok, 0 failed" with no lock error.
+- **inspect namespaced symbols:** `location`/`function` operands now resolve
+  `namespace::symbol` paths (e.g. `switchD_1000:2aa7::caseD_6`) via `NamespaceUtils`.
+  Verified live → `1000:0000`. (The `disassemble address=<name>` nit is left as-is: `address`
+  is the strict-address operand by design; use `location`/`function` for name lookups.)
+- **manage_types op=rename_field:** rename a struct/union field by current name or byte
+  offset (`0x1a`/decimal). Verified (by name and by offset).
+- **set_function_signature RETF hint:** applying a near calling convention to a function
+  whose body ends in `RETF` (far) now appends a ⚠ warning that stack params may be
+  misplaced (`Stack[0x2]` vs `Stack[0x4]`); pass `calling_convention=__cdecl16far`.
+- **create kind=thunk** (`address` + `target`): sets the thunk relationship so the call
+  graph resolves stub → target (verified: `calls` on `281f:03fe` now resolves
+  `Dialog_RunByKey`). **Caveat:** for RTLink dispatch stubs whose body is un-decodable "bad
+  instruction data", the decompiler still renders that body rather than the target — the same
+  Ghidra limitation that leaves the analyzer's own such stubs un-followable. So the thunk is
+  wired, but "decompile as the target" is not achieved for those specific stubs.
