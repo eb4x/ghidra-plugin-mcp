@@ -563,3 +563,27 @@ GUI action needed.
   holding an imported program reproduced the not-empty refusal, the self-descendant move refusal,
   a folder rename, and then `recursive=true` → `Deleted folder /mcp-verify (1 file(s), 1
   subfolder(s))`.
+
+## 2026-07-09 — manage_files op=delete recursive=true — refused on programs the server itself held open
+- **Task:** delete a `/scratch-*` folder holding an imported program the MCP server had already
+  opened (any program tool call caches the program in `ProjectContext`).
+- **Friction:** `manage_files(op=delete, recursive=true)` refused with
+  `Refusing to delete /scratch-…; these files are not deletable: /scratch-…/ls — open elsewhere
+  (e.g. a CodeBrowser)`. Nothing else had it open: the plugin's *own* cached handle / decompiler
+  pool was the thing blocking the delete. `op=delete` on the contained file then succeeded, and
+  the emptied folder deleted fine — so the single-file path worked where the folder path did not.
+- **Cause:** `deleteFolder` ran its pre-flight `checkDeletable` walk (which rejects `file.isOpen()
+  || file.isBusy()`) *before* anything released our handles. `deleteRecursively` did call
+  `context.release(...)` per file — but only after the pre-flight had already refused, so the
+  release could never run. The single-file path releases at `ManageFilesTool.java:77` before
+  `deleteFile`, and `renameFolder`/`moveFolder` both call `releaseDescendants(folder)` first;
+  `deleteFolder` alone did not. (The `b221d70` archive entry above claims handles are "released
+  first" — true of rename/move, never of delete.)
+- **Resolution** (ebbex-ghidra-mcp): hoist `releaseDescendants(folder)` above the pre-flight in
+  `deleteFolder`, and drop the now-unreachable per-file `context.release(...)` in
+  `deleteRecursively` so there is one release point. The pre-flight's "open elsewhere" message is
+  now honest — it can only mean a *genuinely* external holder, e.g. a CodeBrowser.
+- **Verified** live: imported `/bin/ls` to `/scratch-deltest`, opened it through a program tool
+  (so `ProjectContext` cached it), then `recursive=true` → `Deleted folder /scratch-deltest
+  (1 file(s), 0 subfolder(s))`. The non-recursive guard still refuses a non-empty folder, and the
+  project returned to its original 5 files.
