@@ -50,7 +50,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (26 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (27 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -58,7 +58,8 @@ resolution, the bare-address rename hint, `inspect` Variables + thunk-status, `d
 `clear kind=local_variable|label|function`, `manage_types op=rename_field`, `create kind=function
 end_address`, namespaced-symbol resolution, the `set_function_signature` RETF hint, the bounded
 deferring save + `save` tool, the create-kind=thunk experiment (removed), `create kind=label
-namespace` + `decompile dump_jumptables` (jump-table overrides), and `manage_files` folder ops._
+namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` folder ops, and the
+`manage_files` recursive-delete handle release._
 
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
@@ -100,3 +101,33 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), and `manage_fil
   override with `create kind=label namespace=…`; decompile again → `CONSUMED (16 cases ->
   3 distinct targets)`. The *decompiler's own* recovered table changed, so the C++ side
   plainly re-read the new symbols.
+
+## Correction to the entry above: `dump_jumptables` reported a false NOT CONSUMED (2026-07-09)
+
+Exercised the flag in a fresh session. It works, and it immediately paid for itself — but its
+verdict line was wrong, and the bug is the same address-rendering trap that has now bitten this
+project three times.
+
+- **Symptom:** `FUN_12fd_006c` decompiled with `/* WARNING: Switch is manually overridden */` and
+  the correct handlers, i.e. the override was plainly consumed — while the dump printed
+  `=> override at 12fd:00de: NOT CONSUMED` and separately `=> table at 1000:30ae:
+  decompiler-discovered`. Those are the same address: `0x12fd0 + 0xde == 0x130ae`, and the sent XML
+  even encodes `offset="0x130ae"`.
+- **Cause:** `jumpTableDump` keyed its "used" map on `getSwitchAddress().toString()`. The sent
+  address comes from the override symbol and renders as its own paragraph (`12fd:00de`); the
+  returned one is rebuilt by the address factory and renders as the 64KB-page default
+  (`1000:30ae`). `SegmentedAddress` does not override `equals`, so as *objects* they are equal
+  (`GenericAddress` compares flat offset + space) — only the strings differ.
+- **Fixed** in `DecompileTool.jumpTableDump` by keying on `Address` instead of its rendering
+  (ebbex-ghidra-mcp `44f6082`). Re-verified: `=> override at 12fd:00de: CONSUMED (8 cases ->
+  8 distinct targets)`.
+- **Lesson worth generalising:** never compare segmented addresses as strings. Any tool that
+  matches addresses across the Java/decompiler boundary should compare `Address`, because the two
+  sides render the same flat offset differently.
+- The predicted stale-`DecompInterface` hazard is real but was *not* the cause here. It did burn a
+  measurement earlier: decompiling a function once, then adding its override, then decompiling
+  again returns the pre-override result. Workaround: write the override before the program's first
+  decompile. The `resetDecompiler()` suggestion above still stands.
+- Minor: `manage_files op=delete recursive=true` refusing with "open elsewhere" when the plugin's
+  own cached handle held the program — **resolved and archived**; the pre-flight now runs after
+  `releaseDescendants`.
