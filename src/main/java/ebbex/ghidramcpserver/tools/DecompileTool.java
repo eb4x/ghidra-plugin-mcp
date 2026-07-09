@@ -229,18 +229,24 @@ public class DecompileTool implements ProgramTool {
 		// Match by switch address only: an override JumpTable keeps its destinations in a
 		// BasicOverride with no public accessor and leaves addressTable null, so getCases()
 		// would throw. Only getSwitchAddress() and encode() are safe on the sent side.
-		Map<String, String> usedTables = new LinkedHashMap<>();
+		//
+		// Key on the Address, never on its rendering. The sent side's address comes from the
+		// override symbol and prints as its own paragraph (12fd:00de); the returned one is
+		// rebuilt by the address factory and prints as the 64KB-page default (1000:30ae). Same
+		// flat offset, so they are equal() -- but not as strings, which reports every consumed
+		// override as NOT CONSUMED.
+		Map<Address, String> usedTables = new LinkedHashMap<>();
 		for (JumpTable table : used) {
-			usedTables.put(table.getSwitchAddress().toString(), describeCases(table));
+			usedTables.put(table.getSwitchAddress(), describeCases(table));
 		}
 		for (JumpTable table : sent) {
-			String address = table.getSwitchAddress().toString();
+			Address address = table.getSwitchAddress();
 			String cases = usedTables.remove(address);
 			sb.append("// => override at ").append(address).append(cases == null
 					? ": NOT CONSUMED"
 					: ": CONSUMED (" + cases + ")").append('\n');
 		}
-		for (Map.Entry<String, String> entry : usedTables.entrySet()) {
+		for (Map.Entry<Address, String> entry : usedTables.entrySet()) {
 			sb.append("// => table at ").append(entry.getKey())
 					.append(": decompiler-discovered (").append(entry.getValue()).append(")\n");
 		}
