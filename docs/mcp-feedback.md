@@ -101,6 +101,8 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` 
   override with `create kind=label namespace=…`; decompile again → `CONSUMED (16 cases ->
   3 distinct targets)`. The *decompiler's own* recovered table changed, so the C++ side
   plainly re-read the new symbols.
+  **Re-confirmed 2026-07-09** by an independent rename probe on a fresh program — see the
+  settlement at the bottom of this file. This bullet is correct; treat it as settled.
 
 ## Correction to the entry above: `dump_jumptables` reported a false NOT CONSUMED (2026-07-09)
 
@@ -124,10 +126,27 @@ project three times.
 - **Lesson worth generalising:** never compare segmented addresses as strings. Any tool that
   matches addresses across the Java/decompiler boundary should compare `Address`, because the two
   sides render the same flat offset differently.
-- The predicted stale-`DecompInterface` hazard is real but was *not* the cause here. It did burn a
-  measurement earlier: decompiling a function once, then adding its override, then decompiling
-  again returns the pre-override result. Workaround: write the override before the program's first
-  decompile. The `resetDecompiler()` suggestion above still stands.
+- ~~The predicted stale-`DecompInterface` hazard is real.~~ **Settled empirically (2026-07-09): it
+  is not.** This bullet contradicted the follow-up above it, so both were tested.
+  - *Mechanism:* `DecompInterface.decompileFunction` ends by calling `flushCache()` whenever the
+    process is `NOT_DISPOSED` (`DecompInterface.java:832`), which sends `flushNative` to the
+    decompiler process. The native symbol cache is therefore empty *after every decompile*, so the
+    next one must re-query the symbol database. (The `flushCache()` commented out with "we don't
+    need to flush the cache" is at line 949, inside the unrelated `fillinVersionNumber`.)
+  - *Experiment:* fresh `/bin/ls` imported and analysed, so no prior decompile could have warmed
+    anything. Decompiled `ext_wmatch` (the program's **first** decompile) — it rendered its callee
+    as `FUN_001054f4`. Renamed that callee, then decompiled `ext_wmatch` again on the same pooled
+    interface: both call sites now render
+    `STALE_PROBE_written_after_first_decompile()`. A symbol written *after* the first decompile is
+    visible to the next one.
+  - *So there is no "write the override before the first decompile" rule*, and `resetDecompiler()`
+    is not needed for cache coherence — it restarts a dead process, as the follow-up above says.
+  - *What most likely burned the earlier measurement:* the false `NOT CONSUMED` verdict this very
+    entry documents. Before `44f6082` the dump compared switch addresses as **strings**, so an
+    override that had in fact been consumed was reported as not consumed. "Decompile, add override,
+    decompile again → still not consumed" is exactly what that bug looks like from the outside, and
+    it is the reading that mimics staleness. (Inference, not proven — but it fits the symptom, and
+    staleness is now ruled out.)
 - Minor: `manage_files op=delete recursive=true` refusing with "open elsewhere" when the plugin's
   own cached handle held the program — **resolved and archived**; the pre-flight now runs after
   `releaseDescendants`.
