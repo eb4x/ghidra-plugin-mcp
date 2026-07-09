@@ -17,7 +17,9 @@ import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.BookmarkManager;
 import ghidra.program.model.listing.BookmarkType;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.symbol.SymbolTable;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -39,7 +41,9 @@ public class CreateTool implements ProgramTool {
 			"note bookmark (optional 'category', 'comment' is the text); kind=instructions " +
 			"disassembles from the address (like pressing 'D'), e.g. after clear. For kind=function " +
 			"an optional 'end_address' forces the body to that inclusive range (works on an existing " +
-			"function too); omit it to auto-compute from flow.";
+			"function too); omit it to auto-compute from flow. For kind=label an optional " +
+			"'namespace' ('::'-separated path, e.g. \"main::override\") puts the label in that " +
+			"namespace, creating missing levels.";
 	}
 
 	@Override
@@ -53,7 +57,9 @@ public class CreateTool implements ProgramTool {
 				"category", Schemas.stringProp("Bookmark category (for kind=bookmark)"),
 				"comment", Schemas.stringProp("Bookmark text (for kind=bookmark)"),
 				"end_address", Schemas.stringProp(
-					"Inclusive end address forcing the function body range (for kind=function)")),
+					"Inclusive end address forcing the function body range (for kind=function)"),
+				"namespace", Schemas.stringProp(
+					"'::'-separated namespace path for the label (for kind=label)")),
 			"required", List.of("kind", "address"));
 	}
 
@@ -78,7 +84,8 @@ public class CreateTool implements ProgramTool {
 		return switch (kind) {
 			case "function" -> createFunction(program, address, label,
 				Args.stringArg(args, "end_address", null));
-			case "label" -> createLabel(program, address, label);
+			case "label" -> createLabel(program, address, label,
+				Args.stringArg(args, "namespace", null));
 			case "bookmark" -> createBookmark(program, address,
 				Args.stringArg(args, "category", ""), Args.stringArg(args, "comment", ""));
 			case "instructions" -> disassemble(program, address);
@@ -111,14 +118,41 @@ public class CreateTool implements ProgramTool {
 		});
 	}
 
-	private McpSchema.CallToolResult createLabel(Program program, Address address, String name) {
+	private McpSchema.CallToolResult createLabel(Program program, Address address, String name,
+			String namespacePath) {
 		if (name == null || name.isBlank()) {
 			return Results.error("name is required for kind=label");
 		}
 		return Transactions.modify(program, "Create label", () -> {
-			program.getSymbolTable().createLabel(address, name, SourceType.USER_DEFINED);
-			return "Created label '" + name + "' @ " + address;
+			SymbolTable symbolTable = program.getSymbolTable();
+			Namespace namespace = resolveNamespace(program, namespacePath);
+			symbolTable.createLabel(address, name, namespace, SourceType.USER_DEFINED);
+			String where = namespace.isGlobal() ? "" : " in " + namespace.getName(true);
+			return "Created label '" + name + "'" + where + " @ " + address;
 		});
+	}
+
+	/**
+	 * Walk (creating as needed) a {@code ::}-separated namespace path from the global namespace.
+	 * An existing function is itself a namespace, so paths may descend into one.
+	 */
+	private Namespace resolveNamespace(Program program, String path) throws Exception {
+		Namespace namespace = program.getGlobalNamespace();
+		if (path == null || path.isBlank()) {
+			return namespace;
+		}
+		SymbolTable symbolTable = program.getSymbolTable();
+		for (String part : path.split("::")) {
+			if (part.isBlank()) {
+				continue;
+			}
+			Namespace child = symbolTable.getNamespace(part, namespace);
+			if (child == null) {
+				child = symbolTable.createNameSpace(namespace, part, SourceType.USER_DEFINED);
+			}
+			namespace = child;
+		}
+		return namespace;
 	}
 
 	private McpSchema.CallToolResult createBookmark(Program program, Address address,
