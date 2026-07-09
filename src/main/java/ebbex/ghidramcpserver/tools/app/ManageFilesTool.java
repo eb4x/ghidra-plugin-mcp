@@ -159,6 +159,10 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			return Results.ok("Deleted folder " + path);
 		}
 
+		// Drop our own cached handles first, as the single-file path does: otherwise the
+		// pre-flight below sees programs our decompiler pool holds open and refuses.
+		releaseDescendants(folder);
+
 		// Pre-flight, so a refusal deep in the tree can't leave a half-deleted folder behind.
 		List<String> blocked = new ArrayList<>();
 		checkDeletable(folder, blocked);
@@ -194,13 +198,13 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		}
 	}
 
-	private void deleteRecursively(DomainFolder folder, int[] counts) throws Exception {
+	/** Handles on everything under {@code folder} were dropped before the pre-flight check. */
+	private static void deleteRecursively(DomainFolder folder, int[] counts) throws Exception {
 		for (DomainFolder sub : folder.getFolders()) {
 			deleteRecursively(sub, counts);
 			counts[1]++;
 		}
 		for (DomainFile file : folder.getFiles()) {
-			context.release(file.getPathname());
 			file.delete();
 			counts[0]++;
 		}
