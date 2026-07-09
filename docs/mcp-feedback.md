@@ -76,3 +76,27 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), and `manage_fil
   reference analysis (the constant-propagation / RTLink analyzers that already know
   DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
   `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
+
+## Follow-ups on the 2026-07-09 entries (same day, after both were implemented)
+
+- **`manage_files` folder delete: works.** `op=delete` on `/scratch-*` removed the empty
+  folders, project back to its original 2 folders / 5 files. Nothing more needed.
+- **`decompile dump_jumptables`: a client-side schema-cache artifact, not a plugin bug.**
+  An MCP client that cached the tool's JSON schema at connect time stringifies a *new*
+  parameter, and the server then rejects `"true"` with `/dump_jumptables: string found,
+  boolean expected`. A client that re-reads the schema after the Ghidra restart calls it
+  fine — the flag was exercised live against `/gog/VICEROY.EXE` the same day. Still worth
+  knowing: adding a tool argument mid-session may not be testable in that session.
+- **Pooled `DecompInterface` does *not* serve stale symbols — the flag does not lie.**
+  The concern was that `Decompilers` reuses one `DecompInterface` per program and never
+  calls `resetDecompiler()`, so the C++ side might cache symbol-scope queries and miss an
+  override written after the program's first decompile. It does not:
+  `DecompInterface.decompileFunction` calls `flushCache()` — which sends `flushNative` to
+  the decompiler process — at the end of *every* decompile
+  (`DecompInterface.java:832`), so the next decompile re-queries the symbol database.
+  (`resetDecompiler()` restarts a dead process; it is not the cache-coherence mechanism.)
+  Verified empirically on the same pooled interface, in one process: decompile
+  `get_funky_string` → `decompiler-discovered (73 cases -> 13 distinct targets)`; write an
+  override with `create kind=label namespace=…`; decompile again → `CONSUMED (16 cases ->
+  3 distinct targets)`. The *decompiler's own* recovered table changed, so the C++ side
+  plainly re-read the new symbols.
