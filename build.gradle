@@ -53,6 +53,10 @@ buildExtension.exclude '.gitignore'
 buildExtension.exclude '.settings/**'
 buildExtension.exclude '.project'
 buildExtension.exclude '.classpath'
+// Local, machine-specific: the extracted Ghidra install we compile against and
+// the gradle.properties pointing at it. Never ship these in the extension.
+buildExtension.exclude 'ghidra-sdk/**'
+buildExtension.exclude 'gradle.properties'
 
 dependencies {
 	// MCP Java SDK (bundle: mcp-core + Jackson 3 JSON binding)
