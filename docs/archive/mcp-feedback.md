@@ -506,3 +506,60 @@ GUI action needed.
     descriptor: `surface_pixel_addr(x, y, (surface_desc *)&dst_height)`.
   - Gotcha: a pre-existing local named `width` (an earlier `in_BX` rename) blocked the param name;
     `clear kind=local_variable` on it, then the signature set, resolved it.
+
+## 2026-07-09 — create kind=label could not target a namespace — jump-table override
+- **Wanted:** write a decompiler jump-table override, which Ghidra encodes purely as symbols:
+  a namespace `<func>::override::jmp_<branchaddr>` holding a `switch` label at the branch and
+  `case_N` labels at each destination (see `JumpTable.writeOverride`).
+- **Friction:** `create kind=label` called `symbolTable.createLabel(addr, name, source)`, which
+  always lands in the global namespace. No way to build the hierarchy. And once a `namespace`
+  argument existed, there was still no way to *inspect* whether the decompiler consumed the
+  override — `getJumpTables()` is Java-side only and the C++ result gives no signal, so debugging
+  it took several full re-decompiles with no feedback.
+- **Resolution** (ebbex-ghidra-mcp `5edf42d`, then `b221d70`):
+  - `create kind=label` takes an optional `namespace`, a `::`-separated path walked (and created)
+    from the global namespace.
+  - **The first cut was broken and the verification was too weak to catch it.** `5edf42d` resolved
+    each path segment with `SymbolTable.getNamespace(name, parent)`, which deliberately does *not*
+    resolve functions (its javadoc: "namespace…, class…, or library…, but not a function", because
+    function names may be duplicated within a parent). So `FUN_x::override::jmp_y` silently created
+    a *plain namespace* named `FUN_x` beside the function and put the labels under it, where
+    `HighFunction.grabOverrides` — which looks under the Function — never sees them. The original
+    "Verified: `list kind=symbols` shows the labels fully qualified" was exactly the evidence that
+    could not distinguish the two: both print the same `FUN_x::override::jmp_y::switch` path.
+    `b221d70` switches to `NamespaceUtils.getNamespacesByName`, which matches on
+    `SymbolType.isNamespace()` — a predicate functions satisfy.
+  - `decompile` gained `dump_jumptables`: it prints the `<jumptablelist>` XML the Java side
+    transmits (reconstructed with `HighFunction.grabFromFunction`, the same call
+    `DecompileCallback.encodeFunction` makes) and a per-switch verdict — `CONSUMED (n cases -> m
+    distinct targets)` / `NOT CONSUMED` / `decompiler-discovered`. Recovered tables are summarised
+    rather than dumped, since they repeat one `<dest>` per case value. It is emitted after a *failed*
+    decompile too, because a bad override is a common reason the decompiler bails.
+- **Verified** end-to-end on `/bin/ls`'s `get_funky_string` (a real 73-case switch at `00103b65`):
+  before any override → `decompiler-discovered (73 cases -> 13 distinct targets)`; after writing
+  `switch` + `case_0..2` through `create kind=label namespace=…` → `<basicoverride>` with the three
+  destinations in the sent XML and `CONSUMED (16 cases -> 3 distinct targets)`; with the `switch`
+  label moved off the branch → `NOT CONSUMED`. The smoke script now asserts
+  `HighFunction.findOverrideSpace(func) != null` after a namespaced `create`, which fails against
+  the `5edf42d` behaviour.
+
+## 2026-07-09 — manage_files cannot delete a folder — analyzer-testing cleanup
+- **Wanted:** clean up after analyzer testing — several `/scratch-*` folders, each holding one
+  re-imported `VICEROY.EXE`.
+- **Friction:** `manage_files(op=delete)` removed the programs fine, but the now-empty folders
+  stayed. `op=delete` on a folder path returned `No project file: /scratch-final`; the op only
+  resolved files. The project went from 2 folders to 6 with no MCP way back — it needed a
+  right-click → Delete in the GUI project tree. Cleanup is the natural bookend to
+  `import(folder=…)`, which happily *creates* folders.
+- **Resolution** (ebbex-ghidra-mcp `b221d70`): all three ops resolve a folder as well as a file.
+  Folder delete is empty-only unless `recursive=true`, which walks depth-first like Ghidra's own
+  `DeleteProjectFilesTask` and — having no way to prompt as the GUI does — refuses on open,
+  versioned, or read-only files, naming them. Cached program handles under the folder are released
+  first, since `ProjectContext` keys its cache by exact path. `op=move` refuses a destination
+  inside the folder being moved. Gotcha found while testing: `ProjectData.getFile("/")` throws
+  `IllegalArgumentException: Missing file name in path` rather than returning null, so the file
+  lookup has to be guarded for a folder-shaped path to reach the folder lookup.
+- **Verified** live: the leftover `/scratch-*` folders are gone; a fresh `/mcp-verify/nested`
+  holding an imported program reproduced the not-empty refusal, the self-descendant move refusal,
+  a folder rename, and then `recursive=true` → `Deleted folder /mcp-verify (1 file(s), 1
+  subfolder(s))`.
