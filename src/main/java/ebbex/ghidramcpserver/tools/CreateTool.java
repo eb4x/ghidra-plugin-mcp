@@ -11,6 +11,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.app.cmd.function.CreateFunctionCmd;
+import ghidra.app.util.NamespaceUtils;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
@@ -134,7 +135,15 @@ public class CreateTool implements ProgramTool {
 
 	/**
 	 * Walk (creating as needed) a {@code ::}-separated namespace path from the global namespace.
-	 * An existing function is itself a namespace, so paths may descend into one.
+	 * An existing function is itself a namespace, so paths may descend into one — which is the
+	 * whole point for decompiler overrides, whose namespace is rooted at the function
+	 * ({@code <func>::override::jmp_<addr>}).
+	 *
+	 * <p>{@code SymbolTable.getNamespace(name, parent)} deliberately does not resolve functions
+	 * (its javadoc: "but not a function"), because a function name may be duplicated within a
+	 * parent. Using it here silently created a *second*, plain namespace beside the function and
+	 * put the labels there, where nothing that reads overrides ever looks. {@link NamespaceUtils}
+	 * matches on {@code SymbolType.isNamespace()}, which functions satisfy.
 	 */
 	private Namespace resolveNamespace(Program program, String path) throws Exception {
 		Namespace namespace = program.getGlobalNamespace();
@@ -146,11 +155,10 @@ public class CreateTool implements ProgramTool {
 			if (part.isBlank()) {
 				continue;
 			}
-			Namespace child = symbolTable.getNamespace(part, namespace);
-			if (child == null) {
-				child = symbolTable.createNameSpace(namespace, part, SourceType.USER_DEFINED);
-			}
-			namespace = child;
+			List<Namespace> existing = NamespaceUtils.getNamespacesByName(program, namespace, part);
+			namespace = existing.isEmpty()
+					? symbolTable.createNameSpace(namespace, part, SourceType.USER_DEFINED)
+					: existing.get(0);
 		}
 		return namespace;
 	}

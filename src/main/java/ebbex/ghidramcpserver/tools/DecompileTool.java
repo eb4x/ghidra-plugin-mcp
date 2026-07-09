@@ -1,8 +1,12 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.io.IOException;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Args;
@@ -17,10 +21,15 @@ import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.pcode.DynamicEntry;
+import ghidra.program.model.pcode.ElementId;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighSymbol;
+import ghidra.program.model.pcode.JumpTable;
 import ghidra.program.model.pcode.PcodeBlockBasic;
+import ghidra.program.model.pcode.PcodeDataTypeManager;
 import ghidra.program.model.pcode.SymbolEntry;
+import ghidra.program.model.pcode.XmlEncode;
+import ghidra.program.model.symbol.IdentityNameTransformer;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Decompile a function to C. */
@@ -73,7 +82,11 @@ public class DecompileTool implements ProgramTool {
 					DEFAULT_TIMEOUT + ")"),
 				"dump_symbols", Schemas.boolProp("Also append the decompiler's HighSymbol table " +
 					"(each local/param's name, storage, and — for dynamic locals — hash and pc " +
-					"address); for debugging variable mapping/rename persistence (default false)")));
+					"address); for debugging variable mapping/rename persistence (default false)"),
+				"dump_jumptables", Schemas.boolProp("Also append the function's jump tables, both " +
+					"the overrides sent to the decompiler (read from the <func>::override::jmp_* " +
+					"symbol namespace) and the tables the decompiler came back with, so you can " +
+					"see whether an override was consumed (default false)")));
 	}
 
 	@Override
@@ -85,14 +98,15 @@ public class DecompileTool implements ProgramTool {
 	public McpSchema.CallToolResult execute(Map<String, Object> args, Program program) {
 		int timeout = Args.intArg(args, "timeout_s", DEFAULT_TIMEOUT);
 		boolean dumpSymbols = Args.boolArg(args, "dump_symbols", false);
+		boolean dumpJumpTables = Args.boolArg(args, "dump_jumptables", false);
 
 		Object many = args.get("functions");
 		if (many instanceof List<?> list && !list.isEmpty()) {
 			StringBuilder sb = new StringBuilder();
 			int n = Math.min(list.size(), MAX_BATCH);
 			for (int i = 0; i < n; i++) {
-				sb.append(decompileOne(program, String.valueOf(list.get(i)), timeout, dumpSymbols))
-						.append("\n");
+				sb.append(decompileOne(program, String.valueOf(list.get(i)), timeout, dumpSymbols,
+					dumpJumpTables)).append("\n");
 			}
 			if (list.size() > MAX_BATCH) {
 				sb.append("(").append(list.size() - MAX_BATCH)
@@ -106,10 +120,12 @@ public class DecompileTool implements ProgramTool {
 			return Results.error("'function' (a name or an address inside it), or a 'functions' " +
 				"list, is required");
 		}
-		return Results.ok(decompileOne(program, functionRef, timeout, dumpSymbols));
+		return Results.ok(
+			decompileOne(program, functionRef, timeout, dumpSymbols, dumpJumpTables));
 	}
 
-	private String decompileOne(Program program, String ref, int timeout, boolean dumpSymbols) {
+	private String decompileOne(Program program, String ref, int timeout, boolean dumpSymbols,
+			boolean dumpJumpTables) {
 		Function function;
 		try {
 			function = Locations.findFunction(program, ref);
@@ -118,16 +134,27 @@ public class DecompileTool implements ProgramTool {
 			return "// " + ref + ": " + e.getMessage();
 		}
 		DecompileResults results = decompilers.decompile(program, function, timeout);
-		if (results != null && results.getDecompiledFunction() != null) {
-			String c = results.getDecompiledFunction().getC();
-			if (c != null && !c.isBlank()) {
-				String out = coverageHeader(program, function, results) + c;
-				return dumpSymbols ? out + symbolDump(results.getHighFunction()) : out;
+		StringBuilder out = new StringBuilder();
+		String c = results == null || results.getDecompiledFunction() == null ? null
+				: results.getDecompiledFunction().getC();
+		if (c != null && !c.isBlank()) {
+			out.append(coverageHeader(program, function, results)).append(c);
+			if (dumpSymbols) {
+				out.append(symbolDump(results.getHighFunction()));
 			}
 		}
-		String message = results == null ? "no result" : results.getErrorMessage();
-		return "// Decompilation failed for " + function.getName() + ": " +
-			(message == null || message.isBlank() ? "unknown" : message);
+		else {
+			String message = results == null ? "no result" : results.getErrorMessage();
+			out.append("// Decompilation failed for ").append(function.getName()).append(": ")
+					.append(message == null || message.isBlank() ? "unknown" : message)
+					.append('\n');
+		}
+		// After the failure branch too: a bad override is a common reason the decompiler bails,
+		// and that is exactly when you need to see what was sent.
+		if (dumpJumpTables) {
+			out.append(jumpTableDump(program, function, results));
+		}
+		return out.toString();
 	}
 
 	/**
@@ -155,6 +182,103 @@ public class DecompileTool implements ProgramTool {
 			sb.append('\n');
 		}
 		return sb.toString();
+	}
+
+	/**
+	 * Both sides of the jump-table conversation with the decompiler process, so a
+	 * decompiler jump-table override — which Ghidra stores purely as symbols under
+	 * {@code <func>::override::jmp_<branchaddr>} — can be debugged in one call instead of by
+	 * re-decompiling blind.
+	 *
+	 * <p>"Sent" reconstructs what the Java side transmits: {@code grabFromFunction} is what
+	 * walks the override namespace (via {@code JumpTable.readOverride}), exactly as
+	 * {@code DecompileCallback.encodeFunction} does before encoding the {@code <function>}
+	 * element. It is printed as the {@code <jumptablelist>} XML that goes over the wire. What
+	 * came back is summarised per switch address rather than dumped: a recovered table
+	 * repeats one {@code <dest>} per case value, which for a wide switch is scores of
+	 * near-identical lines and no more information than the counts.
+	 *
+	 * @param results may be null, or a failed decompile — a bad override is a common reason the
+	 *            decompiler bails, so the sent side still has to be printed
+	 */
+	private static String jumpTableDump(Program program, Function function,
+			DecompileResults results) {
+		StringBuilder sb = new StringBuilder("\n// -- jump tables --\n");
+
+		JumpTable[] sent;
+		if (HighFunction.findOverrideSpace(function) == null) {
+			sent = new JumpTable[0];
+			sb.append("// sent: no override namespace on ").append(function.getName())
+					.append('\n');
+		}
+		else {
+			HighFunction high = new HighFunction(function, program.getLanguage(),
+				program.getCompilerSpec(),
+				new PcodeDataTypeManager(program, new IdentityNameTransformer()));
+			high.grabFromFunction(0, false, false);
+			sent = high.getJumpTables();
+			sb.append("// sent (from override namespace):\n").append(encodeTables(sent));
+		}
+
+		HighFunction resultHigh = results == null ? null : results.getHighFunction();
+		JumpTable[] used = resultHigh == null ? new JumpTable[0] : resultHigh.getJumpTables();
+		if (sent.length == 0 && used.length == 0) {
+			return sb.append("// used: the decompiler recovered no jump tables\n").toString();
+		}
+
+		// Match by switch address only: an override JumpTable keeps its destinations in a
+		// BasicOverride with no public accessor and leaves addressTable null, so getCases()
+		// would throw. Only getSwitchAddress() and encode() are safe on the sent side.
+		Map<String, String> usedTables = new LinkedHashMap<>();
+		for (JumpTable table : used) {
+			usedTables.put(table.getSwitchAddress().toString(), describeCases(table));
+		}
+		for (JumpTable table : sent) {
+			String address = table.getSwitchAddress().toString();
+			String cases = usedTables.remove(address);
+			sb.append("// => override at ").append(address).append(cases == null
+					? ": NOT CONSUMED"
+					: ": CONSUMED (" + cases + ")").append('\n');
+		}
+		for (Map.Entry<String, String> entry : usedTables.entrySet()) {
+			sb.append("// => table at ").append(entry.getKey())
+					.append(": decompiler-discovered (").append(entry.getValue()).append(")\n");
+		}
+		return sb.toString();
+	}
+
+	/** The tables as the {@code <jumptablelist>} element they are encoded into on the wire. */
+	private static String encodeTables(JumpTable[] tables) {
+		if (tables.length == 0) {
+			return "//   (none)\n";
+		}
+		try {
+			XmlEncode encoder = new XmlEncode(true);
+			encoder.openElement(ElementId.ELEM_JUMPTABLELIST);
+			for (JumpTable table : tables) {
+				table.encode(encoder);
+			}
+			encoder.closeElement(ElementId.ELEM_JUMPTABLELIST);
+			return encoder.toString().lines().filter(line -> !line.isBlank())
+					.map(line -> "//   " + line + "\n").reduce("", String::concat);
+		}
+		catch (IOException e) {
+			return "//   jump table dump failed: " + e.getMessage() + "\n";
+		}
+	}
+
+	/**
+	 * {@code n cases -> m distinct targets}. Case values usually outnumber targets heavily —
+	 * every value that falls through to the default lands on the same address. {@code isEmpty()}
+	 * covers the null address table that {@code getCases()} would throw on.
+	 */
+	private static String describeCases(JumpTable table) {
+		if (table.isEmpty()) {
+			return "0 cases";
+		}
+		Address[] cases = table.getCases();
+		Set<Address> distinct = new LinkedHashSet<>(List.of(cases));
+		return cases.length + " cases -> " + distinct.size() + " distinct targets";
 	}
 
 	/**
