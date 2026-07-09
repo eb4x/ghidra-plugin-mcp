@@ -50,14 +50,15 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (24 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (26 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
 resolution, the bare-address rename hint, `inspect` Variables + thunk-status, `decompile dump_symbols`,
 `clear kind=local_variable|label|function`, `manage_types op=rename_field`, `create kind=function
 end_address`, namespaced-symbol resolution, the `set_function_signature` RETF hint, the bounded
-deferring save + `save` tool, and the create-kind=thunk experiment (removed)._
+deferring save + `save` tool, the create-kind=thunk experiment (removed), `create kind=label
+namespace` + `decompile dump_jumptables` (jump-table overrides), and `manage_files` folder ops._
 
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
@@ -69,3 +70,9 @@ deferring save + `save` tool, and the create-kind=thunk experiment (removed)._
 - **Workaround:** `search_memory` for the address-immediate byte pattern
   (`68 0e 54` = PUSH 0x540e) — worked, and the hit list's "in <function>+0x…"
   tagging made it painless. Decompile of the reader confirmed.
+- **Not a plugin fix.** Ghidra never creates a reference from a 16-bit DS-relative
+  operand, so there is nothing for `xrefs`/`inspect` to report — no tool change here can
+  surface what the reference manager does not hold. The fix belongs in the fork's
+  reference analysis (the constant-propagation / RTLink analyzers that already know
+  DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
+  `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
