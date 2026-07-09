@@ -587,3 +587,70 @@ GUI action needed.
   (so `ProjectContext` cached it), then `recursive=true` → `Deleted folder /scratch-deltest
   (1 file(s), 0 subfolder(s))`. The non-recursive guard still refuses a non-empty folder, and the
   project returned to its original 5 files.
+
+## 2026-07-09 — follow-ups — folder delete confirmed, a client schema-cache trap, and the DecompInterface cache question
+- **`manage_files` folder delete: works.** `op=delete` on `/scratch-*` removed the empty folders,
+  project back to its original 2 folders / 5 files. Nothing more needed.
+- **`decompile dump_jumptables`: a client-side schema-cache artifact, not a plugin bug.** An MCP
+  client that cached the tool's JSON schema at connect time stringifies a *new* parameter, and the
+  server then rejects `"true"` with `/dump_jumptables: string found, boolean expected`. A client
+  that re-reads the schema after the Ghidra restart calls it fine — the flag was exercised live
+  against `/gog/VICEROY.EXE` the same day. **Worth keeping in mind: adding a tool argument
+  mid-session may not be testable in that session.**
+- **Pooled `DecompInterface` does *not* serve stale symbols — the flag does not lie.** The concern
+  was that `Decompilers` reuses one `DecompInterface` per program and never calls
+  `resetDecompiler()`, so the C++ side might cache symbol-scope queries and miss an override
+  written after the program's first decompile. It does not:
+  `DecompInterface.decompileFunction` calls `flushCache()` — which sends `flushNative` to the
+  decompiler process — at the end of *every* decompile (`DecompInterface.java:832`), so the next
+  decompile re-queries the symbol database. (`resetDecompiler()` restarts a dead process; it is not
+  the cache-coherence mechanism.) Verified empirically on the same pooled interface, in one
+  process: decompile `get_funky_string` → `decompiler-discovered (73 cases -> 13 distinct
+  targets)`; write an override with `create kind=label namespace=…`; decompile again → `CONSUMED
+  (16 cases -> 3 distinct targets)`. The *decompiler's own* recovered table changed, so the C++
+  side plainly re-read the new symbols. **Re-confirmed independently — see the settlement below.**
+
+## 2026-07-09 — decompile dump_jumptables — false NOT CONSUMED: segmented addresses compared as strings
+Exercised the flag in a fresh session. It works, and it immediately paid for itself — but its
+verdict line was wrong, and the bug is the same address-rendering trap that had by then bitten this
+project three times.
+
+- **Symptom:** `FUN_12fd_006c` decompiled with `/* WARNING: Switch is manually overridden */` and
+  the correct handlers, i.e. the override was plainly consumed — while the dump printed
+  `=> override at 12fd:00de: NOT CONSUMED` and separately `=> table at 1000:30ae:
+  decompiler-discovered`. Those are the same address: `0x12fd0 + 0xde == 0x130ae`, and the sent XML
+  even encodes `offset="0x130ae"`.
+- **Cause:** `jumpTableDump` keyed its "used" map on `getSwitchAddress().toString()`. The sent
+  address comes from the override symbol and renders as its own paragraph (`12fd:00de`); the
+  returned one is rebuilt by the address factory and renders as the 64KB-page default
+  (`1000:30ae`). `SegmentedAddress` does not override `equals`, so as *objects* they are equal
+  (`GenericAddress` compares flat offset + space) — only the strings differ.
+- **Fixed** in `DecompileTool.jumpTableDump` by keying on `Address` instead of its rendering
+  (ebbex-ghidra-mcp `44f6082`). Re-verified: `=> override at 12fd:00de: CONSUMED (8 cases ->
+  8 distinct targets)`.
+- **Lesson worth generalising:** never compare segmented addresses as strings. Any tool that
+  matches addresses across the Java/decompiler boundary should compare `Address`, because the two
+  sides render the same flat offset differently.
+
+### Settlement: the stale-`DecompInterface` hazard is **not** real (2026-07-09)
+An earlier bullet here claimed the hazard was real and prescribed "write the override before the
+program's first decompile". That contradicted the follow-up entry above, so both were tested.
+
+- *Mechanism:* `DecompInterface.decompileFunction` ends by calling `flushCache()` whenever the
+  process is `NOT_DISPOSED` (`DecompInterface.java:832`), which sends `flushNative` to the
+  decompiler process. The native symbol cache is therefore empty *after every decompile*, so the
+  next one must re-query the symbol database. (The `flushCache()` commented out with "we don't need
+  to flush the cache" is at line 949, inside the unrelated `fillinVersionNumber`.)
+- *Experiment:* fresh `/bin/ls` imported and analysed, so no prior decompile could have warmed
+  anything. Decompiled `ext_wmatch` (the program's **first** decompile) — it rendered its callee as
+  `FUN_001054f4`. Renamed that callee, then decompiled `ext_wmatch` again on the same pooled
+  interface: both call sites now render `STALE_PROBE_written_after_first_decompile()`. A symbol
+  written *after* the first decompile is visible to the next one.
+- *Consequences:* there is **no** "write the override before the first decompile" rule, and
+  `resetDecompiler()` is not needed for cache coherence — it restarts a dead process.
+- *What most likely burned the earlier measurement:* the false `NOT CONSUMED` verdict documented
+  above. Before `44f6082` the dump compared switch addresses as **strings**, so an override that
+  had in fact been consumed was reported as not consumed. "Decompile, add override, decompile again
+  → still not consumed" is exactly what that bug looks like from the outside, and it is the reading
+  that mimics staleness. (Inference, not proven — but it fits the symptom, and staleness is now
+  ruled out.)
