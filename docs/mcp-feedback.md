@@ -79,3 +79,14 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` 
   reference analysis (the constant-propagation / RTLink analyzers that already know
   DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
   `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
+
+## 2026-07-11: cannot delete a scratch program that something still holds open
+
+`manage_files op=delete` on `/scratch-xref-merged` refuses with "open elsewhere
+(e.g. a CodeBrowser)" after an MCP-driven import+analyze cycle (fresh Ghidra
+launch, program never manually opened). Either the import/analyze tools (or the
+program-tool cache) keep the program open, or the GUI auto-opened it; there is no
+MCP tool to close/release a program, so the mandated scratch-DB cleanup can't be
+completed without a manual click in the GUI. Suggestion: a `close_program` op (or
+auto-release after tool calls), and make `manage_files` say *which* consumer holds
+the file.
