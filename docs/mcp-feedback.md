@@ -1,8 +1,10 @@
 # ebbex-ghidra-mcp — Dogfooding Feedback
 
-We are dogfooding our own MCP server plugin (`../ebbex-ghidra-mcp`) for all Ghidra
-RE work on this project. **Every agent doing Ghidra work must log friction here**,
-and also mention it in its end-of-task report.
+The friction log for this MCP server, kept in the repo where the fixes land. The
+viceroy RE project (`../viceroy`) dogfoods this server for all its Ghidra work:
+**every agent doing Ghidra work there must log friction here** — in this file, not
+in viceroy — and also mention it in its end-of-task report. When improving a tool,
+read the open entries below first.
 
 **Why this log exists.** The plugin is a deliberate reaction to
 [bethington/ghidra-mcp#307](https://github.com/bethington/ghidra-mcp/issues/307):

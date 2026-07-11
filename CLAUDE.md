@@ -49,7 +49,7 @@ The loop:
 - **Edit the Ghidra source through Eclipse** (`eclipse-coder`), not by writing files directly — the launched Ghidra runs Eclipse's compiled output, so filesystem-only edits never reach it. Eclipse auto-builds on save; check `eclipse-ide getCompilationErrors` before relaunching.
 - **Read and commit through the filesystem** (`Read`, `git`) — reading files and running `git` on the worktree is fine and preferred. Stage only the intended source; leave Eclipse-managed `.launch` files and untracked files out.
 - **This directory is the mcpserver**, built here with `./gradlew installExtension`, which packages the extension and copies it into Ghidra's user extensions dir (`GHIDRA_USER_EXTENSIONS_DIR`); restarting Ghidra in Eclipse then detects and loads the new build. It is not part of the Eclipse workspace — everything here goes via the filesystem.
-- **Friction log:** anything awkward about using the `ghidra-program` / `ghidra-application-level` tools — missing capabilities, counter-intuitive arguments, output that fights the caller — is recorded in `../viceroy/docs/mcp-feedback.md` (the viceroy RE project dogfoods this server); check it for open entries when improving tools.
+- **Friction log:** anything awkward about using the `ghidra-program` / `ghidra-application-level` tools — missing capabilities, counter-intuitive arguments, output that fights the caller — is recorded in `docs/mcp-feedback.md`, with resolved entries moved to `docs/archive/mcp-feedback.md`. The log lives here, in the repo where the fixes land; the viceroy RE project (`../viceroy`) dogfoods this server and feeds it. Check the open entries when improving tools, and archive an entry when you fix it.
 
 ## Testing
 
