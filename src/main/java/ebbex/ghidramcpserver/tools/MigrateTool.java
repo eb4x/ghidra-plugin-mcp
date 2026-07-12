@@ -353,13 +353,34 @@ public class MigrateTool implements ProgramTool {
 		}
 	}
 
-	/** Defined data: apply the source's type at the same address where the target has none. */
+	/**
+	 * Defined data: apply the source's type where the target has no <em>code</em> and no
+	 * conflicting data.
+	 *
+	 * <p><b>Data never overwrites an instruction.</b> The source is an older analysis, so it holds
+	 * data at addresses the current analyzer has since correctly recovered as code; laying the old
+	 * data over them destroys the instruction and every reference it carried. This is not
+	 * hypothetical — the first real run of this tool did exactly that, clearing a
+	 * {@code CALLF OVLSTUB_30_0608} at {@code 1000:0048} into a {@code uint} and silently costing
+	 * the stub a caller. The trap: {@link Listing#getDefinedDataAt} returns null for an
+	 * instruction, so an "is anything here?" check written against it sees an empty address and
+	 * clears the code unit. Ask the listing what <em>code unit</em> is there instead, and never
+	 * clear an instruction — not even under {@code overwrite}, whose job is to arbitrate
+	 * documentation, not to undo disassembly.
+	 */
 	private void migrateData(Program source, Program target, boolean overwrite, boolean dryRun,
 			Report report) throws Exception {
 		Listing targetListing = target.getListing();
 		for (Data sourceData : iterable(source.getListing().getDefinedData(true))) {
 			Address address = translate(source, target, sourceData.getAddress());
 			if (address == null) {
+				continue;
+			}
+			if (targetListing.getInstructionContaining(address) != null) {
+				// The target disassembled this as code. Trust the newer analysis, keep the
+				// instruction, and tell the caller where the two DBs disagree.
+				report.dataSkippedCode.add(address + "  source has " +
+					sourceData.getDataType().getName() + ", target has code");
 				continue;
 			}
 			Data existing = targetListing.getDefinedDataAt(address);
@@ -377,19 +398,40 @@ public class MigrateTool implements ProgramTool {
 				DataType resolved = target.getDataTypeManager()
 						.resolve(sourceData.getDataType(), DataTypeConflictHandler.KEEP_HANDLER);
 				try {
-					targetListing.clearCodeUnits(address,
-						address.add(Math.max(0, resolved.getLength() - 1)), false);
+					// Only undefined bytes or existing data lie in this range (code was ruled out
+					// above), so clearing is safe — it drops no disassembly.
+					Address end = address.add(Math.max(0, resolved.getLength() - 1));
+					if (targetListing.getInstructionContaining(end) != null ||
+						crossesCode(targetListing, address, end)) {
+						report.dataSkippedCode.add(address + "  source has " +
+							resolved.getName() + ", target has code within its extent");
+						continue;
+					}
+					targetListing.clearCodeUnits(address, end, false);
 					targetListing.createData(address, resolved);
 				}
 				catch (Exception e) {
-					// Undefined/conflicting layout at this address in the target (the re-import
-					// may disassemble differently) — count it rather than abort the migration.
+					// Conflicting layout at this address in the target — count it rather than
+					// abort the migration.
 					report.dataFailed++;
 					continue;
 				}
 			}
 			report.dataApplied++;
 		}
+	}
+
+	/** True if any instruction lies in [start, end] — a multi-byte type must not straddle code. */
+	private static boolean crossesCode(Listing listing, Address start, Address end) {
+		for (Address at = start; at.compareTo(end) <= 0; at = at.next()) {
+			if (at == null) {
+				return false;
+			}
+			if (listing.getInstructionContaining(at) != null) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -462,6 +504,7 @@ public class MigrateTool implements ProgramTool {
 		int dataFailed;
 		final List<String> sourceOnly = new ArrayList<>();
 		final List<String> namesSkippedNamed = new ArrayList<>();
+		final List<String> dataSkippedCode = new ArrayList<>();
 
 		String render(String sourcePath, List<String> kinds) {
 			StringBuilder sb = new StringBuilder("Migrated from " + sourcePath + "  (kinds: " +
@@ -494,7 +537,8 @@ public class MigrateTool implements ProgramTool {
 			if (kinds.contains("data")) {
 				sb.append("\nDefined data:    ").append(dataApplied).append(" applied, ")
 						.append(dataAlreadyEqual).append(" already equal, ")
-						.append(dataSkippedExisting).append(" kept");
+						.append(dataSkippedExisting).append(" kept, ")
+						.append(dataSkippedCode.size()).append(" refused (target has code)");
 				if (dataFailed > 0) {
 					sb.append(", ").append(dataFailed).append(" failed (conflicting layout)");
 				}
@@ -506,6 +550,15 @@ public class MigrateTool implements ProgramTool {
 						.append("NOT be applied. Re-create them (create kind=function with ")
 						.append("end_address), then re-run migrate:");
 				appendCapped(sb, sourceOnly, 40);
+			}
+			if (!dataSkippedCode.isEmpty()) {
+				sb.append("\n\nDATA REFUSED (").append(dataSkippedCode.size())
+						.append(") — the source (an older analysis) has data where THIS program has ")
+						.append("instructions. The data was NOT applied: overwriting an instruction ")
+						.append("would destroy it and every reference it carries. The newer ")
+						.append("disassembly is kept. If a site here is genuinely data, clear the ")
+						.append("code there deliberately (clear kind=code) and re-run:");
+				appendCapped(sb, dataSkippedCode, 40);
 			}
 			if (!namesSkippedNamed.isEmpty()) {
 				sb.append("\n\nKEPT target names (").append(namesSkippedNamed.size())
