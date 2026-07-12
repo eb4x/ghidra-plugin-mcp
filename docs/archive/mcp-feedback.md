@@ -705,3 +705,74 @@ same day by a port-bind race where a second Ghidra instance held 8765 with an un
 build and the "MCP up" probe couldn't tell instances apart. The entry's other half — a
 wait-for-console-pattern parameter on `launchConfiguration` — belongs to the eclipse
 MCP server, not this repo, so it leaves this log with that pointer.
+
+## 2026-07-12 — the three gaps flagged in viceroy's workflow doc — all three closed
+The "Known gaps flagged in viceroy's workflow doc" entry named three items collected from
+`../viceroy/docs/ghidra-workflow.md` that had never been filed or confirmed. All three are
+now resolved, two with code and one by measurement.
+
+### Masked/wildcard byte search in overlay spaces — works; the old bridge's flakiness is not ours
+Never re-verified after the move off the python bridge, where only exact patterns were
+trustworthy. Tested live on `/VICEROY.EXE`: `search_memory kind=bytes` with `??` wildcards
+resolves inside overlay spaces and masks correctly.
+- `c8 16 00 00 56 8b ?? 42 85` → `OVERLAY_00::010000`, `OVERLAY_13::010000` (the two pages
+  genuinely hold identical code), and the unmasked pattern returns the same set — the mask is
+  neither dropping hits nor inventing them.
+- `c8 ?? 00 00 56 8b` → many more hits across resident code, so the mask genuinely widens the
+  match rather than being ignored.
+**No code change.** Wildcard search is trustworthy, in overlay spaces included.
+
+### No instruction-level search → `search_memory kind=instruction`
+(Also recorded above.) Resolved the same day.
+
+### No script-execution tool → not added; the concrete need is met by `list user_only`
+The gap was hit for real as "the mandated `ghidra_symbols.md` refresh needs
+`ghidra_dump_symbols.py` from the GUI Script Manager". That need is a **symbol dump**, not
+arbitrary scripting, so it does not justify a script-execution tool — which is precisely the
+capability whose absence this server's whole thesis defends (a `run_script_inline` re-creates
+the unbounded surface the small-tool-set bet exists to avoid, and it is how the legacy bridge
+invited the DB-surgery accidents catalogued in viceroy's playbooks).
+`list` instead gained **`user_only`** (kind=functions|symbols|data), which drops names Ghidra
+generated (`SourceType.DEFAULT`: `FUN_*`, `LAB_*`, `DAT_*`) and keeps the ones a human or an
+analyzer chose. Verified live: `/VICEROY.EXE` reports **1225 curated functions of 2773**, i.e.
+exactly the symbol map the script produced, over MCP, paginated.
+**The design decision stands: no script execution.** If a future need genuinely requires
+arbitrary code (not an export), file it fresh — that would be new evidence, not this entry.
+
+### No bulk documentation migration → the `migrate` tool
+The legacy bridge's `merge_program_documentation` had no equivalent, which left a re-import
+of `/VICEROY.EXE` (needed to pick up the fixed CS-resolution analyzer) blocked on "it loses
+hand-added names/types unless migrated". `migrate` copies function names, signatures, comments,
+labels, data types and defined data from another project DB, with `dry_run` and per-`kinds`
+selection. Both documented legacy gotchas are designed out rather than reproduced — and the
+first live dry run proved the design mattered:
+
+- **Gotcha 1 (it clobbered better names).** The legacy tool renamed a target function to the
+  source's name whenever the two differed, dragging 157 correctly-named overlay stubs back to
+  their old naive names. Root cause here: a *placeholder* name carries no information. `migrate`
+  never copies one from the source and never lets one protect a target
+  (`placeholder_pattern`, default covering `FUN_`/`LAB_`/`DAT_`/`caseD_`/`switchD_` **plus
+  address-spelled analyzer names like `OVL01_0000` / `OVLSTUB_20_0718`**). The stale
+  `OVLSTUB_*` names in the old DB are placeholders, so they simply cannot overwrite the
+  re-import's correct ones. `on_conflict=skip_named` (default) then only arbitrates genuine
+  meaningful-vs-meaningful disagreements, and lists them for review;
+  `on_conflict=overwrite` lets the source win.
+- **This is worth dwelling on:** the first implementation judged "is this a real name?" by
+  `SourceType != DEFAULT`, which *looked* right and passed review. The live dry run against
+  `/VICEROY.OLD` → `/VICEROY.EXE` showed it silently refusing to migrate **449** of the best
+  human names, because the RTLink analyzer assigns `OVL01_0000` at `ANALYSIS` source and that
+  counted as "already named". Judging names by *meaning* rather than by *who assigned them*
+  took it to **955 applied, 0 wrongly kept**. A dry run on real data caught what reading the
+  code did not.
+- **Gotcha 2 (source-only functions skipped in silence).** Names land only where the target has
+  a function at the same entry; the legacy tool dropped the rest without a word, which is why
+  its dry-run counts were optimistic (planned 1310, applied 1279). `migrate` counts and lists
+  them under **SOURCE-ONLY** — the live run names all 41 (the FAB decompressor family at 20a5,
+  the printf helpers at 1d1d, the OVERLAY_19 terrain-drawing family, …) so the caller knows
+  exactly what to re-create (`create kind=function` with `end_address`) before re-running.
+
+Write path verified end-to-end on a throwaway pair (`/bin/ls` imported twice, analyzed, one
+function renamed + plate-commented in the source): migrate applied exactly those two changes
+and nothing else; a meaningful target name then survived `skip_named` (and was reported) and
+fell to `overwrite`. The live `/VICEROY.EXE` was never written — the re-import remains the
+user's decision, and `migrate --dry_run` now tells them exactly what it would cost.
