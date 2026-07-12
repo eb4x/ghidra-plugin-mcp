@@ -60,6 +60,11 @@ public final class Endpoints {
 					try {
 						return tool.execute(args, project);
 					}
+					catch (IllegalArgumentException e) {
+						// Bad arguments (unresolvable name, invalid address, …): the message
+						// already tells the caller what to fix — no class-name noise.
+						return Results.error(e.getMessage() != null ? e.getMessage() : e.toString());
+					}
 					catch (Exception e) {
 						Msg.error(Endpoints.class, "app tool " + tool.name() + " failed", e);
 						return Results.error(tool.name() + " failed: " + e);
@@ -136,6 +141,11 @@ public final class Endpoints {
 			Program program) {
 		try {
 			return tool.execute(args, program);
+		}
+		catch (IllegalArgumentException e) {
+			// Bad arguments (unresolvable function/location, invalid address, …): the message
+			// already tells the caller what to fix — no class-name noise.
+			return Results.error(e.getMessage() != null ? e.getMessage() : e.toString());
 		}
 		catch (Exception e) {
 			Msg.error(Endpoints.class, "program tool " + tool.name() + " failed", e);

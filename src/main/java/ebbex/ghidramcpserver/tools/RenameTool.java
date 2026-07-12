@@ -10,13 +10,11 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
-import ghidra.app.decompiler.DecompileResults;
+import ebbex.ghidramcpserver.util.Variables;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
-import ghidra.program.model.listing.Parameter;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
-import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.symbol.SourceType;
@@ -132,7 +130,7 @@ public class RenameTool implements ProgramTool {
 		Function function = Locations.findFunction(program, functionRef);
 
 		// Parameters and simple stack locals exist on the database function directly.
-		Variable dbVariable = findDbVariable(function, oldName);
+		Variable dbVariable = Variables.findDbVariable(function, oldName);
 		if (dbVariable != null) {
 			return Transactions.modify(program, "Rename variable", () -> {
 				dbVariable.setName(newName, SourceType.USER_DEFINED);
@@ -142,7 +140,7 @@ public class RenameTool implements ProgramTool {
 		}
 
 		// Otherwise resolve a decompiler HighSymbol (off the EDT), then apply in a transaction.
-		HighSymbol highSymbol = findHighSymbol(program, function, oldName);
+		HighSymbol highSymbol = Variables.findHighSymbol(decompilers, program, function, oldName);
 		if (highSymbol == null) {
 			return Results.error("No parameter or local variable named '" + oldName + "' in " +
 				function.getName());
@@ -152,28 +150,5 @@ public class RenameTool implements ProgramTool {
 				SourceType.USER_DEFINED);
 			return "Renamed variable " + oldName + " -> " + newName + " in " + function.getName();
 		});
-	}
-
-	private static Variable findDbVariable(Function function, String name) {
-		for (Parameter parameter : function.getParameters()) {
-			if (parameter.getName().equals(name)) {
-				return parameter;
-			}
-		}
-		for (Variable local : function.getLocalVariables()) {
-			if (local.getName().equals(name)) {
-				return local;
-			}
-		}
-		return null;
-	}
-
-	private HighSymbol findHighSymbol(Program program, Function function, String name) {
-		DecompileResults results = decompilers.decompile(program, function, 30);
-		HighFunction high = results != null ? results.getHighFunction() : null;
-		if (high == null) {
-			return null;
-		}
-		return high.getLocalSymbolMap().getNameToSymbolMap().get(name);
 	}
 }
