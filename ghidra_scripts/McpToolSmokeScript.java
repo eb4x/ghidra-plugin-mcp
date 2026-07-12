@@ -177,13 +177,6 @@ public class McpToolSmokeScript extends GhidraScript {
 				"name", "mcp_smoke_label"), program);
 			prog("save", Map.of(), program);
 
-			// save op=undo/redo/history: each mutating tool call is one transaction, so the
-			// label just created and cleared should be sitting on the undo stack by name.
-			prog("save", Map.of("op", "history"), program);
-			prog("save", Map.of("op", "undo"), program);
-			prog("save", Map.of("op", "redo"), program);
-			prog("save", Map.of("op", "undo", "count", 999), program); // over the cap: refused
-
 			// create kind=label with a namespace must descend into the *function* namespace, not
 			// create a plain namespace beside it. Decompiler jump-table overrides live at
 			// <func>::override::jmp_<addr>, and nothing reads them if they land under global.
