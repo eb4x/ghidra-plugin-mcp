@@ -14,12 +14,13 @@ import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectData;
+import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Delete, rename, or move a file or folder within the project. */
 public class ManageFilesTool implements ApplicationLevelTool {
 
-	private static final List<String> OPS = List.of("delete", "rename", "move");
+	private static final List<String> OPS = List.of("delete", "rename", "move", "copy");
 
 	private final ProjectContext context;
 
@@ -34,10 +35,14 @@ public class ManageFilesTool implements ApplicationLevelTool {
 
 	@Override
 	public String description() {
-		return "Delete, rename, or move a project file or folder. op=delete removes 'path' — a " +
-			"folder must be empty unless 'recursive' is true; op=rename gives it 'new_name' " +
-			"(leaf name); op=move puts it in 'dest_folder' (created if missing). A file open in " +
-			"a CodeBrowser can't be deleted — close it there first.";
+		return "Delete, rename, move, or copy a project file or folder. op=delete removes 'path' — " +
+			"a folder must be empty unless 'recursive' is true; op=rename gives it 'new_name' " +
+			"(leaf name); op=move puts it in 'dest_folder' (created if missing); op=copy duplicates " +
+			"it into 'dest_folder' (optionally under 'new_name'). op=copy is how you take a BACKUP " +
+			"before a risky bulk edit — Ghidra discards its undo history on every save, and this " +
+			"server auto-saves after each tool call, so a snapshot is the only way back. To restore " +
+			"one: delete the damaged file, then copy the backup to its folder and rename it. A file " +
+			"open in a CodeBrowser can't be deleted — close it there first.";
 	}
 
 	@Override
@@ -47,8 +52,8 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			"properties", Map.of(
 				"op", Schemas.enumProp("What to do", OPS),
 				"path", Schemas.stringProp("Project file or folder path, e.g. /malware.exe"),
-				"new_name", Schemas.stringProp("New leaf name (for op=rename)"),
-				"dest_folder", Schemas.stringProp("Destination folder path (for op=move)"),
+				"new_name", Schemas.stringProp("New leaf name (for op=rename, or optionally op=copy)"),
+				"dest_folder", Schemas.stringProp("Destination folder path (for op=move|copy)"),
 				"recursive", Schemas.boolProp("For op=delete on a folder: also delete everything " +
 					"inside it (default false, which fails on a non-empty folder)")),
 			"required", List.of("op", "path"));
@@ -87,6 +92,8 @@ public class ManageFilesTool implements ApplicationLevelTool {
 				case "delete" -> deleteFile(file, path);
 				case "rename" -> rename(file, Args.stringArg(args, "new_name", null));
 				case "move" -> move(data, file, Args.stringArg(args, "dest_folder", null));
+				case "copy" -> copy(data, file, Args.stringArg(args, "dest_folder", null),
+					Args.stringArg(args, "new_name", null));
 				default -> Results.error("unhandled op " + op);
 			};
 		}
@@ -156,6 +163,25 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		DomainFolder folder = getOrCreateFolder(data, destFolder);
 		DomainFile moved = file.moveTo(folder);
 		return Results.ok("Moved to " + moved.getPathname());
+	}
+
+	/**
+	 * Duplicate a file, e.g. to snapshot a program before a risky bulk edit. The copy is made
+	 * from the file's <em>saved</em> state, which is what a backup must capture — take it before
+	 * the write, not after. {@code copyTo} auto-uniquifies the leaf name in the destination, so
+	 * an explicit {@code new_name} is applied afterwards.
+	 */
+	private static McpSchema.CallToolResult copy(ProjectData data, DomainFile file,
+			String destFolder, String newName) throws Exception {
+		if (destFolder == null || destFolder.isBlank()) {
+			return Results.error("dest_folder is required for op=copy");
+		}
+		DomainFolder folder = getOrCreateFolder(data, destFolder);
+		DomainFile copied = file.copyTo(folder, TaskMonitor.DUMMY);
+		if (newName != null && !newName.isBlank()) {
+			copied = copied.setName(newName);
+		}
+		return Results.ok("Copied " + file.getPathname() + " -> " + copied.getPathname());
 	}
 
 	/**

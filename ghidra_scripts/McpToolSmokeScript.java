@@ -108,6 +108,14 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("migrate", Map.of("source", "/ls"), program);
 			prog("migrate", Map.of("source", "/__no_such_program__", "dry_run", true), program);
 
+			// manage_files op=copy: the snapshot primitive (there is no undo — Ghidra drops its
+			// undo history on every save, and every tool call here auto-saves).
+			app("manage_files", Map.of("op", "copy", "path", "/ls", "dest_folder", "/backups",
+				"new_name", "ls.snapshot"), project);
+			app("list_files", Map.of("folder", "/backups"), project);
+			app("manage_files", Map.of("op", "delete", "path", "/backups", "recursive", true),
+				project);
+
 			// manage_files delete on a file this script itself holds open: must refuse and
 			// name the consumer (McpToolSmokeScript), not just say "open elsewhere".
 			app("manage_files", Map.of("op", "delete", "path", "/ls"), project);
