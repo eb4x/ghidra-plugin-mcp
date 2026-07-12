@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Args;
@@ -43,10 +45,11 @@ import io.modelcontextprotocol.spec.McpSchema;
  * <li><b>It clobbered better names.</b> The legacy tool renamed a target function to the
  * source's name whenever both had a function and the names differed &mdash; which, after a
  * re-import with a <em>fixed</em> analyzer, dragged 157 correctly-named overlay stubs back to
- * their old wrong names. Here the default {@code on_conflict=skip_named} only writes where the
- * target's name is still auto-generated ({@link SourceType#DEFAULT}), so a target name that
- * anything deliberately assigned is never overwritten. {@code overwrite} restores the old
- * behavior for callers who really want the source to win.</li>
+ * their old wrong names. Two rules prevent that here: a <em>placeholder</em> source name (see
+ * {@link #DEFAULT_PLACEHOLDER_PATTERN}) is never copied at all, which is precisely what those
+ * stale {@code OVLSTUB_*} names are; and where both sides carry a meaningful name that disagrees,
+ * the default {@code on_conflict=skip_named} keeps the target's and lists it for review.
+ * {@code overwrite} lets the source win.</li>
  * <li><b>It skipped source-only functions silently.</b> Names land only where the target
  * already has a function at the same entry; functions that exist solely in the source (hand-made
  * in regions auto-analysis never reaches) were dropped without a word, and the {@code dry_run}
@@ -65,6 +68,18 @@ public class MigrateTool implements ProgramTool {
 
 	private static final List<String> CONFLICT_MODES = List.of("skip_named", "overwrite");
 
+	/**
+	 * Names that carry no information, so they are neither worth copying nor worth protecting.
+	 * Ghidra's own {@link SourceType#DEFAULT} placeholders ({@code FUN_*}, {@code LAB_*}, …) are
+	 * already identifiable by their source type, but an <em>analyzer</em> can assign an equally
+	 * meaningless name at {@code ANALYSIS} source — RTLink's {@code OVL01_0000} /
+	 * {@code OVLSTUB_20_0718} are placeholders spelled out of the address, and treating them as
+	 * real names would block the very names a migration exists to carry. Extend via
+	 * {@code placeholder_pattern}.
+	 */
+	private static final String DEFAULT_PLACEHOLDER_PATTERN =
+		"(?i)^(FUN|LAB|DAT|UNK|SUB|EXT|caseD|switchD|OVL\\d+|OVLSTUB_\\d+)_[0-9A-F_]+$";
+
 	private final ProjectContext context;
 
 	public MigrateTool(ProjectContext context) {
@@ -81,12 +96,15 @@ public class MigrateTool implements ProgramTool {
 		return "Copy documentation (function names, signatures, comments, labels, data types, " +
 			"defined data) from another program in the project into this one — for carrying " +
 			"naming/typing work across a re-import. 'source' is the source program's project " +
-			"path; 'kinds' selects what to copy (default all). on_conflict=skip_named (default) " +
-			"only writes where the target's name is still auto-generated, so it never overwrites " +
-			"a name the target's analyzer or a human gave; on_conflict=overwrite lets the source " +
-			"win. Functions that exist only in the source cannot receive names (nothing to name) " +
-			"and are reported as 'source-only' — re-create them, then re-run. dry_run=true reports " +
-			"what would change without writing.";
+			"path; 'kinds' selects what to copy (default all). Only MEANINGFUL names move: a name " +
+			"that is a placeholder (Ghidra's FUN_/LAB_/DAT_… plus anything matching " +
+			"'placeholder_pattern', e.g. an analyzer's OVL01_0000) is never copied from the " +
+			"source, and never protects a target. on_conflict=skip_named (default) keeps a " +
+			"meaningful target name where the source disagrees — so a re-import's correctly-named " +
+			"functions survive; on_conflict=overwrite lets the source win. Functions that exist " +
+			"only in the source cannot receive names (nothing to name) and are reported as " +
+			"'source-only' — re-create them, then re-run. dry_run=true reports what would change " +
+			"without writing.";
 	}
 
 	@Override
@@ -99,7 +117,12 @@ public class MigrateTool implements ProgramTool {
 			"description", "What to copy (default: all of " + KINDS + ")",
 			"items", Map.of("type", "string", "enum", KINDS)));
 		properties.put("on_conflict", Schemas.enumProp(
-			"What to do where the target already has a name (default skip_named)", CONFLICT_MODES));
+			"What to do where the target already has a MEANINGFUL name (default skip_named)",
+			CONFLICT_MODES));
+		properties.put("placeholder_pattern", Schemas.stringProp(
+			"Java regex (case-insensitive, whole name) for names that carry no information, so " +
+			"they are never copied and never protect a target. Default covers Ghidra's " +
+			"placeholders plus address-spelled analyzer names: " + DEFAULT_PLACEHOLDER_PATTERN));
 		properties.put("dry_run", Schemas.boolProp(
 			"Report what would change without writing anything (default false)"));
 		return Map.of("type", "object", "properties", properties,
@@ -134,32 +157,42 @@ public class MigrateTool implements ProgramTool {
 		boolean dryRun = Args.boolArg(args, "dry_run", false);
 		boolean overwrite = onConflict.equals("overwrite");
 
+		Pattern placeholder;
+		try {
+			placeholder = Pattern.compile(
+				Args.stringArg(args, "placeholder_pattern", DEFAULT_PLACEHOLDER_PATTERN));
+		}
+		catch (PatternSyntaxException e) {
+			return Results.error("placeholder_pattern is not a valid regex: " + e.getMessage());
+		}
+		Names names = new Names(placeholder);
+
 		Program source = context.openProgram(sourcePath);
 
 		Report report = new Report();
 		if (dryRun) {
 			// Plan against the live DBs without a transaction: every applier checks its
 			// precondition before mutating, so the dry run walks the same branches.
-			migrate(source, target, kinds, overwrite, true, report);
+			migrate(source, target, kinds, overwrite, names, true, report);
 			return Results.ok("DRY RUN — nothing written.\n" + report.render(sourcePath, kinds));
 		}
 		return Transactions.modify(target, "Migrate documentation from " + sourcePath, () -> {
-			migrate(source, target, kinds, overwrite, false, report);
+			migrate(source, target, kinds, overwrite, names, false, report);
 			return report.render(sourcePath, kinds);
 		});
 	}
 
 	private void migrate(Program source, Program target, List<String> kinds, boolean overwrite,
-			boolean dryRun, Report report) throws Exception {
+			Names names, boolean dryRun, Report report) throws Exception {
 		// Data types first: signatures and data definitions below resolve against them.
 		if (kinds.contains("data_types")) {
 			migrateDataTypes(source, target, dryRun, report);
 		}
 		if (kinds.contains("function_names") || kinds.contains("signatures")) {
-			migrateFunctions(source, target, kinds, overwrite, dryRun, report);
+			migrateFunctions(source, target, kinds, overwrite, names, dryRun, report);
 		}
 		if (kinds.contains("labels")) {
-			migrateLabels(source, target, overwrite, dryRun, report);
+			migrateLabels(source, target, overwrite, names, dryRun, report);
 		}
 		if (kinds.contains("comments")) {
 			migrateComments(source, target, overwrite, dryRun, report);
@@ -170,14 +203,16 @@ public class MigrateTool implements ProgramTool {
 	}
 
 	/**
-	 * Function names and signatures. A source function with an auto-generated name carries no
-	 * information, so it is never copied; a target function that already has a real name is left
-	 * alone unless {@code overwrite}. Source functions with no counterpart in the target are
-	 * recorded rather than skipped in silence — that omission is what made the legacy tool's
-	 * dry-run counts lie.
+	 * Function names and signatures. A source name that is a placeholder carries no information,
+	 * so it is never copied — that alone defuses the legacy tool's worst behavior, since the old
+	 * DB's stale {@code OVLSTUB_*} names can no longer overwrite the re-import's correct ones. A
+	 * target whose name is <em>meaningful</em> is left alone unless {@code overwrite}; a target
+	 * still wearing a placeholder is free to receive the source's name. Source functions with no
+	 * counterpart in the target are recorded rather than skipped in silence — that omission is
+	 * what made the legacy tool's dry-run counts lie.
 	 */
 	private void migrateFunctions(Program source, Program target, List<String> kinds,
-			boolean overwrite, boolean dryRun, Report report) throws Exception {
+			boolean overwrite, Names names, boolean dryRun, Report report) throws Exception {
 		boolean doNames = kinds.contains("function_names");
 		boolean doSignatures = kinds.contains("signatures");
 
@@ -189,19 +224,18 @@ public class MigrateTool implements ProgramTool {
 			if (targetFunction == null) {
 				// No function at this entry in the target: there is nothing to rename. The caller
 				// must re-create the body first (see the class javadoc), so name it explicitly.
-				if (isUserNamed(sourceFunction.getSymbol())) {
+				if (names.isMeaningful(sourceFunction.getSymbol())) {
 					report.sourceOnly.add(sourceFunction.getEntryPoint() + "  " +
 						sourceFunction.getName());
 				}
 				continue;
 			}
 
-			if (doNames && isUserNamed(sourceFunction.getSymbol())) {
-				boolean targetNamed = isUserNamed(targetFunction.getSymbol());
+			if (doNames && names.isMeaningful(sourceFunction.getSymbol())) {
 				if (sourceFunction.getName().equals(targetFunction.getName())) {
 					report.namesAlreadyEqual++;
 				}
-				else if (targetNamed && !overwrite) {
+				else if (names.isMeaningful(targetFunction.getSymbol()) && !overwrite) {
 					report.namesSkippedNamed.add(entry + "  target '" + targetFunction.getName() +
 						"' kept, source had '" + sourceFunction.getName() + "'");
 				}
@@ -232,11 +266,11 @@ public class MigrateTool implements ProgramTool {
 	}
 
 	/** Non-dynamic, non-function labels (function symbols are handled as functions). */
-	private void migrateLabels(Program source, Program target, boolean overwrite, boolean dryRun,
-			Report report) throws Exception {
+	private void migrateLabels(Program source, Program target, boolean overwrite, Names names,
+			boolean dryRun, Report report) throws Exception {
 		SymbolTable targetSymbols = target.getSymbolTable();
 		for (Symbol symbol : source.getSymbolTable().getAllSymbols(false)) {
-			if (symbol.getSymbolType() != SymbolType.LABEL || !isUserNamed(symbol)) {
+			if (symbol.getSymbolType() != SymbolType.LABEL || !names.isMeaningful(symbol)) {
 				continue;
 			}
 			Address address = translate(source, target, symbol.getAddress());
@@ -248,7 +282,7 @@ public class MigrateTool implements ProgramTool {
 				report.labelsAlreadyEqual++;
 				continue;
 			}
-			if (isUserNamed(existing) && !overwrite) {
+			if (names.isMeaningful(existing) && !overwrite) {
 				report.labelsSkippedNamed++;
 				continue;
 			}
@@ -375,8 +409,21 @@ public class MigrateTool implements ProgramTool {
 		}
 	}
 
-	private static boolean isUserNamed(Symbol symbol) {
-		return symbol != null && !symbol.isDynamic() && symbol.getSource() != SourceType.DEFAULT;
+	/**
+	 * Decides which names say something. A name is meaningful when a human or an analyzer chose
+	 * it <em>and</em> it is not one of the address-spelled placeholder forms — the distinction
+	 * {@link SourceType} alone cannot make, because an analyzer's {@code OVL01_0000} is assigned
+	 * at {@code ANALYSIS} source yet says no more than Ghidra's own {@code FUN_*}.
+	 */
+	private record Names(Pattern placeholder) {
+
+		boolean isMeaningful(Symbol symbol) {
+			if (symbol == null || symbol.isDynamic() ||
+				symbol.getSource() == SourceType.DEFAULT) {
+				return false;
+			}
+			return !placeholder.matcher(symbol.getName()).matches();
+		}
 	}
 
 	@SuppressWarnings("unchecked")
@@ -462,9 +509,10 @@ public class MigrateTool implements ProgramTool {
 			}
 			if (!namesSkippedNamed.isEmpty()) {
 				sb.append("\n\nKEPT target names (").append(namesSkippedNamed.size())
-						.append(") — on_conflict=skip_named; pass on_conflict=overwrite to let the ")
-						.append("source win (check these first: after a re-import with a fixed ")
-						.append("analyzer, the target's names are usually the correct ones):");
+						.append(") — both sides have a meaningful name and they disagree, so ")
+						.append("on_conflict=skip_named kept the target's. Review these: after a ")
+						.append("re-import with a fixed analyzer the target is usually right, but ")
+						.append("on_conflict=overwrite lets the source win:");
 				appendCapped(sb, namesSkippedNamed, 40);
 			}
 			return sb.toString();
