@@ -1,8 +1,9 @@
 package ebbex.ghidramcpserver.tools;
 
-import java.util.ArrayList;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -226,6 +227,10 @@ public class MigrateTool implements ProgramTool {
 
 	private void migrate(Program source, Program target, List<String> kinds, boolean overwrite,
 			Names names, boolean dryRun, Report report) throws Exception {
+		// Always, whatever the kinds: a name, a signature and a comment can all land on a
+		// function whose extent differs from the one they were written for.
+		scanBodyMismatches(source, target, report);
+
 		// Data types first: signatures and data definitions below resolve against them.
 		if (kinds.contains("data_types")) {
 			migrateDataTypes(source, target, dryRun, report);
@@ -241,6 +246,68 @@ public class MigrateTool implements ProgramTool {
 		}
 		if (kinds.contains("data")) {
 			migrateData(source, target, overwrite, dryRun, report);
+		}
+	}
+
+	/**
+	 * Report the functions the two DBs place at the same entry but give <em>different extents</em>.
+	 *
+	 * <p>Migration matches on the entry point, because that is the only stable key across a
+	 * re-import. But <b>entry-point equality is not function equality</b>: when the two analyses
+	 * disagree about where a function ends, the source's name, signature and comments are written
+	 * onto a body they were never about. Observed on the real DBs, all silently:
+	 *
+	 * <ul>
+	 * <li>{@code screen_redraw_full} — 38 bytes in the source, 67 in the target (the target
+	 * absorbed what the source called a separate function). The migrated name describes half of
+	 * what the function now does.</li>
+	 * <li>{@code draw_map_tile} — a full ~1KB function in the source; in the target a <b>1-byte
+	 * husk</b> whose code the analyzer never disassembled. A meticulous plate comment documenting
+	 * the entire rendering algorithm was migrated onto a function containing no code.</li>
+	 * </ul>
+	 *
+	 * <p>Nothing here is blocked: the documentation is still the best available and a mismatch is
+	 * not automatically wrong. It is <em>reported</em>, worst first, because a silent skip is how
+	 * this class of error hides — the same lesson as the data-vs-code clobber.
+	 */
+	private static void scanBodyMismatches(Program source, Program target, Report report) {
+		for (Function sourceFunction : source.getFunctionManager().getFunctions(true)) {
+			Address entry = translate(source, target, sourceFunction.getEntryPoint());
+			Function targetFunction = entry == null
+					? null
+					: target.getFunctionManager().getFunctionAt(entry);
+			if (targetFunction == null) {
+				continue; // no counterpart: already reported as SOURCE-ONLY
+			}
+			long sourceBody = sourceFunction.getBody().getNumAddresses();
+			long targetBody = targetFunction.getBody().getNumAddresses();
+			if (sourceBody == targetBody) {
+				continue;
+			}
+			report.bodyMismatches.add(new BodyMismatch(entry.toString(), sourceFunction.getName(),
+				sourceBody, targetBody));
+		}
+	}
+
+	/** One entry where both DBs have a function but disagree about how far it extends. */
+	private record BodyMismatch(String entry, String name, long sourceBody, long targetBody) {
+
+		/** A target body this small holds no real code — the analyzer failed to disassemble it. */
+		boolean targetIsHusk() {
+			return targetBody <= 1;
+		}
+
+		long delta() {
+			return Math.abs(sourceBody - targetBody);
+		}
+
+		String render() {
+			String note = targetIsHusk()
+					? "  <-- TARGET IS A HUSK: its code was never disassembled; the migrated " +
+						"name/comments describe code that is not there"
+					: "";
+			return entry + "  " + name + ": source " + sourceBody + "B, target " + targetBody +
+				"B" + note;
 		}
 	}
 
@@ -547,6 +614,7 @@ public class MigrateTool implements ProgramTool {
 		final List<String> sourceOnly = new ArrayList<>();
 		final List<String> namesSkippedNamed = new ArrayList<>();
 		final List<String> dataSkippedCode = new ArrayList<>();
+		final List<BodyMismatch> bodyMismatches = new ArrayList<>();
 
 		String backup;
 
@@ -583,6 +651,14 @@ public class MigrateTool implements ProgramTool {
 				sb.append("\nData types:      ").append(dataTypesApplied).append(" added, ")
 						.append(dataTypesAlreadyPresent).append(" already present");
 			}
+			if (!bodyMismatches.isEmpty()) {
+				long husks = bodyMismatches.stream().filter(BodyMismatch::targetIsHusk).count();
+				sb.append("\nBody mismatch:   ").append(bodyMismatches.size())
+						.append(" function(s) differ in extent between the DBs");
+				if (husks > 0) {
+					sb.append(", ").append(husks).append(" of them HUSKS (see below)");
+				}
+			}
 			if (kinds.contains("data")) {
 				sb.append("\nDefined data:    ").append(dataApplied).append(" applied, ")
 						.append(dataAlreadyEqual).append(" already equal, ")
@@ -599,6 +675,24 @@ public class MigrateTool implements ProgramTool {
 						.append("NOT be applied. Re-create them (create kind=function with ")
 						.append("end_address), then re-run migrate:");
 				appendCapped(sb, sourceOnly, 40);
+			}
+			if (!bodyMismatches.isEmpty()) {
+				long husks = bodyMismatches.stream().filter(BodyMismatch::targetIsHusk).count();
+				sb.append("\n\nBODY MISMATCH (").append(bodyMismatches.size())
+						.append(husks > 0 ? ", including " + husks + " HUSK(S)" : "")
+						.append(") — both DBs have a function at these entries, but they disagree ")
+						.append("about how far it extends. The name/signature/comments were applied ")
+						.append("anyway, because the ENTRY matched — but entry-point equality is not ")
+						.append("function equality, so documentation written for one body may now ")
+						.append("describe different code. Worst first:");
+				// Worst first: a husk, or a large delta, is what a reader must look at.
+				List<String> lines = bodyMismatches.stream()
+						.sorted(Comparator.comparing(BodyMismatch::targetIsHusk).reversed()
+								.thenComparing(Comparator.comparingLong(BodyMismatch::delta)
+										.reversed()))
+						.map(BodyMismatch::render)
+						.toList();
+				appendCapped(sb, lines, 25);
 			}
 			if (!dataSkippedCode.isEmpty()) {
 				sb.append("\n\nDATA REFUSED (").append(dataSkippedCode.size())

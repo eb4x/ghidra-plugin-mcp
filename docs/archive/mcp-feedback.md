@@ -845,3 +845,59 @@ survives a Ghidra restart.
 Verified end-to-end on `/gog/VICEROY.EXE`: snapshot; clear the code at `entry` (210d:071d), which
 auto-saves and drops the function's 3 outgoing refs; delete + copy the backup back + rename; the
 refs are back at 3. Damage that undo could never have reached, recovered from disk.
+
+## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
+- **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
+  finding which one code references.
+- **Friction:** `inspect` reported "Xrefs: 0 to" for heavily-used globals
+  (`g_players`, `g_savegameHead`, …) — 16-bit DS-relative operands evidently carry
+  no xrefs, so neither `inspect` nor `xrefs` can answer "who uses this global".
+- **Expected:** Some path from a DS global to its readers/writers.
+- **Workaround:** `search_memory` for the address-immediate byte pattern
+  (`68 0e 54` = PUSH 0x540e) — worked, and the hit list's "in <function>+0x…"
+  tagging made it painless. Decompile of the reader confirmed.
+- **Not a plugin fix.** Ghidra never creates a reference from a 16-bit DS-relative
+  operand, so there is nothing for `xrefs`/`inspect` to report — no tool change here can
+  surface what the reference manager does not hold. The fix belongs in the fork's
+  reference analysis (the constant-propagation / RTLink analyzers that already know
+  DS=DGROUP).
+
+**Resolved 2026-07-12 — in the fork, as predicted.** Two passes in the fork's
+`RTLinkXrefAnalyzer` (branch `rtlink`) now populate the reference manager, so
+`xrefs`/`inspect` answer directly:
+- The **deref pass** (already present when the entry was filed) creates READ/WRITE refs
+  for DS-relative memory operands (`MOV AX,[0x540e]`) — 10,289 refs on VICEROY.EXE.
+- The **address-of pass** (new; commits "RTLink: materialize address-of immediates as
+  DATA xrefs", the ADD extension, and "suppress segment and sentinel constants")
+  covers the entry's exact case: `PUSH imm16`, `MOV BX/SI/DI,imm16`, and
+  `ADD AX/BX/CX/DX/SI/DI,imm16` whose immediate lands in a mapped non-executable
+  DGROUP block gets a `RefType.DATA` ref — **350 refs** on VICEROY.EXE. Two earlier
+  states of this note were wrong in opposite directions. The first cut (PUSH/MOV
+  only, 269 refs) had a **recall** hole: it found 2 of `g_players`' 29 real
+  referents, because for an array-typed global the dominant shape is the indexing
+  idiom — `&g_players[i]` compiles to a scaled index plus `ADD reg,0x540e` (27 of
+  29 sites). The second cut (with ADD, 371 refs) had a **precision** hole: ~21 of
+  371 refs were bogus — 0xA000, the VGA segment, lands above the data-block start,
+  so all 20 of its occurrences (far-pointer segment halves, `MOV ES` loads, one
+  post-branch ADD) minted a fake `DAT_2b5a_a000` with 20 xrefs, plus one
+  `PUSH 0x8000` (high half of a 32-bit INT_MIN). Each commit had audited only its
+  own increment; the combined pass was never re-measured. Now suppressed by two
+  documented value exclusions (video segments A000/B000/B800; the 0x8000 sentinel)
+  and a shallow flows-into-segment-register check. **Combined audit over all
+  shapes: 350 created, 2 known false positives (crt_rand's LCG addend 0x9EC3, a
+  0xC000 bitmask) → ~99.4% precision; recall 29/29 on the g_players probe.**
+- **Measurement traps, both hit here.** (1) A headline count is not an accuracy
+  measure: "269 created" said nothing about the 27 missed, "371 created" nothing
+  about the 21 wrong — report precision and recall separately, against enumerated
+  ground truth. (2) `search_memory kind=instruction` matches the raw operand text,
+  and PUSH renders imm16 ≥ 0x8000 as *negative* — `PUSH 0xa000` prints and matches
+  as `PUSH -0x6000`, so value probes silently miss the upper half of the immediate
+  range (exactly how the 0xA000 cluster escaped the first audit). Enumerate
+  `PUSH -0x` too, or byte-search the encoding. Ground truth for one global:
+  `search_memory kind=instruction pattern="0x<offset>"` (plus the negative form
+  when offset ≥ 0x8000).
+- **Structural caveat the original task should know:** `g_savegame_head` (5370)
+  legitimately stays at "Xrefs: 0 to" — no instruction in the program contains 0x5370
+  in any operand; code addresses its *fields* directly (`g_game_year` @538a has 45
+  refs). For such base labels, zero really does mean "no direct references", and the
+  field labels are where the refs live.
