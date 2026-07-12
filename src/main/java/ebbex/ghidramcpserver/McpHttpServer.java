@@ -74,7 +74,7 @@ public class McpHttpServer {
 					.build();
 
 			McpSyncServer mcpServer = McpServer.sync(transport)
-					.serverInfo(endpoint.serverInfoName(), "0.1.0")
+					.serverInfo(endpoint.serverInfoName(), BuildInfo.version())
 					.capabilities(McpSchema.ServerCapabilities.builder().tools(true).build())
 					.tools(endpoint.specs())
 					.immediateExecution(true)

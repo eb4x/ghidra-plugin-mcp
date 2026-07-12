@@ -4,37 +4,52 @@ import java.io.InputStream;
 import java.util.Properties;
 
 /**
- * The build stamp Gradle writes into {@code mcpserver-build.properties} (git commit,
- * {@code +dirty} when the tree had uncommitted changes, and the build time). Lets a
- * client ask the running server which build it is talking to instead of inferring it
- * from restart choreography. A classpath without the resource (e.g. classes run
- * straight from an IDE) reports {@code unstamped}.
+ * The build stamp Gradle writes into {@code mcpserver-build.properties}: the semantic
+ * version from {@code version.properties} (minor bumped per feature, patch per fix)
+ * plus the git commit ({@code +dirty} when the tree had uncommitted changes) and the
+ * build time. Lets a client ask the running server which build it is talking to
+ * instead of inferring it from restart choreography. A classpath without the resource
+ * (e.g. classes run straight from an IDE) reports {@code unstamped}.
  */
 public final class BuildInfo {
 
 	private static final String RESOURCE = "/mcpserver-build.properties";
-	private static final String DESCRIPTION = load();
+	private static final String UNSTAMPED_VERSION = "0.0.0";
+
+	private static final String VERSION;
+	private static final String DESCRIPTION;
+	static {
+		Properties props = load();
+		VERSION = props.getProperty("version", UNSTAMPED_VERSION);
+		DESCRIPTION = props.isEmpty()
+				? UNSTAMPED_VERSION + " (unstamped: run from IDE/classes, not a built extension)"
+				: VERSION + " (git " + props.getProperty("git", "unknown") + ", built " +
+					props.getProperty("built", "unknown") + ")";
+	}
 
 	private BuildInfo() {
 	}
 
-	/** One-line build identity, e.g. {@code git 146750a+dirty, built 2026-07-12 11:02:03 UTC}. */
+	/** The semantic version alone, e.g. {@code 0.2.0} ({@code 0.0.0} when unstamped). */
+	public static String version() {
+		return VERSION;
+	}
+
+	/** One-line build identity: {@code 0.2.0 (git 146750a+dirty, built 2026-07-12 11:02:03 UTC)}. */
 	public static String describe() {
 		return DESCRIPTION;
 	}
 
-	private static String load() {
+	private static Properties load() {
+		Properties props = new Properties();
 		try (InputStream in = BuildInfo.class.getResourceAsStream(RESOURCE)) {
-			if (in == null) {
-				return "unstamped (run from IDE/classes, not a built extension)";
+			if (in != null) {
+				props.load(in);
 			}
-			Properties props = new Properties();
-			props.load(in);
-			return "git " + props.getProperty("git", "unknown") + ", built " +
-				props.getProperty("built", "unknown");
 		}
-		catch (Exception e) {
-			return "unstamped (" + e.getMessage() + ")";
+		catch (Exception ignored) {
+			// fall through to the unstamped defaults
 		}
+		return props;
 	}
 }
