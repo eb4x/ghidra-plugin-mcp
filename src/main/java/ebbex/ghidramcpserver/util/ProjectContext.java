@@ -144,14 +144,28 @@ public class ProjectContext {
 
 	/** Drop this context's hold on one program (e.g. before deleting/moving its file). */
 	public synchronized void release(String path) {
-		Program program = openByPath.remove(path);
+		releaseProgram(openByPath.remove(path));
+		// The cache is keyed by the exact string each caller passed, so the same file can
+		// also sit under a variant spelling — match those by their resolved pathname too.
+		var it = openByPath.entrySet().iterator();
+		while (it.hasNext()) {
+			var entry = it.next();
+			if (entry.getValue().getDomainFile().getPathname().equals(path)) {
+				it.remove();
+				writeLocks.remove(entry.getKey());
+				releaseProgram(entry.getValue());
+			}
+		}
+		writeLocks.remove(path);
+	}
+
+	private void releaseProgram(Program program) {
 		if (program != null) {
 			decompilers.release(program);
 			if (!program.isClosed()) {
 				program.release(consumer);
 			}
 		}
-		writeLocks.remove(path);
 	}
 
 	/** Release every program this context has opened (called on plugin dispose). */
