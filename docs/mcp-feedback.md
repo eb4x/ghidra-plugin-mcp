@@ -92,3 +92,46 @@ MCP tool to close/release a program, so the mandated scratch-DB cleanup can't be
 completed without a manual click in the GUI. Suggestion: a `close_program` op (or
 auto-release after tool calls), and make `manage_files` say *which* consumer holds
 the file.
+
+## No MCP-native way to wait for Ghidra startup (2026-07-11)
+
+After `eclipse-runner launchConfiguration('Ghidra')` there is no tool-level way to
+block until the instance is ready; agents fall back to shell-polling the MCP port
+(`until curl -s http://127.0.0.1:8765/mcp/program; do sleep 2; done`). Calling
+`get_application_info` too early is a hard connection-refused error, so retrying it
+pollutes the transcript with failed calls.
+
+Ideas, either would do:
+- eclipse-runner: an optional "wait for console pattern" parameter on
+  `launchConfiguration` (e.g. `Ghidra startup complete`), generic for any launch.
+- ghidra-application-level: document/support `get_application_info` as a readiness
+  probe by making the client retry connection-refused for N seconds instead of
+  erroring immediately.
+
+## No tool to create references (2026-07-12)
+
+Hand-applying the 1d1d:19c0 jump-table override needed 8 COMPUTED_JUMP refs
+from the dispatch to its case targets. There is no `create kind=reference` /
+add-reference op, so the workaround was running the one-shot "Decompiler
+Switch Analysis" analyzer program-wide just to materialize refs the override
+already fully described. A `create kind=reference` (from, to, ref_type,
+operand index) — batchable — would make reference surgery first-class;
+today's `xrefs` is read-only.
+
+## Known gaps flagged in viceroy's workflow doc (2026-07-12)
+
+Collected from `../viceroy/docs/ghidra-workflow.md`, which named these as feedback
+material without ever filing them. Not yet reproduced as entries in their own right —
+each needs confirming before it's worth acting on:
+
+- **No script-execution tool** (by design, so far). The gap has since been hit for
+  real: `ghidra_dump_symbols.py` has to be run from the GUI Script Manager, so the
+  mandated symbol-dump refresh cannot be done over MCP.
+- **No instruction-level search.** The legacy bridge could search by mnemonic/operand
+  (`JMP` + `CS:[BX`); with `search_memory` you must hand-assemble the opcode bytes
+  (`FF A7` / `2E FF A7`) or scan `disassemble` output.
+- **Masked/wildcard byte search in overlay spaces** was unreliable on the old bridge
+  (only exact patterns were trustworthy). Never re-verified against `search_memory` —
+  if you test it, record the result here.
+- **No bulk documentation migration** between DBs (the old bridge's
+  `merge_program_documentation`); a re-import today would need a script.
