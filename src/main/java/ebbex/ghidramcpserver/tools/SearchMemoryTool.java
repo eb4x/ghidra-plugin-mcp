@@ -11,14 +11,15 @@ import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
-/** Scan memory for a byte pattern (with wildcards) or an encoded string. */
+/** Scan memory for a byte pattern (with wildcards), an encoded string, or instruction text. */
 public class SearchMemoryTool implements ProgramTool {
 
-	private static final List<String> KINDS = List.of("bytes", "text");
+	private static final List<String> KINDS = List.of("bytes", "text", "instruction");
 	private static final int DEFAULT_LIMIT = 32;
 
 	@Override
@@ -29,8 +30,10 @@ public class SearchMemoryTool implements ProgramTool {
 	@Override
 	public String description() {
 		return "Search program memory. kind=bytes matches a hex pattern where '??' is a wildcard " +
-			"byte (e.g. '48 8b ?? c3'); kind=text matches an ASCII substring. Returns matching " +
-			"addresses (default limit " + DEFAULT_LIMIT + ").";
+			"byte (e.g. '48 8b ?? c3'); kind=text matches an ASCII substring; kind=instruction " +
+			"matches disassembled instruction text case-insensitively (e.g. 'JMP word ptr CS:' " +
+			"or 'MOV AX' — a substring of mnemonic + operands as the listing prints them). " +
+			"Returns matching addresses (default limit " + DEFAULT_LIMIT + ").";
 	}
 
 	@Override
@@ -38,7 +41,8 @@ public class SearchMemoryTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", Map.of(
-				"pattern", Schemas.stringProp("Hex bytes with optional '??' wildcards, or text"),
+				"pattern", Schemas.stringProp(
+					"Hex bytes with optional '??' wildcards, text, or instruction-text substring"),
 				"kind", Schemas.enumProp("How to interpret 'pattern' (default 'bytes')", KINDS),
 				"offset", Schemas.intProp("Skip this many matches (for paging; default 0)"),
 				"limit", Schemas.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")")),
@@ -62,6 +66,10 @@ public class SearchMemoryTool implements ProgramTool {
 		}
 		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
+
+		if (kind.equals("instruction")) {
+			return searchInstructions(program, pattern, offset, limit);
+		}
 
 		byte[] values;
 		byte[] masks;
@@ -113,6 +121,50 @@ public class SearchMemoryTool implements ProgramTool {
 					"; more available — raise 'limit' or page with 'offset')"
 				: "\n(" + hits.size() + " matches from offset " + offset + "; end of results)";
 		return Results.ok(String.join("\n", hits) + footer);
+	}
+
+	/**
+	 * Scan disassembled instructions for a text substring. Both sides are uppercased and
+	 * whitespace-collapsed, so 'jmp word ptr cs:' matches however the listing spaces it.
+	 * The full instruction text is echoed per hit, since the pattern only matched part of it.
+	 */
+	private static McpSchema.CallToolResult searchInstructions(Program program, String pattern,
+			int offset, int limit) {
+		String needle = normalizeInstructionText(pattern);
+		List<String> hits = new ArrayList<>();
+		int index = 0;
+		boolean more = false;
+		for (Instruction instruction : program.getListing().getInstructions(true)) {
+			if (!normalizeInstructionText(instruction.toString()).contains(needle)) {
+				continue;
+			}
+			if (index >= offset) {
+				if (hits.size() < limit) {
+					hits.add(instruction.getAddress() + "  " + instruction +
+						describeContainer(program, instruction.getAddress()));
+				}
+				else {
+					more = true;
+					break;
+				}
+			}
+			index++;
+		}
+		if (hits.isEmpty()) {
+			return Results.ok("No instructions matching '" + pattern + "'" +
+				(offset > 0 ? " at offset " + offset : "") +
+				"\nNote: only disassembled instructions are searched — bytes not yet " +
+				"disassembled never match; use kind=bytes for those.");
+		}
+		String footer = more
+				? "\n(" + hits.size() + " matches from offset " + offset +
+					"; more available — raise 'limit' or page with 'offset')"
+				: "\n(" + hits.size() + " matches from offset " + offset + "; end of results)";
+		return Results.ok(String.join("\n", hits) + footer);
+	}
+
+	private static String normalizeInstructionText(String text) {
+		return text.trim().replaceAll("\\s+", " ").toUpperCase();
 	}
 
 	/**
