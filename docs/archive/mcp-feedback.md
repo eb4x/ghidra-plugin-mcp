@@ -813,3 +813,35 @@ recording in full, because the bug was invisible in review and in the obvious te
   Ghidra restarts, because the undo stack does not survive a restart, and the endpoint's auto-save
   had already written the damage to disk. **There is no MCP undo tool; that is a real gap this
   incident exposed** (see the open log).
+
+## 2026-07-12 — "no undo over MCP" — resolved, but NOT with undo: Ghidra has no undo to expose
+Filed the same day (after `migrate` destroyed 86 instructions) asking for a `save op=undo`. Built
+it — every mutating call is already exactly one named Ghidra transaction, so `Program.undo()`
+looked like a two-hour win. **It cannot work, and the entry's whole premise was wrong.**
+
+- **Ghidra discards its undo history on every save.** Two independent mechanisms:
+  `BufferMgr.doSetSourceFile` (the last thing every `BufferMgr.save` does) calls `setMaxUndos(0)`
+  to "pack all versions into baseline checkpoint", and `ProgramDBChangeSet.clearUndo()` runs on
+  save as well. This server **auto-saves after every mutating tool call** (deliberately — see the
+  bounded-deferring-save entry), so the undo stack is empty before any *next* call could use it.
+  Verified live: two committed `set_comment` calls, then `getAllUndoNames()` → empty, both stacks.
+- **The advice given during the incident was therefore wrong.** The user was told to press Ctrl+Z
+  in the CodeBrowser before restarting Ghidra, on the theory that the undo stack was in memory and
+  perishable. It was not perishable — it was already *gone*, cleared by the auto-save that ran when
+  the `migrate` call returned. Ghidra's GUI Undo would have had nothing to offer either. The user's
+  own instinct — delete the DB and re-import — was the only thing that could have worked.
+- **The lesson generalises beyond undo:** "each tool call is one transaction, so it must be
+  undoable" is a plausible chain of reasoning that is simply false in this architecture. The
+  auto-save that makes edits durable is exactly what makes them irreversible.
+
+**What replaces it (0.4.0):** a snapshot taken *before* the write — which, unlike undo, also
+survives a Ghidra restart.
+- `manage_files op=copy` duplicates a file into a folder (optionally renaming): the snapshot and
+  restore primitive. Restore = delete the damaged file, copy the backup back, rename it.
+- `migrate` now snapshots the target automatically to `/backups/<name>.pre-migrate-<stamp>` before
+  writing (opt out with `snapshot=false`) and reports the path with the restore recipe — the
+  incident is precisely the case where nobody thinks to ask for a backup first.
+
+Verified end-to-end on `/gog/VICEROY.EXE`: snapshot; clear the code at `entry` (210d:071d), which
+auto-saves and drops the function's 3 outgoing refs; delete + copy the backup back + rename; the
+refs are back at 3. Damage that undo could never have reached, recovered from disk.
