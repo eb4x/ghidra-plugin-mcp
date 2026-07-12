@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (29 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (32 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -62,8 +62,9 @@ end_address`, namespaced-symbol resolution, the `set_function_signature` RETF hi
 deferring save + `save` tool, the create-kind=thunk experiment (removed), `create kind=label
 namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` folder ops, the
 `manage_files` recursive-delete handle release, the `dump_jumptables` false NOT CONSUMED
-(segmented addresses compared as strings), and the settled stale-`DecompInterface` question
-(the pool does **not** serve stale symbols)._
+(segmented addresses compared as strings), the settled stale-`DecompInterface` question
+(the pool does **not** serve stale symbols), the scratch-program delete (busy-check ordering +
+consumer-naming errors), `create`/`clear kind=reference`, and `search_memory kind=instruction`._
 
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
@@ -82,17 +83,6 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` 
   DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
   `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
 
-## 2026-07-11: cannot delete a scratch program that something still holds open
-
-`manage_files op=delete` on `/scratch-xref-merged` refuses with "open elsewhere
-(e.g. a CodeBrowser)" after an MCP-driven import+analyze cycle (fresh Ghidra
-launch, program never manually opened). Either the import/analyze tools (or the
-program-tool cache) keep the program open, or the GUI auto-opened it; there is no
-MCP tool to close/release a program, so the mandated scratch-DB cleanup can't be
-completed without a manual click in the GUI. Suggestion: a `close_program` op (or
-auto-release after tool calls), and make `manage_files` say *which* consumer holds
-the file.
-
 ## No MCP-native way to wait for Ghidra startup (2026-07-11)
 
 After `eclipse-runner launchConfiguration('Ghidra')` there is no tool-level way to
@@ -108,16 +98,6 @@ Ideas, either would do:
   probe by making the client retry connection-refused for N seconds instead of
   erroring immediately.
 
-## No tool to create references (2026-07-12)
-
-Hand-applying the 1d1d:19c0 jump-table override needed 8 COMPUTED_JUMP refs
-from the dispatch to its case targets. There is no `create kind=reference` /
-add-reference op, so the workaround was running the one-shot "Decompiler
-Switch Analysis" analyzer program-wide just to materialize refs the override
-already fully described. A `create kind=reference` (from, to, ref_type,
-operand index) — batchable — would make reference surgery first-class;
-today's `xrefs` is read-only.
-
 ## Known gaps flagged in viceroy's workflow doc (2026-07-12)
 
 Collected from `../viceroy/docs/ghidra-workflow.md`, which named these as feedback
@@ -127,9 +107,6 @@ each needs confirming before it's worth acting on:
 - **No script-execution tool** (by design, so far). The gap has since been hit for
   real: `ghidra_dump_symbols.py` has to be run from the GUI Script Manager, so the
   mandated symbol-dump refresh cannot be done over MCP.
-- **No instruction-level search.** The legacy bridge could search by mnemonic/operand
-  (`JMP` + `CS:[BX`); with `search_memory` you must hand-assemble the opcode bytes
-  (`FF A7` / `2E FF A7`) or scan `disassemble` output.
 - **Masked/wildcard byte search in overlay spaces** was unreliable on the old bridge
   (only exact patterns were trustworthy). Never re-verified against `search_memory` —
   if you test it, record the result here.

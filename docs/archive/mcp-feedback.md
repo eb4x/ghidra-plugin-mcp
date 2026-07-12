@@ -654,3 +654,42 @@ program's first decompile". That contradicted the follow-up entry above, so both
   → still not consumed" is exactly what that bug looks like from the outside, and it is the reading
   that mimics staleness. (Inference, not proven — but it fits the symptom, and staleness is now
   ruled out.)
+
+## 2026-07-12 — manage_files delete of an MCP-imported scratch program — resolved
+The 2026-07-11 entry ("cannot delete a scratch program that something still holds open")
+no longer reproduces: a full MCP-driven import → analyze → delete cycle on
+`/scratch-feedback-test/ls` now completes cleanly, with no GUI click needed. Two
+hardening changes landed with the retest:
+
+- **Errors now say who is blocking.** `op=delete` on an open file reports
+  `held open by: <consumer names>` (via `DomainFile.getConsumers()`) instead of the
+  generic "open elsewhere (e.g. a CodeBrowser)", so the next occurrence of the original
+  symptom will identify the holder instead of leaving it a mystery. A busy file
+  (background task mid-run) gets its own message.
+- **Delete during background analysis is refused, not raced.** The old order released
+  our cached handle *before* checking the file's state; releasing the last consumer
+  mid-analysis would close the program under the running analyzer. All destructive
+  `manage_files` ops now check `isBusy()` first and refuse with "wait and retry"
+  (verified live: delete during `analyze` of `/bin/ls` refuses, succeeds after).
+  `ProjectContext.release` also drops cache entries reachable under a variant path
+  spelling, not just the exact string.
+
+## 2026-07-12 — create/clear kind=reference — resolved
+The "no tool to create references" entry (hand-applying the 1d1d:19c0 jump-table
+override needed a program-wide one-shot analyzer run just to materialize 8 refs).
+`create kind=reference` adds a memory reference (`address` → `to_address`,
+`ref_type` enum of jump/call/read/write/data/indirection variants, optional
+`operand_index`, default mnemonic), and `clear kind=reference` removes it — both
+batchable since create dispatches from `batch`. Verified live on `/test/VICEROY.EXE`:
+create → shows in `xrefs` as `[COMPUTED_JUMP computed]` → clear → repeat clear errors
+"No reference from …".
+
+## 2026-07-12 — search_memory kind=instruction — resolved
+The "no instruction-level search" gap from viceroy's workflow doc (the legacy bridge
+could search `JMP` + `CS:[BX`; `search_memory` required hand-assembled opcode bytes).
+`search_memory kind=instruction` matches disassembled instruction text
+case-insensitively with whitespace collapsed, echoing the full matched instruction per
+hit. Verified live on `/VICEROY.EXE`: pattern `JMP word ptr CS:` returns the overlay
+dispatch sites (`112b:000f JMP word ptr CS:[BX + 0x14] in FUN_112b_0002+0xd`, …) with
+the usual paging footer. Only already-disassembled instructions match (the no-match
+footer says so and points at kind=bytes).
