@@ -5,6 +5,7 @@
 //@category MCP
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.ProgramTool;
@@ -12,6 +13,7 @@ import ebbex.ghidramcpserver.ToolRegistry;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.ProjectContext;
+import ebbex.ghidramcpserver.util.Results;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.main.AppInfo;
@@ -27,6 +29,9 @@ public class McpToolSmokeScript extends GhidraScript {
 
 	private List<ApplicationLevelTool> appTools;
 	private List<ProgramTool> programTools;
+
+	/** Tools that threw something other than a bad-argument error — never expected. */
+	private int failures;
 
 	@Override
 	protected void run() throws Exception {
@@ -204,20 +209,33 @@ public class McpToolSmokeScript extends GhidraScript {
 		}
 
 		// ---- reopen to confirm the rename persisted ----
+		// Check the FINAL name: batch renamed mcp_renamed_init -> mcp_batch_renamed, so asserting
+		// the intermediate name here reported "false" forever and read as a failure that wasn't.
 		Program reopened = (Program) df.getDomainObject(this, false, false, TaskMonitor.DUMMY);
 		try {
 			boolean found = false;
 			for (var f : reopened.getFunctionManager().getFunctions(true)) {
-				if (f.getName().equals("mcp_renamed_init")) {
+				if (f.getName().equals("mcp_batch_renamed")) {
 					found = true;
 					break;
 				}
 			}
-			println("=== rename persisted after reopen: " + found + " ===");
+			println(found
+					? "=== rename persisted after reopen: true ==="
+					: "!! rename did NOT persist after reopen");
+			if (!found) {
+				failures++;
+			}
 		}
 		finally {
 			reopened.release(this);
 		}
+
+		// Headless exits 0 even when a script aborts mid-run, so an aborted run reads as a pass
+		// unless you look for this line. Grep for it — its absence is the failure signal.
+		println(failures == 0
+				? "=== SMOKE COMPLETE: all tools exercised, 0 unexpected exceptions ==="
+				: "!! SMOKE COMPLETE WITH " + failures + " UNEXPECTED EXCEPTION(S)");
 	}
 
 	private void waitForAnalysis(Program program) throws Exception {
@@ -231,18 +249,37 @@ public class McpToolSmokeScript extends GhidraScript {
 			program.isChanged() + ") ===");
 	}
 
-	private void app(String name, Map<String, Object> args, Project project) throws Exception {
+	private void app(String name, Map<String, Object> args, Project project) {
 		ApplicationLevelTool tool =
 			appTools.stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow();
 		println("\n----- app:" + name + " " + args + " -----");
-		print(tool.execute(args, project));
+		print(call(() -> tool.execute(args, project), name));
 	}
 
-	private void prog(String name, Map<String, Object> args, Program program) throws Exception {
+	private void prog(String name, Map<String, Object> args, Program program) {
 		ProgramTool tool =
 			programTools.stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow();
 		println("\n----- program:" + name + " " + args + " -----");
-		print(tool.execute(args, program));
+		print(call(() -> tool.execute(args, program), name));
+	}
+
+	/**
+	 * Mirror {@code Endpoints}' exception handling: a tool that throws is an error <em>result</em>
+	 * over MCP, not a crash. Calling execute() bare instead let one bad-argument case (migrate with
+	 * a nonexistent source) abort the whole script mid-run — and headless still exited 0, so the
+	 * run looked green while most of the tools went untested.
+	 */
+	private McpSchema.CallToolResult call(Callable<McpSchema.CallToolResult> body, String name) {
+		try {
+			return body.call();
+		}
+		catch (IllegalArgumentException e) {
+			return Results.error(e.getMessage() != null ? e.getMessage() : e.toString());
+		}
+		catch (Exception e) {
+			failures++;
+			return Results.error(name + " threw " + e);
+		}
 	}
 
 	private void print(McpSchema.CallToolResult result) {
