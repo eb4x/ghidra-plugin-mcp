@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (33 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (34 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -64,9 +64,12 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` 
 `manage_files` recursive-delete handle release, the `dump_jumptables` false NOT CONSUMED
 (segmented addresses compared as strings), the settled stale-`DecompInterface` question
 (the pool does **not** serve stale symbols), the scratch-program delete (busy-check ordering +
-consumer-naming errors), `create`/`clear kind=reference`, `search_memory kind=instruction`, and
+consumer-naming errors), `create`/`clear kind=reference`, `search_memory kind=instruction`,
 the `GET /version` readiness + build-stamp probe (the startup-wait entry; its
-wait-for-console-pattern residual belongs to eclipse-runner, not this repo)._
+wait-for-console-pattern residual belongs to eclipse-runner, not this repo), and all three
+viceroy-workflow-doc gaps (wildcard search in overlays — measured, it works; the symbol dump —
+met by `list user_only`, **script execution deliberately still not added**; and bulk doc
+migration — the `migrate` tool)._
 
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
@@ -85,17 +88,3 @@ wait-for-console-pattern residual belongs to eclipse-runner, not this repo)._
   DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
   `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
 
-## Known gaps flagged in viceroy's workflow doc (2026-07-12)
-
-Collected from `../viceroy/docs/ghidra-workflow.md`, which named these as feedback
-material without ever filing them. Not yet reproduced as entries in their own right —
-each needs confirming before it's worth acting on:
-
-- **No script-execution tool** (by design, so far). The gap has since been hit for
-  real: `ghidra_dump_symbols.py` has to be run from the GUI Script Manager, so the
-  mandated symbol-dump refresh cannot be done over MCP.
-- **Masked/wildcard byte search in overlay spaces** was unreliable on the old bridge
-  (only exact patterns were trustworthy). Never re-verified against `search_memory` —
-  if you test it, record the result here.
-- **No bulk documentation migration** between DBs (the old bridge's
-  `merge_program_documentation`); a re-import today would need a script.
