@@ -3,6 +3,7 @@ package ebbex.ghidramcpserver.tools.app;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.util.Args;
@@ -73,6 +74,13 @@ public class ManageFilesTool implements ApplicationLevelTool {
 
 		DomainFile file = findFile(data, path);
 		if (file != null) {
+			// A busy file has a background task (e.g. analysis) mid-run: releasing our cached
+			// handle now could drop the last consumer and close the program under that task,
+			// so refuse before touching anything.
+			if (file.isBusy()) {
+				return Results.error("'" + path + "' is busy — a background task (e.g. analysis) " +
+					"is still running on it; wait for it to finish and retry.");
+			}
 			// Drop our own cached handle so the operation isn't blocked by us.
 			context.release(path);
 			return switch (op) {
@@ -111,12 +119,24 @@ public class ManageFilesTool implements ApplicationLevelTool {
 
 	private static McpSchema.CallToolResult deleteFile(DomainFile file, String path)
 			throws Exception {
-		if (file.isBusy() || file.isOpen()) {
-			return Results.error("'" + path + "' is open elsewhere (e.g. a CodeBrowser); " +
-				"close it first.");
+		if (file.isOpen()) {
+			return Results.error("'" + path + "' is held open by: " + describeConsumers(file) +
+				" — close it there first (e.g. the CodeBrowser tab showing it).");
 		}
 		file.delete();
 		return Results.ok("Deleted " + path);
+	}
+
+	/** Names of whoever holds the file open, so 'held open' errors say who to close. */
+	private static String describeConsumers(DomainFile file) {
+		List<?> consumers = file.getConsumers();
+		if (consumers.isEmpty()) {
+			return "an unknown consumer";
+		}
+		return consumers.stream()
+				.map(c -> c instanceof String s ? s : c.getClass().getSimpleName())
+				.distinct()
+				.collect(Collectors.joining(", "));
 	}
 
 	private static McpSchema.CallToolResult rename(DomainFile file, String newName)
@@ -159,6 +179,12 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			return Results.ok("Deleted folder " + path);
 		}
 
+		// Busy files first (see execute()): releasing our handles could close a program
+		// under a background task, so nothing is touched while one is running.
+		McpSchema.CallToolResult busy = refuseIfBusyDescendants(folder);
+		if (busy != null) {
+			return busy;
+		}
 		// Drop our own cached handles first, as the single-file path does: otherwise the
 		// pre-flight below sees programs our decompiler pool holds open and refuses.
 		releaseDescendants(folder);
@@ -183,8 +209,11 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		}
 		for (DomainFile file : folder.getFiles()) {
 			String why = null;
-			if (file.isOpen() || file.isBusy()) {
-				why = "open elsewhere (e.g. a CodeBrowser)";
+			if (file.isBusy()) {
+				why = "busy (a background task is still running on it)";
+			}
+			else if (file.isOpen()) {
+				why = "held open by: " + describeConsumers(file);
 			}
 			else if (file.isVersioned()) {
 				why = "versioned; delete it from the GUI project tree";
@@ -216,6 +245,10 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		if (newName == null || newName.isBlank()) {
 			return Results.error("new_name is required for op=rename");
 		}
+		McpSchema.CallToolResult busy = refuseIfBusyDescendants(folder);
+		if (busy != null) {
+			return busy;
+		}
 		releaseDescendants(folder);
 		DomainFolder renamed = folder.setName(newName);
 		return Results.ok("Renamed to " + renamed.getPathname());
@@ -234,9 +267,35 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		if (dest.equals(source) || dest.startsWith(source + "/")) {
 			return Results.error("Can't move " + source + " into itself or one of its descendants");
 		}
+		McpSchema.CallToolResult busy = refuseIfBusyDescendants(folder);
+		if (busy != null) {
+			return busy;
+		}
 		releaseDescendants(folder);
 		DomainFolder moved = folder.moveTo(getOrCreateFolder(data, dest));
 		return Results.ok("Moved to " + moved.getPathname());
+	}
+
+	/** Non-null refusal when any file under {@code folder} has a background task running. */
+	private static McpSchema.CallToolResult refuseIfBusyDescendants(DomainFolder folder) {
+		List<String> busy = new ArrayList<>();
+		collectBusy(folder, busy);
+		if (busy.isEmpty()) {
+			return null;
+		}
+		return Results.error("A background task (e.g. analysis) is still running on:\n  " +
+			String.join("\n  ", busy) + "\nwait for it to finish and retry.");
+	}
+
+	private static void collectBusy(DomainFolder folder, List<String> busy) {
+		for (DomainFolder sub : folder.getFolders()) {
+			collectBusy(sub, busy);
+		}
+		for (DomainFile file : folder.getFiles()) {
+			if (file.isBusy()) {
+				busy.add(file.getPathname());
+			}
+		}
 	}
 
 	/**
