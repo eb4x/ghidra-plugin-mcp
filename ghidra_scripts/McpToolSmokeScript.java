@@ -82,6 +82,25 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("inspect", Map.of("location", "_init"), program);
 			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
+
+			// create/clear kind=reference round-trip: the ref shows up in xrefs, then goes away.
+			String refFrom = program.getMinAddress().toString();
+			String refTo = program.getMaxAddress().toString();
+			prog("create", Map.of("kind", "reference", "address", refFrom, "to_address", refTo,
+				"ref_type", "computed_jump"), program);
+			prog("xrefs", Map.of("location", refTo, "direction", "to", "limit", 5), program);
+			prog("clear", Map.of("kind", "reference", "address", refFrom, "to_address", refTo),
+				program);
+			prog("clear", Map.of("kind", "reference", "address", refFrom, "to_address", refTo),
+				program); // now gone: exercises the no-such-reference error
+
+			// search_memory kind=instruction: substring of disassembled text.
+			prog("search_memory", Map.of("kind", "instruction", "pattern", "PUSH", "limit", 5),
+				program);
+
+			// manage_files delete on a file this script itself holds open: must refuse and
+			// name the consumer (McpToolSmokeScript), not just say "open elsewhere".
+			app("manage_files", Map.of("op", "delete", "path", "/ls"), project);
 			// clear kind=local_variable: exercise the delete branch (not-found path is deterministic).
 			prog("clear", Map.of("kind", "local_variable", "function", "_init",
 				"variable_name", "__mcp_no_such_local__"), program);

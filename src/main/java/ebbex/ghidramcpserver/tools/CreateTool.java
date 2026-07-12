@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,18 +18,37 @@ import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.BookmarkManager;
 import ghidra.program.model.listing.BookmarkType;
+import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.Namespace;
+import ghidra.program.model.symbol.RefType;
+import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.SymbolTable;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
-/** Create a function, label, or bookmark at an address. */
+/** Create a function, label, bookmark, instructions, or reference at an address. */
 public class CreateTool implements ProgramTool {
 
 	private static final List<String> KINDS =
-		List.of("function", "label", "bookmark", "instructions");
+		List.of("function", "label", "bookmark", "instructions", "reference");
+
+	/** ref_type values accepted by kind=reference, mapped to Ghidra's RefType constants. */
+	private static final Map<String, RefType> REF_TYPES = new LinkedHashMap<>();
+	static {
+		REF_TYPES.put("computed_jump", RefType.COMPUTED_JUMP);
+		REF_TYPES.put("conditional_jump", RefType.CONDITIONAL_JUMP);
+		REF_TYPES.put("unconditional_jump", RefType.UNCONDITIONAL_JUMP);
+		REF_TYPES.put("computed_call", RefType.COMPUTED_CALL);
+		REF_TYPES.put("conditional_call", RefType.CONDITIONAL_CALL);
+		REF_TYPES.put("unconditional_call", RefType.UNCONDITIONAL_CALL);
+		REF_TYPES.put("read", RefType.READ);
+		REF_TYPES.put("write", RefType.WRITE);
+		REF_TYPES.put("read_write", RefType.READ_WRITE);
+		REF_TYPES.put("data", RefType.DATA);
+		REF_TYPES.put("indirection", RefType.INDIRECTION);
+	}
 
 	@Override
 	public String name() {
@@ -44,23 +64,35 @@ public class CreateTool implements ProgramTool {
 			"an optional 'end_address' forces the body to that inclusive range (works on an existing " +
 			"function too); omit it to auto-compute from flow. For kind=label an optional " +
 			"'namespace' ('::'-separated path, e.g. \"main::override\") puts the label in that " +
-			"namespace, creating missing levels.";
+			"namespace, creating missing levels. kind=reference adds a memory reference from " +
+			"'address' to 'to_address' with 'ref_type' (e.g. computed_jump for hand-applied " +
+			"jump-table targets); optional 'operand_index' ties it to an operand (default: the " +
+			"mnemonic).";
 	}
 
 	@Override
 	public Map<String, Object> inputSchema() {
+		Map<String, Object> properties = new LinkedHashMap<>();
+		properties.put("kind", Schemas.enumProp("What to create", KINDS));
+		properties.put("address", Schemas.stringProp(
+			"Address to create at (for kind=reference: the from/source address)"));
+		properties.put("name",
+			Schemas.stringProp("Label or function name (for kind=function|label)"));
+		properties.put("category", Schemas.stringProp("Bookmark category (for kind=bookmark)"));
+		properties.put("comment", Schemas.stringProp("Bookmark text (for kind=bookmark)"));
+		properties.put("end_address", Schemas.stringProp(
+			"Inclusive end address forcing the function body range (for kind=function)"));
+		properties.put("namespace", Schemas.stringProp(
+			"'::'-separated namespace path for the label (for kind=label)"));
+		properties.put("to_address",
+			Schemas.stringProp("Reference target address (for kind=reference)"));
+		properties.put("ref_type", Schemas.enumProp(
+			"Reference type (for kind=reference)", List.copyOf(REF_TYPES.keySet())));
+		properties.put("operand_index", Schemas.intProp(
+			"Operand the reference hangs off, 0-based (for kind=reference; default: mnemonic)"));
 		return Map.of(
 			"type", "object",
-			"properties", Map.of(
-				"kind", Schemas.enumProp("What to create", KINDS),
-				"address", Schemas.stringProp("Address to create at"),
-				"name", Schemas.stringProp("Label or function name (for kind=function|label)"),
-				"category", Schemas.stringProp("Bookmark category (for kind=bookmark)"),
-				"comment", Schemas.stringProp("Bookmark text (for kind=bookmark)"),
-				"end_address", Schemas.stringProp(
-					"Inclusive end address forcing the function body range (for kind=function)"),
-				"namespace", Schemas.stringProp(
-					"'::'-separated namespace path for the label (for kind=label)")),
+			"properties", properties,
 			"required", List.of("kind", "address"));
 	}
 
@@ -90,8 +122,33 @@ public class CreateTool implements ProgramTool {
 			case "bookmark" -> createBookmark(program, address,
 				Args.stringArg(args, "category", ""), Args.stringArg(args, "comment", ""));
 			case "instructions" -> disassemble(program, address);
+			case "reference" -> createReference(program, address,
+				Args.stringArg(args, "to_address", null), Args.stringArg(args, "ref_type", null),
+				Args.intArg(args, "operand_index", CodeUnit.MNEMONIC));
 			default -> Results.error("unhandled kind " + kind);
 		};
+	}
+
+	private McpSchema.CallToolResult createReference(Program program, Address from, String toArg,
+			String refTypeArg, int operandIndex) {
+		if (toArg == null || toArg.isBlank()) {
+			return Results.error("'to_address' is required for kind=reference");
+		}
+		RefType refType = refTypeArg != null ? REF_TYPES.get(refTypeArg) : null;
+		if (refType == null) {
+			return Results.error("ref_type must be one of " + REF_TYPES.keySet());
+		}
+		Address to = Locations.parseAddress(program, toArg);
+		return Transactions.modify(program, "Create reference", () -> {
+			Reference reference = program.getReferenceManager()
+					.addMemoryReference(from, to, refType, SourceType.USER_DEFINED, operandIndex);
+			String operand = operandIndex == CodeUnit.MNEMONIC
+					? "mnemonic"
+					: "operand " + operandIndex;
+			return "Created " + refType + " reference " + reference.getFromAddress() + " -> " +
+				reference.getToAddress() + " (" + operand +
+				(reference.isPrimary() ? ", primary" : "") + ")";
+		});
 	}
 
 	private McpSchema.CallToolResult createFunction(Program program, Address address,

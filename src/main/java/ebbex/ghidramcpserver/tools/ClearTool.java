@@ -16,6 +16,8 @@ import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Parameter;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
+import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolType;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -30,7 +32,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class ClearTool implements ProgramTool {
 
 	private static final List<String> KINDS =
-		List.of("code", "local_variable", "label", "function");
+		List.of("code", "local_variable", "label", "function", "reference");
 
 	@Override
 	public String name() {
@@ -46,7 +48,9 @@ public class ClearTool implements ProgramTool {
 			"'function' (Ghidra's Delete Variable). kind=label deletes the user label at 'address' " +
 			"(pass 'name' to pick one when several share the address). kind=function deletes the " +
 			"function at 'function' but keeps its code and labels (Ghidra's Delete Function); to " +
-			"recompute a stale body, delete then re-create with create kind=function.";
+			"recompute a stale body, delete then re-create with create kind=function. " +
+			"kind=reference deletes the memory reference(s) from 'address' to 'to_address' " +
+			"(all operand indexes, the inverse of create kind=reference).";
 	}
 
 	@Override
@@ -62,7 +66,9 @@ public class ClearTool implements ProgramTool {
 					"Function name or an address inside it (for kind=local_variable|function)"),
 				"variable_name", Schemas.stringProp("Local variable to delete (for kind=local_variable)"),
 				"name", Schemas.stringProp(
-					"Which label to delete when several share the address (for kind=label)")));
+					"Which label to delete when several share the address (for kind=label)"),
+				"to_address", Schemas.stringProp(
+					"Reference target; deletes refs from 'address' to it (for kind=reference)")));
 	}
 
 	@Override
@@ -80,8 +86,36 @@ public class ClearTool implements ProgramTool {
 			case "local_variable" -> clearLocalVariable(program, args);
 			case "label" -> clearLabel(program, args);
 			case "function" -> clearFunction(program, args);
+			case "reference" -> clearReference(program, args);
 			default -> clearCode(program, args);
 		};
+	}
+
+	private McpSchema.CallToolResult clearReference(Program program, Map<String, Object> args) {
+		String addressArg = Args.stringArg(args, "address", null);
+		String toArg = Args.stringArg(args, "to_address", null);
+		if (addressArg == null || toArg == null) {
+			return Results.error("'address' and 'to_address' are required for kind=reference");
+		}
+		Address from = Locations.parseAddress(program, addressArg);
+		Address to = Locations.parseAddress(program, toArg);
+
+		ReferenceManager refs = program.getReferenceManager();
+		List<Reference> matches = new ArrayList<>();
+		for (Reference ref : refs.getReferencesFrom(from)) {
+			if (ref.getToAddress().equals(to)) {
+				matches.add(ref);
+			}
+		}
+		if (matches.isEmpty()) {
+			return Results.error("No reference from " + from + " to " + to);
+		}
+		return Transactions.modify(program, "Delete reference", () -> {
+			for (Reference ref : matches) {
+				refs.delete(ref);
+			}
+			return "Deleted " + matches.size() + " reference(s) " + from + " -> " + to;
+		});
 	}
 
 	private McpSchema.CallToolResult clearLabel(Program program, Map<String, Object> args) {
