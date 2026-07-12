@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (34 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (36 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -69,26 +69,10 @@ the `GET /version` readiness + build-stamp probe (the startup-wait entry; its
 wait-for-console-pattern residual belongs to eclipse-runner, not this repo), and all three
 viceroy-workflow-doc gaps (wildcard search in overlays — measured, it works; the symbol dump —
 met by `list user_only`, **script execution deliberately still not added**; and bulk doc
-migration — the `migrate` tool)._
-
-## No way to undo a transaction over MCP (2026-07-12)
-- **Task:** Revert a bulk `migrate` that had just written 86 bad data items over instructions
-  (see the incident in the archive).
-- **Friction:** Every write goes through `Transactions.modify`, so each tool call is exactly one
-  named, undoable Ghidra transaction — but nothing exposes `Program.undo()`. The only revert was
-  a **GUI Ctrl+Z**, i.e. precisely the "ask the user to click in Ghidra" fallback this server
-  exists to eliminate. Worse, it is time-critical: the undo stack is in memory and does not
-  survive a Ghidra restart, while the endpoint's auto-save has *already* put the damage on disk —
-  so an agent that notices its own mistake and reflexively restarts to deploy a fix destroys the
-  only clean way back.
-- **Expected:** an `undo`/`redo` op (the natural home is the `save` tool, which already owns the
-  persistence concern — e.g. `save op=undo`), reporting the transaction name it reverted so the
-  caller can confirm it undid the right thing. `Program.canUndo()`/`getUndoName()` make this
-  cheap.
-- **Workaround:** none, this time — the DB happened to be a fresh import with no hand work, so it
-  was deleted and rebuilt from scratch. That luck is not a plan.
-- **Also worth considering:** a bulk/destructive tool could snapshot (`DomainFile.copyTo`) before
-  writing, so a revert doesn't depend on the undo stack at all.
+migration — the `migrate` tool), the `migrate` code-clobber incident (data must never overwrite an
+instruction), and the "no undo" gap — which turned out to have **no undo to expose**: Ghidra
+discards its undo history on every save and this server auto-saves every call, so revert is
+snapshot-based (`manage_files op=copy`; `migrate` auto-backs-up)._
 
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
