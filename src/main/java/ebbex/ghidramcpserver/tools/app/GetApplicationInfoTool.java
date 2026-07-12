@@ -4,6 +4,7 @@ import java.io.File;
 import java.util.Map;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.util.BuildInfo;
 import ebbex.ghidramcpserver.util.Results;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
@@ -21,7 +22,8 @@ public class GetApplicationInfoTool implements ApplicationLevelTool {
 	@Override
 	public String description() {
 		return "Get information about the active Ghidra project: its name, on-disk location, and " +
-			"the number of folders and files it contains.";
+			"the number of folders and files it contains. Also reports the server's build stamp " +
+			"(git commit + build time) — check it to confirm which extension build is serving.";
 	}
 
 	@Override
@@ -42,7 +44,8 @@ public class GetApplicationInfoTool implements ApplicationLevelTool {
 		String message = "Project: " + project.getName() + "\n" +
 			"Location: " + project.getProjectLocator().getLocation() + "\n" +
 			"Folders: " + counts[1] + "\n" +
-			"Files: " + counts[0];
+			"Files: " + counts[0] + "\n" +
+			"Server build: " + BuildInfo.describe();
 		File logFile = ReadLogTool.applicationLogFile();
 		if (logFile != null) {
 			message += "\nLog: " + logFile.getAbsolutePath() + "  (read with read_log)";

@@ -98,6 +98,12 @@ Ideas, either would do:
   probe by making the client retry connection-refused for N seconds instead of
   erroring immediately.
 
+*Update 2026-07-12:* the server side of this improved — `GET /version` (plain HTTP,
+no MCP handshake) now serves as the readiness probe and also reports the build stamp
+(git commit + build time), so the same poll confirms you're talking to *your* build.
+Shell-polling is still required until eclipse-runner grows a wait-for-pattern; entry
+stays open for that half.
+
 ## Known gaps flagged in viceroy's workflow doc (2026-07-12)
 
 Collected from `../viceroy/docs/ghidra-workflow.md`, which named these as feedback

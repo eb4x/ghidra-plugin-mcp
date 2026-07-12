@@ -45,7 +45,7 @@ Our Eclipse IDE (running as a flatpak, `org.eclipse.Java`) drives Ghidra develop
 
 The loop:
 
-- **Launch / restart Ghidra** with the `eclipse-runner` `Ghidra` launch config (run mode). Restart after any code change: run mode has no hot-code-replace and the MCP server caches classes until restart. (A bare GET on `…/mcp/program` returns HTTP 400 once the server is up.)
+- **Launch / restart Ghidra** with the `eclipse-runner` `Ghidra` launch config (run mode). Restart after any code change: run mode has no hot-code-replace and the MCP server caches classes until restart. Probe `http://127.0.0.1:8765/version` (plain GET): it answers readiness *and* prints the serving build's git commit + build time, so you can confirm the restart actually loaded your build — important because a second Ghidra instance can hold the port with an older build (the newcomer logs a `Failed to bind` WARN and runs without MCP).
 - **Edit the Ghidra source through Eclipse** (`eclipse-coder`), not by writing files directly — the launched Ghidra runs Eclipse's compiled output, so filesystem-only edits never reach it. Eclipse auto-builds on save; check `eclipse-ide getCompilationErrors` before relaunching.
 - **Read and commit through the filesystem** (`Read`, `git`) — reading files and running `git` on the worktree is fine and preferred. Stage only the intended source; leave Eclipse-managed `.launch` files and untracked files out.
 - **This directory is the mcpserver**, built here with `./gradlew installExtension`, which packages the extension and copies it into Ghidra's user extensions dir (`GHIDRA_USER_EXTENSIONS_DIR`); restarting Ghidra in Eclipse then detects and loads the new build. It is not part of the Eclipse workspace — everything here goes via the filesystem.

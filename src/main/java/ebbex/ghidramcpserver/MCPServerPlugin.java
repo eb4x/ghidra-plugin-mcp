@@ -5,6 +5,7 @@ import java.util.List;
 import docking.ActionContext;
 import docking.action.DockingAction;
 import docking.action.MenuData;
+import ebbex.ghidramcpserver.util.BuildInfo;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.ProjectContext;
 import ghidra.MiscellaneousPluginPackage;
@@ -103,6 +104,7 @@ public class MCPServerPlugin extends Plugin implements ApplicationLevelPlugin {
 				StringBuilder sb = new StringBuilder(MENU_TITLE + "\n\n");
 				sb.append("Base:    http://").append(HOST).append(':').append(port)
 						.append(McpHttpServer.BASE_PATH).append('\n');
+				sb.append("Build:   ").append(BuildInfo.describe()).append('\n');
 				sb.append("State:   ").append(isRunning() ? "Running" : "Stopped").append('\n');
 				sb.append("Project: ").append(project != null ? project.getName() : "(none open)")
 						.append("\n\nEndpoints:");
