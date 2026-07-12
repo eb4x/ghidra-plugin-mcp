@@ -82,6 +82,7 @@ To add a program tool: implement `ProgramTool` in `tools/`, register it in `Tool
 
 ## Constraints & conventions
 
+- **Versioning:** `version.properties` holds the extension's semantic version, folded into the build stamp that `GET /version` / `get_application_info` report. Bump it **in the same commit** as the change: minor (y) for a new feature/capability (new tool, new `kind`/`op`, new endpoint), patch (z) for a fix or refinement of existing behavior. Doc-only or build-plumbing commits don't bump.
 - Ghidra provides Log4j2; the extension bundles only the `log4j-slf4j2-impl` bridge (api/core excluded in `build.gradle`). Don't add log4j-api/core as dependencies.
 - Jetty must stay on ee11/jakarta.servlet 6.1 to match the MCP SDK's servlet transport.
 - Prefer generic/descriptive names over cutesy ones; keep dependencies on their latest versions.

@@ -81,10 +81,14 @@ tasks.register('generateBuildInfo') {
 		}
 		catch (Exception ignored) {
 		}
+		def versionProps = new Properties()
+		file('version.properties').withInputStream { versionProps.load(it) }
 		def dir = buildInfoDir.get().asFile
 		dir.mkdirs()
 		new File(dir, 'mcpserver-build.properties').text =
-			"git=${git}\nbuilt=${new Date().format("yyyy-MM-dd HH:mm:ss z", TimeZone.getTimeZone('UTC'))}\n"
+			"version=${versionProps.getProperty('version', '0.0.0')}\n" +
+			"git=${git}\n" +
+			"built=${new Date().format("yyyy-MM-dd HH:mm:ss z", TimeZone.getTimeZone('UTC'))}\n"
 	}
 }
 
