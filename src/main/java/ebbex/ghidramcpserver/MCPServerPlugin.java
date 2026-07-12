@@ -50,7 +50,8 @@ public class MCPServerPlugin extends Plugin implements ApplicationLevelPlugin {
 	private final Decompilers decompilers = new Decompilers();
 	private final ProjectContext projectContext = new ProjectContext(decompilers);
 	private final List<McpHttpServer.Endpoint> endpoints = Endpoints.build(projectContext,
-		ToolRegistry.appTools(projectContext), ToolRegistry.programTools(decompilers));
+		ToolRegistry.appTools(projectContext),
+		ToolRegistry.programTools(decompilers, projectContext));
 	private final int port = Integer.getInteger(PORT_PROPERTY, DEFAULT_PORT);
 
 	private McpHttpServer server;

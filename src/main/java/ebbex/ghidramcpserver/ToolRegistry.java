@@ -15,6 +15,7 @@ import ebbex.ghidramcpserver.tools.GetProgramInfoTool;
 import ebbex.ghidramcpserver.tools.InspectTool;
 import ebbex.ghidramcpserver.tools.ListTool;
 import ebbex.ghidramcpserver.tools.ManageTypesTool;
+import ebbex.ghidramcpserver.tools.MigrateTool;
 import ebbex.ghidramcpserver.tools.ReadBytesTool;
 import ebbex.ghidramcpserver.tools.ReadFileTool;
 import ebbex.ghidramcpserver.tools.RenameTool;
@@ -52,8 +53,12 @@ public final class ToolRegistry {
 			new FidBuildTool());
 	}
 
-	/** Program tools (inspect and edit a single program, addressed by project path). */
-	public static List<ProgramTool> programTools(Decompilers decompilers) {
+	/**
+	 * Program tools (inspect and edit a single program, addressed by project path). The
+	 * context is needed by tools that must reach a <em>second</em> program (migrate reads a
+	 * source DB), which the per-call program argument alone cannot provide.
+	 */
+	public static List<ProgramTool> programTools(Decompilers decompilers, ProjectContext context) {
 		// The single-edit tools batch dispatches to; batch reuses these instances.
 		List<ProgramTool> editTools = List.of(
 			new RenameTool(decompilers),
@@ -85,6 +90,7 @@ public final class ToolRegistry {
 		tools.add(new ManageTypesTool());
 		tools.add(new BatchTool(editTools));
 		tools.add(new FidApplyTool());
+		tools.add(new MigrateTool(context));
 		return List.copyOf(tools);
 	}
 }
