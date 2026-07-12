@@ -693,3 +693,15 @@ hit. Verified live on `/VICEROY.EXE`: pattern `JMP word ptr CS:` returns the ove
 dispatch sites (`112b:000f JMP word ptr CS:[BX + 0x14] in FUN_112b_0002+0xd`, …) with
 the usual paging footer. Only already-disassembled instructions match (the no-match
 footer says so and points at kind=bytes).
+
+## 2026-07-12 — GET /version readiness + build probe — resolves the startup-wait entry's server half
+The 2026-07-11 entry ("no MCP-native way to wait for Ghidra startup") wanted a clean
+readiness signal instead of shell-polling `…/mcp/program` for an error-shaped HTTP 400.
+The server now exposes `GET /version` (plain HTTP, no MCP handshake): one poll answers
+readiness *and* identity, returning the build stamp
+(`MCPServer 0.2.0 (git f06c42b, built 2026-07-12 10:44:41 UTC)` — semantic version from
+`version.properties`, git commit with `+dirty` marker, UTC build time). Motivated the
+same day by a port-bind race where a second Ghidra instance held 8765 with an unknown
+build and the "MCP up" probe couldn't tell instances apart. The entry's other half — a
+wait-for-console-pattern parameter on `launchConfiguration` — belongs to the eclipse
+MCP server, not this repo, so it leaves this log with that pointer.
