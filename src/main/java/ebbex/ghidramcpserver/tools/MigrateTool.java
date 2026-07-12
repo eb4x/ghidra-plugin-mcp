@@ -1,6 +1,8 @@
 package ebbex.ghidramcpserver.tools;
 
 import java.util.ArrayList;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +16,9 @@ import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
+import ghidra.framework.model.DomainFile;
+import ghidra.framework.model.DomainFolder;
+import ghidra.framework.model.ProjectData;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.data.DataType;
@@ -67,6 +72,9 @@ public class MigrateTool implements ProgramTool {
 		List.of("function_names", "signatures", "comments", "labels", "data_types", "data");
 
 	private static final List<String> CONFLICT_MODES = List.of("skip_named", "overwrite");
+
+	/** Where pre-migration snapshots land. */
+	private static final String BACKUP_FOLDER = "/backups";
 
 	/**
 	 * Names that carry no information, so they are neither worth copying nor worth protecting.
@@ -125,6 +133,10 @@ public class MigrateTool implements ProgramTool {
 			"placeholders plus address-spelled analyzer names: " + DEFAULT_PLACEHOLDER_PATTERN));
 		properties.put("dry_run", Schemas.boolProp(
 			"Report what would change without writing anything (default false)"));
+		properties.put("snapshot", Schemas.boolProp(
+			"Back the target program up before writing (default true). Ghidra drops its undo " +
+			"history on every save and this server auto-saves each call, so the snapshot is the " +
+			"only way back from a bad migration"));
 		return Map.of("type", "object", "properties", properties,
 			"required", List.of("source"));
 	}
@@ -176,10 +188,40 @@ public class MigrateTool implements ProgramTool {
 			migrate(source, target, kinds, overwrite, names, true, report);
 			return Results.ok("DRY RUN — nothing written.\n" + report.render(sourcePath, kinds));
 		}
+
+		// Snapshot BEFORE writing. Ghidra discards its undo history on every save and this
+		// server auto-saves after each call, so once a bad migration lands there is nothing
+		// to undo — the backup is the only way back. Taken from the saved (pre-write) state.
+		String backup = null;
+		if (Args.boolArg(args, "snapshot", true)) {
+			try {
+				backup = snapshot(target);
+			}
+			catch (Exception e) {
+				return Results.error("Refusing to migrate: could not snapshot '" +
+					target.getDomainFile().getPathname() + "' first (" + e.getMessage() +
+					"). Pass snapshot=false to migrate without a backup.");
+			}
+		}
+		report.backup = backup;
+
 		return Transactions.modify(target, "Migrate documentation from " + sourcePath, () -> {
 			migrate(source, target, kinds, overwrite, names, false, report);
 			return report.render(sourcePath, kinds);
 		});
+	}
+
+	/** Copy the target's saved state to /backups, returning the new project path. */
+	private static String snapshot(Program target) throws Exception {
+		DomainFile file = target.getDomainFile();
+		ProjectData data = file.getParent().getProjectData();
+		DomainFolder backups = data.getFolder(BACKUP_FOLDER);
+		if (backups == null) {
+			backups = data.getRootFolder().createFolder(BACKUP_FOLDER.substring(1));
+		}
+		DomainFile copy = file.copyTo(backups, TaskMonitor.DUMMY);
+		String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+		return copy.setName(file.getName() + ".pre-migrate-" + stamp).getPathname();
 	}
 
 	private void migrate(Program source, Program target, List<String> kinds, boolean overwrite,
@@ -506,9 +548,16 @@ public class MigrateTool implements ProgramTool {
 		final List<String> namesSkippedNamed = new ArrayList<>();
 		final List<String> dataSkippedCode = new ArrayList<>();
 
+		String backup;
+
 		String render(String sourcePath, List<String> kinds) {
 			StringBuilder sb = new StringBuilder("Migrated from " + sourcePath + "  (kinds: " +
 				String.join(", ", kinds) + ")");
+			if (backup != null) {
+				sb.append("\nBackup:          ").append(backup)
+						.append("  (restore: manage_files delete this program, then op=copy the ")
+						.append("backup back and rename it)");
+			}
 			if (kinds.contains("function_names")) {
 				sb.append("\nFunction names:  ").append(namesApplied).append(" applied, ")
 						.append(namesAlreadyEqual).append(" already equal, ")
