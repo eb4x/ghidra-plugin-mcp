@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (32 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (33 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -64,7 +64,9 @@ namespace` + `decompile dump_jumptables` (jump-table overrides), `manage_files` 
 `manage_files` recursive-delete handle release, the `dump_jumptables` false NOT CONSUMED
 (segmented addresses compared as strings), the settled stale-`DecompInterface` question
 (the pool does **not** serve stale symbols), the scratch-program delete (busy-check ordering +
-consumer-naming errors), `create`/`clear kind=reference`, and `search_memory kind=instruction`._
+consumer-naming errors), `create`/`clear kind=reference`, `search_memory kind=instruction`, and
+the `GET /version` readiness + build-stamp probe (the startup-wait entry; its
+wait-for-console-pattern residual belongs to eclipse-runner, not this repo)._
 
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
@@ -82,27 +84,6 @@ consumer-naming errors), `create`/`clear kind=reference`, and `search_memory kin
   reference analysis (the constant-propagation / RTLink analyzers that already know
   DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
   `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
-
-## No MCP-native way to wait for Ghidra startup (2026-07-11)
-
-After `eclipse-runner launchConfiguration('Ghidra')` there is no tool-level way to
-block until the instance is ready; agents fall back to shell-polling the MCP port
-(`until curl -s http://127.0.0.1:8765/mcp/program; do sleep 2; done`). Calling
-`get_application_info` too early is a hard connection-refused error, so retrying it
-pollutes the transcript with failed calls.
-
-Ideas, either would do:
-- eclipse-runner: an optional "wait for console pattern" parameter on
-  `launchConfiguration` (e.g. `Ghidra startup complete`), generic for any launch.
-- ghidra-application-level: document/support `get_application_info` as a readiness
-  probe by making the client retry connection-refused for N seconds instead of
-  erroring immediately.
-
-*Update 2026-07-12:* the server side of this improved — `GET /version` (plain HTTP,
-no MCP handshake) now serves as the readiness probe and also reports the build stamp
-(git commit + build time), so the same poll confirms you're talking to *your* build.
-Shell-polling is still required until eclipse-runner grows a wait-for-pattern; entry
-stays open for that half.
 
 ## Known gaps flagged in viceroy's workflow doc (2026-07-12)
 
