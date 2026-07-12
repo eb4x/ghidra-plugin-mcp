@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (36 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (37 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -72,22 +72,9 @@ met by `list user_only`, **script execution deliberately still not added**; and 
 migration — the `migrate` tool), the `migrate` code-clobber incident (data must never overwrite an
 instruction), and the "no undo" gap — which turned out to have **no undo to expose**: Ghidra
 discards its undo history on every save and this server auto-saves every call, so revert is
-snapshot-based (`manage_files op=copy`; `migrate` auto-backs-up)._
-
-## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
-- **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
-  finding which one code references.
-- **Friction:** `inspect` reported "Xrefs: 0 to" for heavily-used globals
-  (`g_players`, `g_savegameHead`, …) — 16-bit DS-relative operands evidently carry
-  no xrefs, so neither `inspect` nor `xrefs` can answer "who uses this global".
-- **Expected:** Some path from a DS global to its readers/writers.
-- **Workaround:** `search_memory` for the address-immediate byte pattern
-  (`68 0e 54` = PUSH 0x540e) — worked, and the hit list's "in <function>+0x…"
-  tagging made it painless. Decompile of the reader confirmed.
-- **Not a plugin fix.** Ghidra never creates a reference from a 16-bit DS-relative
-  operand, so there is nothing for `xrefs`/`inspect` to report — no tool change here can
-  surface what the reference manager does not hold. The fix belongs in the fork's
-  reference analysis (the constant-propagation / RTLink analyzers that already know
-  DS=DGROUP). Until then, the `search_memory` byte-pattern route is the answer, and
-  `inspect`'s "Xrefs: 0 to" on a DS global should be read as "unknown", not "unused".
+snapshot-based (`manage_files op=copy`; `migrate` auto-backs-up), and the DS-globals
+zero-xref entry — resolved in the fork's `RTLinkXrefAnalyzer`, not the plugin, exactly as
+the entry predicted: a deref pass (READ/WRITE) plus an address-of immediate pass
+(`RefType.DATA`), with the structural caveat that a base label no instruction ever
+addresses (`g_savegame_head` 5370) legitimately stays at 0._
 
