@@ -776,3 +776,40 @@ function renamed + plate-commented in the source): migrate applied exactly those
 and nothing else; a meaningful target name then survived `skip_named` (and was reported) and
 fell to `overwrite`. The live `/VICEROY.EXE` was never written — the re-import remains the
 user's decision, and `migrate --dry_run` now tells them exactly what it would cost.
+
+## 2026-07-12 — migrate destroyed 86 instructions on its first real run — fixed (0.3.2)
+The `migrate` tool's first run against the real `/VICEROY.EXE` **overwrote code with data**. Worth
+recording in full, because the bug was invisible in review and in the obvious test.
+
+- **Symptom.** After migrating from `/VICEROY.OLD`, `OVLSTUB_30_0608` had 14 callers where it had
+  15 before. At `1000:0048` a `CALLF OVLSTUB_30_0608` had become `uint = 2C9Ah`.
+- **Cause.** `Listing.getDefinedDataAt(addr)` returns **null when an instruction occupies the
+  address** — it answers "is there defined *data* here?", not "is anything here?". The
+  "nothing here, safe to write" check was written against it, so every address holding *code*
+  looked empty; the applier then called `clearCodeUnits` and laid the source's data over the
+  instruction, taking its references with it.
+- **Why it fired where it hurts most.** The source is an *older* analysis. It holds data exactly
+  where the current analyzer has since correctly recovered code — so the bug triggers precisely
+  on the sites where the new analysis is *better* than the old one. The re-run with the fix
+  reports **86 such addresses**, so the first run destroyed up to 86 instructions, not one.
+- **Fix (0.3.2).** Ask the listing for the **code unit** (`getInstructionContaining`), not just
+  defined data, and refuse to write wherever the target holds an instruction — or wherever one
+  falls inside the new type's extent. This holds even under `on_conflict=overwrite`: that flag
+  arbitrates *documentation*, it does not license undoing disassembly. Refusals are now listed in
+  a loud `DATA REFUSED` section instead of being counted silently, so a genuine data site can be
+  cleared deliberately (`clear kind=code`) and re-migrated.
+- **Why the tests missed it.** The write path was verified on a *scratch pair*: `/bin/ls`
+  imported twice and analyzed identically. Two identical fresh analyses never disagree about
+  code-vs-data, so the only case that mattered was the one the test could not produce. The
+  dry run also *did* say "310 data applied" — it was read as harmless gap-filling; nobody asked
+  what those 310 were replacing. **A migration test is only meaningful when source and target
+  disagree**, which is the whole reason a migration exists.
+- **Recovery.** The DB was a fresh import plus an analyzer pass (no hand work), so it was deleted,
+  re-imported, re-analyzed, and re-migrated with the fix. Verified afterwards: `1000:0048` is an
+  instruction again, the stub is back to 15 callers, 2773 functions, and the documentation landed
+  (955 names, 8853 comments, 363 labels, 56 signatures, 54 data types, 223 data).
+  Had there been hand work, the only clean revert would have been Ghidra's in-memory **undo**
+  (Ctrl+Z on the single `Migrate documentation from …` transaction) — and it must happen *before*
+  Ghidra restarts, because the undo stack does not survive a restart, and the endpoint's auto-save
+  had already written the damage to disk. **There is no MCP undo tool; that is a real gap this
+  incident exposed** (see the open log).

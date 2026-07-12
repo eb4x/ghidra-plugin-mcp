@@ -71,6 +71,25 @@ viceroy-workflow-doc gaps (wildcard search in overlays — measured, it works; t
 met by `list user_only`, **script execution deliberately still not added**; and bulk doc
 migration — the `migrate` tool)._
 
+## No way to undo a transaction over MCP (2026-07-12)
+- **Task:** Revert a bulk `migrate` that had just written 86 bad data items over instructions
+  (see the incident in the archive).
+- **Friction:** Every write goes through `Transactions.modify`, so each tool call is exactly one
+  named, undoable Ghidra transaction — but nothing exposes `Program.undo()`. The only revert was
+  a **GUI Ctrl+Z**, i.e. precisely the "ask the user to click in Ghidra" fallback this server
+  exists to eliminate. Worse, it is time-critical: the undo stack is in memory and does not
+  survive a Ghidra restart, while the endpoint's auto-save has *already* put the damage on disk —
+  so an agent that notices its own mistake and reflexively restarts to deploy a fix destroys the
+  only clean way back.
+- **Expected:** an `undo`/`redo` op (the natural home is the `save` tool, which already owns the
+  persistence concern — e.g. `save op=undo`), reporting the transaction name it reverted so the
+  caller can confirm it undid the right thing. `Program.canUndo()`/`getUndoName()` make this
+  cheap.
+- **Workaround:** none, this time — the DB happened to be a fresh import with no hand work, so it
+  was deleted and rebuilt from scratch. That luck is not a plan.
+- **Also worth considering:** a bulk/destructive tool could snapshot (`DomainFile.copyTo`) before
+  writing, so a revert doesn't depend on the undo stack at all.
+
 ## 2026-07-08 — xrefs/inspect — data-label xref counts are 0 for DS globals
 - **Task:** Disambiguate duplicate data labels (`g_savegame_head` 5370 vs 5380) by
   finding which one code references.
