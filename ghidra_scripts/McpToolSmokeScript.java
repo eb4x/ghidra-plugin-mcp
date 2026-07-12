@@ -31,8 +31,9 @@ public class McpToolSmokeScript extends GhidraScript {
 	@Override
 	protected void run() throws Exception {
 		Decompilers decompilers = new Decompilers();
-		appTools = ToolRegistry.appTools(new ProjectContext(decompilers));
-		programTools = ToolRegistry.programTools(decompilers);
+		ProjectContext projectContext = new ProjectContext(decompilers);
+		appTools = ToolRegistry.appTools(projectContext);
+		programTools = ToolRegistry.programTools(decompilers, projectContext);
 
 		Project project = state.getProject();
 		println("=== project = " + project.getName() +
@@ -97,6 +98,15 @@ public class McpToolSmokeScript extends GhidraScript {
 			// search_memory kind=instruction: substring of disassembled text.
 			prog("search_memory", Map.of("kind", "instruction", "pattern", "PUSH", "limit", 5),
 				program);
+
+			// list user_only: the curated symbol map (drops FUN_/LAB_/DAT_ auto names).
+			prog("list", Map.of("kind", "functions", "user_only", true, "limit", 5), program);
+			prog("list", Map.of("kind", "symbols", "user_only", true, "limit", 5), program);
+
+			// migrate: /ls -> itself is refused; a dry run against the same binary imported
+			// twice is the honest exercise (everything already equal, nothing to write).
+			prog("migrate", Map.of("source", "/ls"), program);
+			prog("migrate", Map.of("source", "/__no_such_program__", "dry_run", true), program);
 
 			// manage_files delete on a file this script itself holds open: must refuse and
 			// name the consumer (McpToolSmokeScript), not just say "open elsewhere".
