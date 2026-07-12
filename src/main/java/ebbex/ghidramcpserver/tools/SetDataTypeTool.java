@@ -12,6 +12,7 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ebbex.ghidramcpserver.util.Variables;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.decompiler.util.FillOutStructureHelper;
@@ -27,7 +28,6 @@ import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.StructureDataType;
 import ghidra.program.model.listing.Function;
-import ghidra.program.model.listing.Parameter;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
 import ghidra.program.model.pcode.HighFunction;
@@ -399,11 +399,11 @@ public class SetDataTypeTool implements ProgramTool {
 	}
 
 	private VarTarget resolveVariable(Program program, Function function, String name) {
-		Variable dbVariable = findDbVariable(function, name);
+		Variable dbVariable = Variables.findDbVariable(function, name);
 		if (dbVariable != null) {
 			return new VarTarget(dbVariable, null);
 		}
-		HighSymbol highSymbol = findHighSymbol(program, function, name);
+		HighSymbol highSymbol = Variables.findHighSymbol(decompilers, program, function, name);
 		return highSymbol == null ? null : new VarTarget(null, highSymbol);
 	}
 
@@ -415,29 +415,6 @@ public class SetDataTypeTool implements ProgramTool {
 			HighFunctionDBUtil.updateDBVariable(target.highSymbol(), null, dataType,
 				SourceType.USER_DEFINED);
 		}
-	}
-
-	private static Variable findDbVariable(Function function, String name) {
-		for (Parameter parameter : function.getParameters()) {
-			if (parameter.getName().equals(name)) {
-				return parameter;
-			}
-		}
-		for (Variable local : function.getLocalVariables()) {
-			if (local.getName().equals(name)) {
-				return local;
-			}
-		}
-		return null;
-	}
-
-	private HighSymbol findHighSymbol(Program program, Function function, String name) {
-		DecompileResults results = decompilers.decompile(program, function, DECOMPILE_TIMEOUT);
-		HighFunction high = results != null ? results.getHighFunction() : null;
-		if (high == null) {
-			return null;
-		}
-		return high.getLocalSymbolMap().getNameToSymbolMap().get(name);
 	}
 
 	@SuppressWarnings("unchecked")
