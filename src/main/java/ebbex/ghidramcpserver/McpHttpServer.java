@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -8,7 +9,11 @@ import org.eclipse.jetty.ee11.servlet.ServletHolder;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 
+import ebbex.ghidramcpserver.util.BuildInfo;
 import ghidra.util.Msg;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpServerFeatures;
@@ -26,6 +31,7 @@ import tools.jackson.databind.json.JsonMapper;
 public class McpHttpServer {
 
 	public static final String BASE_PATH = "/mcp";
+	public static final String VERSION_PATH = "/version";
 
 	/** One named MCP endpoint: a path segment plus its tool specifications. */
 	public record Endpoint(String path, String serverInfoName,
@@ -81,16 +87,30 @@ public class McpHttpServer {
 			context.addServlet(holder, endpoint.mcpEndpoint());
 		}
 
+		// Plain-HTTP identity/readiness probe: `curl http://host:port/version` answers both
+		// "is the server up?" and "is it my build?" without an MCP session handshake.
+		context.addServlet(new ServletHolder("version", new VersionServlet()), VERSION_PATH);
+
 		jetty.setHandler(context);
 		jetty.start();
 
 		StringBuilder sb = new StringBuilder("MCP server listening on http://" + host + ":" + port +
-			" with " + endpoints.size() + " endpoint(s):");
+			" (build: " + BuildInfo.describe() + ") with " + endpoints.size() + " endpoint(s):");
 		for (Endpoint endpoint : endpoints) {
 			sb.append("\n  ").append(endpoint.mcpEndpoint()).append("  (")
 					.append(endpoint.specs().size()).append(" tools)");
 		}
+		sb.append("\n  ").append(VERSION_PATH).append("  (plain-HTTP build/readiness probe)");
 		Msg.info(this, sb.toString());
+	}
+
+	private static class VersionServlet extends HttpServlet {
+		@Override
+		protected void doGet(HttpServletRequest request, HttpServletResponse response)
+				throws IOException {
+			response.setContentType("text/plain;charset=utf-8");
+			response.getWriter().println("MCPServer " + BuildInfo.describe());
+		}
 	}
 
 	public boolean isRunning() {
