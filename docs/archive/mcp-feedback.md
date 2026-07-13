@@ -901,3 +901,34 @@ refs are back at 3. Damage that undo could never have reached, recovered from di
   in any operand; code addresses its *fields* directly (`g_game_year` @538a has 45
   refs). For such base labels, zero really does mean "no direct references", and the
   field labels are where the refs live.
+
+## 2026-07-13 — three entries from the husk hunt — all fixed (0.5.0)
+Filed by the agent chasing the 1-byte-husk bug in the fork. All three cost it real time, and all
+three are the same failure: **a tool that silently omits what it could not do teaches the caller
+something false.**
+
+- **`list kind=bookmarks`** (and bookmarks in `inspect`). The disassembler records its own failures
+  as ERROR bookmarks ("Bad Instruction"), the program's account of what it could not decode — and
+  nothing exposed them. The agent instead patched `Msg.debug` probes into Ghidra's `Disassembler`
+  through Eclipse and re-ran the import **five times**, where `filter=error` would have answered it
+  in one call.
+- **`list kind=functions` body size + `min_body`/`max_body`.** Lines now carry `[N callers, 261B]`,
+  and a function whose entry holds no instruction is flagged `<-- HUSK: no code at entry`.
+  Measuring the blast radius otherwise meant ~2800 `inspect` calls; the agent ended up building the
+  counter into the fork's analyzer and reading it from the log. `max_body=1` now answers it directly.
+- **`disassemble` announces undefined bytes.** It silently began at the *next* instruction when the
+  requested address held undefined bytes, which reads as "looked there, found nothing" when those
+  bytes were never examined. It now prefixes a NOTE naming what is actually there (undefined /
+  offcut / defined data), how far the gap runs, and that the listing **skips** the requested
+  address. **This misreading sent both the agent and the reviewing session down a wrong first
+  theory** — the most valuable of the three.
+
+**The outcome that justifies the log.** The husk bug these entries came from was itself found by
+`migrate`'s new body-mismatch report (0.4.1), which exists because the *previous* round of
+dogfooding showed migrate silently applying documentation across mismatched bodies. A routine dry
+run then reported **363 husks** — functions with no code at all, including `fwrite` (44 callers) —
+where the project's own notes had estimated "3 of ~604". The fork fixed it (a core Ghidra
+`Disassembler` deferred-call-flow bug plus RTLink repair passes); a fresh import now reports **0
+husks**, body mismatches fall 420 → 65, and the map renderer (`draw_map_tile` + 14 functions,
+~2.3 KB) exists for the first time. Every step of that chain was a tool being made to say what it
+had glossed over.
