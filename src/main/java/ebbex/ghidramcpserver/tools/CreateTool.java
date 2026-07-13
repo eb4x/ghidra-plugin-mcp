@@ -19,6 +19,7 @@ import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.BookmarkManager;
 import ghidra.program.model.listing.BookmarkType;
 import ghidra.program.model.listing.CodeUnit;
+import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.RefType;
@@ -168,10 +169,21 @@ public class CreateTool implements ProgramTool {
 			if (!cmd.applyTo(program, TaskMonitor.DUMMY)) {
 				throw new IllegalStateException(cmd.getStatusMsg());
 			}
-			String named = cmd.getFunction() != null ? " (" + cmd.getFunction().getName() + ")" : "";
-			String bodyNote = functionBody != null
-					? ", body " + functionBody.getNumAddresses() + " bytes"
+			Function created = cmd.getFunction();
+			String named = created != null ? " (" + created.getName() + ")" : "";
+			// Report the body the function ACTUALLY has, not the one that was requested. Ghidra
+			// normalizes a supplied body (an address set that ends mid-instruction, say), so the
+			// two can differ — and echoing the request back as if it were the result is a lie the
+			// caller cannot see. It cost a real investigation: a requested 464-byte body came back
+			// as 464 while the function was in fact 462, sending the reader after a phantom bug.
+			String bodyNote = created != null
+					? ", body " + created.getBody().getNumAddresses() + " bytes"
 					: "";
+			if (created != null && functionBody != null &&
+				created.getBody().getNumAddresses() != functionBody.getNumAddresses()) {
+				bodyNote += " (requested " + functionBody.getNumAddresses() +
+					"; Ghidra normalized it)";
+			}
 			return "Created function @ " + address + named + bodyNote;
 		});
 	}
