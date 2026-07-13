@@ -169,22 +169,28 @@ public class CreateTool implements ProgramTool {
 			if (!cmd.applyTo(program, TaskMonitor.DUMMY)) {
 				throw new IllegalStateException(cmd.getStatusMsg());
 			}
+			// Report the function the program ACTUALLY holds now, not what was requested. Ghidra
+			// normalizes a supplied body (an address set ending mid-instruction, say), so the two
+			// can differ — and echoing the request back as if it were the result is a lie the
+			// caller cannot see. It cost a real investigation: a requested 464-byte body was
+			// reported as 464 while the function was in fact 462, sending the reader after a
+			// phantom bug. Note CreateFunctionCmd.getFunction() is null when it *recreated* an
+			// existing function, so ask the program rather than the command.
 			Function created = cmd.getFunction();
-			String named = created != null ? " (" + created.getName() + ")" : "";
-			// Report the body the function ACTUALLY has, not the one that was requested. Ghidra
-			// normalizes a supplied body (an address set that ends mid-instruction, say), so the
-			// two can differ — and echoing the request back as if it were the result is a lie the
-			// caller cannot see. It cost a real investigation: a requested 464-byte body came back
-			// as 464 while the function was in fact 462, sending the reader after a phantom bug.
-			String bodyNote = created != null
-					? ", body " + created.getBody().getNumAddresses() + " bytes"
-					: "";
-			if (created != null && functionBody != null &&
-				created.getBody().getNumAddresses() != functionBody.getNumAddresses()) {
-				bodyNote += " (requested " + functionBody.getNumAddresses() +
-					"; Ghidra normalized it)";
+			if (created == null) {
+				created = program.getFunctionManager().getFunctionAt(address);
 			}
-			return "Created function @ " + address + named + bodyNote;
+			if (created == null) {
+				// Should not happen: applyTo() succeeded. Say so rather than inventing a body.
+				return "Created function @ " + address + " (could not read it back — report this)";
+			}
+			long actual = created.getBody().getNumAddresses();
+			String bodyNote = ", body " + actual + " bytes";
+			if (functionBody != null && actual != functionBody.getNumAddresses()) {
+				bodyNote += " (requested " + functionBody.getNumAddresses() +
+					"; Ghidra normalized it to the flow-derived body)";
+			}
+			return "Created function @ " + address + " (" + created.getName() + ")" + bodyNote;
 		});
 	}
 
