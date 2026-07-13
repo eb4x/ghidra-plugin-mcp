@@ -15,6 +15,7 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.data.StringDataInstance;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.Listing;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.ReferenceManager;
@@ -31,7 +32,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class ListTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("functions", "symbols", "strings",
-		"imports", "exports", "segments", "data", "namespaces");
+		"imports", "exports", "segments", "data", "namespaces", "bookmarks");
 
 	private static final List<String> SORTS = List.of("address", "name", "callers");
 
@@ -54,7 +55,12 @@ public class ListTool implements ProgramTool {
 			"descending — the quickest way to spot heavily-used leaf helpers like memcpy/strlen). " +
 			"user_only=true (kind=functions|symbols|data) keeps only names a human or analyzer " +
 			"gave, dropping Ghidra's auto-generated ones (FUN_*, LAB_*, DAT_*, …) — the way to " +
-			"export the curated symbol map without a script.";
+			"export the curated symbol map without a script. kind=functions also shows each " +
+			"function's body size and takes min_body/max_body (bytes): max_body=1 enumerates " +
+			"'husk' functions whose code was never disassembled. kind=bookmarks lists bookmarks " +
+			"(type/category/address/comment) — this is where the disassembler records its own " +
+			"failures as ERROR 'Bad Instruction' marks, so filter=error to see what it could not " +
+			"decode.";
 	}
 
 	@Override
@@ -72,6 +78,11 @@ public class ListTool implements ProgramTool {
 					"kind=functions: only functions with entry <= this address"),
 				"user_only", Schemas.boolProp("kind=functions|symbols|data: keep only " +
 					"non-auto-generated names (default false)"),
+				"min_body", Schemas.intProp("kind=functions: only functions whose body is at " +
+					"least this many bytes"),
+				"max_body", Schemas.intProp("kind=functions: only functions whose body is at most " +
+					"this many bytes (max_body=1 finds husks — a function object over undefined " +
+					"bytes, holding no code)"),
 				"offset", Schemas.intProp("Skip this many matches (default 0)"),
 				"limit", Schemas.intProp("Maximum matches to return (default " +
 					DEFAULT_LIMIT + ")")),
@@ -118,7 +129,14 @@ public class ListTool implements ProgramTool {
 			return Results.error("user_only applies to kind=" + String.join("|", USER_ONLY_KINDS));
 		}
 
-		Iterator<String> lines = lines(kind, program, sort, from, to, userOnly);
+		long minBody = Args.intArg(args, "min_body", -1);
+		long maxBody = Args.intArg(args, "max_body", -1);
+		if ((minBody >= 0 || maxBody >= 0) && !kind.equals("functions")) {
+			return Results.error("min_body/max_body apply to kind=functions");
+		}
+
+		Iterator<String> lines =
+			lines(kind, program, sort, from, to, userOnly, minBody, maxBody);
 
 		List<String> window = new ArrayList<>();
 		int total = 0;
@@ -152,9 +170,11 @@ public class ListTool implements ProgramTool {
 	}
 
 	private Iterator<String> lines(String kind, Program program, String sort, Address from,
-			Address to, boolean userOnly) {
+			Address to, boolean userOnly, long minBody, long maxBody) {
 		return switch (kind) {
-			case "functions" -> functionLines(program, sort, from, to, userOnly).iterator();
+			case "functions" -> functionLines(program, sort, from, to, userOnly, minBody, maxBody)
+					.iterator();
+			case "bookmarks" -> bookmarks(program);
 			case "symbols" -> map(filter(program.getSymbolTable().getAllSymbols(true),
 				s -> !userOnly || isUserNamed(s)),
 				s -> s.getAddress() + "  " + s.getName(true) + "  [" + s.getSymbolType() + "]");
@@ -178,9 +198,9 @@ public class ListTool implements ProgramTool {
 		};
 	}
 
-	/** Function lines carry a caller count and are sortable by address, name, or callers. */
+	/** Function lines carry a caller count and body size; sortable by address, name, or callers. */
 	private List<String> functionLines(Program program, String sort, Address from, Address to,
-			boolean userOnly) {
+			boolean userOnly, long minBody, long maxBody) {
 		ReferenceManager refs = program.getReferenceManager();
 		List<Function> functions = new ArrayList<>();
 		for (Function f : program.getFunctionManager().getFunctions(true)) {
@@ -192,6 +212,13 @@ public class ListTool implements ProgramTool {
 				continue;
 			}
 			if (userOnly && !isUserNamed(f.getSymbol())) {
+				continue;
+			}
+			long body = f.getBody().getNumAddresses();
+			if (minBody >= 0 && body < minBody) {
+				continue;
+			}
+			if (maxBody >= 0 && body > maxBody) {
 				continue;
 			}
 			functions.add(f);
@@ -206,12 +233,30 @@ public class ListTool implements ProgramTool {
 		};
 		functions.sort(comparator);
 
+		Listing listing = program.getListing();
 		List<String> lines = new ArrayList<>(functions.size());
 		for (Function f : functions) {
 			int callers = refs.getReferenceCountTo(f.getEntryPoint());
-			lines.add(f.getEntryPoint() + "  [" + callers + " callers]  " + signatureOf(f));
+			long body = f.getBody().getNumAddresses();
+			// A function object whose entry holds no instruction has no code at all — it looks
+			// resolved to every consumer while being empty. Say so on the line itself.
+			boolean husk = !f.isThunk() && listing.getInstructionAt(f.getEntryPoint()) == null;
+			lines.add(f.getEntryPoint() + "  [" + callers + " callers, " + body + "B]  " +
+				signatureOf(f) + (husk ? "  <-- HUSK: no code at entry" : ""));
 		}
 		return lines;
+	}
+
+	/**
+	 * Bookmarks, including the ERROR marks the disassembler leaves where it gave up ("Bad
+	 * Instruction"). Those are the program's own record of what it could not decode, and nothing
+	 * else in the tool set surfaces them — {@code filter=error} is the fast way to ask a fresh
+	 * import what went wrong.
+	 */
+	private static Iterator<String> bookmarks(Program program) {
+		return map(program.getBookmarkManager().getBookmarksIterator(),
+			b -> b.getAddress() + "  [" + b.getTypeString() +
+				(b.getCategory().isEmpty() ? "" : "/" + b.getCategory()) + "]  " + b.getComment());
 	}
 
 	private static String signatureOf(Function f) {

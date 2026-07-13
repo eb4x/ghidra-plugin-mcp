@@ -9,6 +9,7 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.listing.Bookmark;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
@@ -31,8 +32,9 @@ public class InspectTool implements ProgramTool {
 	@Override
 	public String description() {
 		return "Describe a single location: its symbols, the function containing it (with " +
-			"signature), any defined data and its type/value, all comments, and cross-reference " +
-			"counts. Accepts an address or a symbol name.";
+			"signature), any defined data and its type/value, all comments, any bookmarks " +
+			"(including the disassembler's own ERROR marks, e.g. 'Bad Instruction'), and " +
+			"cross-reference counts. Accepts an address or a symbol name.";
 	}
 
 	@Override
@@ -111,6 +113,15 @@ public class InspectTool implements ProgramTool {
 		appendComment(sb, listing, address, CommentType.EOL, "eol");
 		appendComment(sb, listing, address, CommentType.POST, "post");
 		appendComment(sb, listing, address, CommentType.REPEATABLE, "repeatable");
+
+		// Bookmarks — above all the ERROR marks the disassembler leaves where it gave up ("Bad
+		// Instruction"). They are the program's own account of what went wrong here, and asking
+		// this address anything else will not reveal it.
+		for (Bookmark bookmark : program.getBookmarkManager().getBookmarks(address)) {
+			sb.append("Bookmark[").append(bookmark.getTypeString())
+					.append(bookmark.getCategory().isEmpty() ? "" : "/" + bookmark.getCategory())
+					.append("]: ").append(bookmark.getComment()).append('\n');
+		}
 
 		int toCount = program.getReferenceManager().getReferenceCountTo(address);
 		int fromCount = program.getReferenceManager().getReferenceCountFrom(address);

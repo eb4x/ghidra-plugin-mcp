@@ -108,6 +108,17 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("list", Map.of("kind", "functions", "user_only", true, "limit", 5), program);
 			prog("list", Map.of("kind", "symbols", "user_only", true, "limit", 5), program);
 
+			// Husk enumeration + bookmarks: how an analysis failure is found without 2800 calls.
+			prog("list", Map.of("kind", "functions", "max_body", 1, "limit", 5), program);
+			prog("list", Map.of("kind", "bookmarks", "limit", 5), program);
+			prog("list", Map.of("kind", "bookmarks", "filter", "error", "limit", 5), program);
+			prog("list", Map.of("kind", "bookmarks", "max_body", 1), program); // wrong kind: refused
+
+			// disassemble must SAY when the requested address holds no code, rather than
+			// silently listing from the next instruction (which reads as "looked, found nothing").
+			prog("disassemble", Map.of("address", program.getMaxAddress().toString(), "count", 2),
+				program);
+
 			// migrate: /ls -> itself is refused; a dry run against the same binary imported
 			// twice is the honest exercise (everything already equal, nothing to write).
 			prog("migrate", Map.of("source", "/ls"), program);

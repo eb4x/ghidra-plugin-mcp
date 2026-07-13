@@ -9,9 +9,11 @@ import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.CodeUnitFormat;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.listing.Listing;
 import ghidra.program.model.listing.Program;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -73,6 +75,10 @@ public class DisassembleTool implements ProgramTool {
 		else if (addressArg != null) {
 			int count = Math.min(MAX_COUNT, Math.max(1, Args.intArg(args, "count", DEFAULT_COUNT)));
 			Address start = Locations.parseAddress(program, addressArg);
+			// Say so when the requested address holds no code. The iterator silently begins at the
+			// next instruction, which reads as "we looked here and found nothing" when in truth
+			// those bytes were never examined — that misreading cost a real investigation a day.
+			appendUndefinedNote(sb, program, start);
 			InstructionIterator it = program.getListing().getInstructions(start, true);
 			appendInstructions(sb, it, format, count);
 		}
@@ -84,6 +90,46 @@ public class DisassembleTool implements ProgramTool {
 			return Results.ok("No instructions (address may not be disassembled)");
 		}
 		return Results.ok(sb.toString());
+	}
+
+	/**
+	 * Prefix a marker when {@code start} is not the first byte of an instruction, naming what is
+	 * actually there and where the listing will therefore resume. Two distinct cases, both of
+	 * which the bare listing hides: the address holds <em>undefined bytes</em> (never
+	 * disassembled — say how many, up to the next instruction), or it is <em>offcut</em>, i.e.
+	 * inside an instruction that starts earlier.
+	 */
+	private static void appendUndefinedNote(StringBuilder sb, Program program, Address start) {
+		Listing listing = program.getListing();
+		if (listing.getInstructionAt(start) != null) {
+			return;
+		}
+		Instruction containing = listing.getInstructionContaining(start);
+		if (containing != null) {
+			sb.append("NOTE: ").append(start).append(" is OFFCUT — inside the instruction at ")
+					.append(containing.getAddress()).append("; listing resumes at the next one.\n");
+			return;
+		}
+		Data data = listing.getDefinedDataContaining(start);
+		Instruction next = listing.getInstructionAfter(start);
+		sb.append("NOTE: ").append(start).append(" holds ")
+				.append(data != null ? "defined data (" + data.getDataType().getName() + ")"
+						: "UNDEFINED bytes (never disassembled)");
+		if (next != null) {
+			sb.append("; nothing is disassembled until ").append(next.getAddress());
+			try {
+				sb.append(" (0x").append(Long.toHexString(next.getAddress().subtract(start)))
+						.append(" bytes)");
+			}
+			catch (Exception spansSpaces) {
+				// different address space: the byte distance is meaningless, skip it
+			}
+		}
+		else {
+			sb.append("; no further instructions in the program");
+		}
+		sb.append(".\nThe listing below therefore SKIPS the requested address — it is not evidence " +
+			"that those bytes are not code. Use create kind=instructions to disassemble them.\n");
 	}
 
 	private void appendInstructions(StringBuilder sb, InstructionIterator it,

@@ -78,3 +78,42 @@ the entry predicted: a deref pass (READ/WRITE) plus an address-of immediate pass
 (`RefType.DATA`), with the structural caveat that a base label no instruction ever
 addresses (`g_savegame_head` 5370) legitimately stays at 0._
 
+
+## 2026-07-13 — bookmarks — no way to read error bookmarks (Bad Instruction etc.)
+- **Task:** Diagnosing why OVERLAY_19::011958 was never disassembled on a fresh
+  import (the 1-byte-husk investigation). The disassembler records its failures as
+  ERROR bookmarks ("Bad Instruction", "Failed to disassemble at X due to
+  conflicting ..."), which would have distinguished "never attempted" from
+  "attempted and conflicted" in one call.
+- **Friction:** No tool exposes bookmarks: `inspect` shows comments but not
+  bookmarks, and `list` has no `kind=bookmarks`.
+- **Expected:** `list kind=bookmarks` (type/category/comment/address, filterable),
+  and/or bookmarks included in `inspect` output.
+- **Workaround:** Added temporary Msg.debug probes to Disassembler/DisassemblerQueue
+  through Eclipse and re-ran the import per hypothesis — five Ghidra restarts where
+  one bookmark listing might have sufficed.
+
+## 2026-07-13 — disassemble — undefined bytes at the requested address are skipped silently
+- **Task:** Same investigation: `disassemble address=OVERLAY_19::011958 count=...`
+  to see the (expected) code there.
+- **Friction:** The address held undefined bytes, and the output silently started at
+  the next instruction (011d8c) with nothing indicating the requested address was
+  skipped. Read as "function has no code; next instruction at 011d8c" it cost both
+  the human and the agent a wrong first theory — it looks like the tool disassembled
+  the gap and found nothing, when it never looked at those bytes at all.
+- **Expected:** A leading marker line when the requested start is not on a code unit,
+  e.g. "011958: undefined bytes (0x434 undefined until 011d8c)" — same for offcut
+  starts.
+- **Workaround:** `read_bytes` + `inspect` to establish the bytes were undefined,
+  then `create kind=instructions` to prove they decode.
+
+## 2026-07-13 — list kind=functions — no body size, so husk functions can't be enumerated
+- **Task:** Measure the blast radius of the 1-byte-husk bug: count functions whose
+  body is implausibly small (1 byte / no instruction at entry) on a fresh import.
+- **Friction:** `list kind=functions` shows entry, caller count and signature but
+  not body size or an instruction-at-entry flag; the only per-function source of
+  body size is `inspect`, which would have meant ~2800 calls.
+- **Expected:** Body size (bytes) per line, or a filter like `min_body`/`max_body`
+  (or a `husks` filter: body==1 or no instruction at entry).
+- **Workaround:** Built the enumeration into the fork's RTLinkOverlayAnalyzer
+  repair pass and read the count from `read_log` (343 of 2810 functions pre-fix).
