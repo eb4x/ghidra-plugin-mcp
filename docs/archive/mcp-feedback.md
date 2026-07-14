@@ -962,3 +962,32 @@ had glossed over.
 - **Takeaway:** `filter=error` now means something on VICEROY — worth re-checking after any
   analyzer change, since a diagnostic channel that is all noise is worse than none. The channel the
   three husk entries won was only worth having once the thing writing to it stopped lying.
+
+## 2026-07-14 — xrefs / clear — no way to ask "which references come *from* this range?" — fixed (0.6.0)
+- **Task:** Delete every reference **from** the RTLink runtime (`210d`, `275d`) **into** DGROUP —
+  the ones an over-broad `DS` assumption had invented. A bounded, well-defined set: one
+  from-range, one to-range. It took ~1500 calls.
+- **Friction:** `xrefs direction=from` took a *location*, so on a function it returned only the
+  refs from the **entry address**, not from the body — references are recorded on the instruction
+  that makes them. There was no from-range query at all, so "refs out of segment 210d" was not
+  askable; the agent inverted it (1043 `direction=to` calls over every DGROUP symbol to find 437
+  references), then spent 437 more single-pair `clear kind=reference` calls, because `batch`'s
+  `op` enum had no `clear`.
+- **Fix:** `xrefs` now takes exactly one of three targets — `location` (a point, as before),
+  `function` (its **whole body**), or `min_address`/`max_address` (an explicit range, e.g. a whole
+  segment) — plus a `filter` that constrains the *other* endpoint (`filter='2b5a:'` for refs
+  landing in DGROUP). Range results name **both** endpoints, so the output is directly consumable
+  as `(address, to_address)` pairs. `clear` joined the `batch` edit tools, so those pairs go back
+  in one call. The two-space range case (an overlay/segment straddle) is rejected with the tool's
+  own message rather than Ghidra's raw `AddressSet` exception.
+- **Measured (smoke, /bin/ls):** `xrefs function=_init direction=from` returns the 4 body
+  references a point query missed entirely; a range query over `00100000-00140000` with
+  `filter=CALL` returns 1453, paginated; `batch op=clear kind=reference` deletes them. The whole
+  original task is now two calls instead of ~1500.
+- **Not done:** a *ranged* destructive `clear` (delete every ref from range X into range Y) was
+  deliberately left out — with no undo, a one-call bulk delete of an unenumerated set is the wrong
+  shape. Enumerate with `xrefs`, look at what you got, then hand the explicit pairs to `batch`.
+- **Left open:** the entry's "bonus hazard" — a typed region (`savegame_unit[300]`) absorbs the
+  interior `DAT_` labels, so a label-based audit silently misses references that still exist, and
+  `list kind=symbols` gives no hint. The from-range query makes the reference-based audit possible,
+  which is the real answer, but the label-absorption trap itself is unguarded.

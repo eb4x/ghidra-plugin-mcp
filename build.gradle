@@ -205,3 +205,83 @@ tasks.register('uninstallExtension') {
 	description = "Delete the extracted extension and remove copied extension zip(s)"
 	dependsOn tasks.named('cleanExtractedExtension'), tasks.named('cleanCopiedExtensionZips')
 }
+
+/**
+ * Headless smoke test (`gradlew smokeTest`), hermetic by construction.
+ *
+ * Two things make a headless run test something other than what you just built, and both have
+ * bitten us: Ghidra also loads extensions extracted under <install>/Ghidra/Extensions (a copy
+ * `installExtension` never refreshes — it went stale at 0.4.0 and every smoke run silently
+ * exercised that), and a headless run launched outside the flatpak resolves its settings dir to
+ * the native ~/.config/ghidra rather than the flatpak tree the IDE uses. So this task re-extracts
+ * the freshly built zip into the install on every run, and pins the settings dir into build/ via
+ * -Dapplication.settingsdir (GHIDRA_JAVA_OPTIONS is analyzeHeadless's VM-arg passthrough), leaving
+ * ~/.config/ghidra out of it entirely.
+ */
+def ghidraInstallExtensionsDir = file("${ghidraInstallDir}/Ghidra/Extensions")
+def smokeDir = file("${layout.buildDirectory.get().asFile}/smoke")
+
+tasks.register('cleanInstalledExtension', Delete) {
+	group = "Ghidra"
+	description = "Delete the extension extracted inside the Ghidra install (headless loads it)"
+	delete new File(ghidraInstallExtensionsDir, extensionName)
+}
+
+tasks.register('extractExtensionToInstall', Copy) {
+	group = "Ghidra"
+	description = "Extract the built extension into the Ghidra install, where headless finds it"
+
+	dependsOn tasks.named('buildExtension'), tasks.named('cleanInstalledExtension')
+
+	from {
+		zipTree(buildZipProvider.get().asFile)
+	}
+	into ghidraInstallExtensionsDir
+}
+
+tasks.register('smokeTest', Exec) {
+	group = "verification"
+	description = "Run McpToolSmokeScript headless against a fresh import of the freshly built extension"
+
+	dependsOn tasks.named('extractExtensionToInstall')
+
+	def projectDir = new File(smokeDir, "project")
+	def settingsDir = new File(smokeDir, "settings")
+	def target = new File(smokeDir, "ls.bin")
+	def logFile = new File(smokeDir, "smoke.log")
+
+	doFirst {
+		delete smokeDir
+		projectDir.mkdirs()
+		settingsDir.mkdirs()
+		// Any binary will do; /bin/ls is what the documented run has always used.
+		target.bytes = file("/bin/ls").bytes
+	}
+
+	environment 'GHIDRA_JAVA_OPTIONS', "-Dapplication.settingsdir=${settingsDir}"
+	commandLine "${ghidraInstallDir}/support/analyzeHeadless",
+		projectDir, "smoke",
+		"-import", target,
+		"-scriptPath", file("ghidra_scripts"),
+		"-postScript", "McpToolSmokeScript"
+
+	ignoreExitValue = true
+	standardOutput = new ByteArrayOutputStream()
+	errorOutput = standardOutput
+
+	doLast {
+		def output = standardOutput.toString()
+		logFile.text = output
+		// The script reports its own verdict; a zero exit code alone proves nothing, because
+		// analyzeHeadless exits 0 even when a postScript throws.
+		def unexpected = (output =~ /(?m)^.*UNEXPECTED.*$/).collect { it }
+		if (!output.contains("SMOKE COMPLETE") || !unexpected.isEmpty()) {
+			throw new GradleException("smoke test failed — see ${logFile}\n" +
+				(unexpected.isEmpty() ? "script did not reach SMOKE COMPLETE"
+					: unexpected.join("\n")))
+		}
+		def version = file("version.properties").readLines()
+			.find { it.startsWith("version=") }?.substring("version=".length())
+		logger.lifecycle("smoke test passed (extension ${version}) — full log: ${logFile}")
+	}
+}

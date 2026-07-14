@@ -54,15 +54,20 @@ The loop:
 
 ## Testing
 
-No unit tests. `ghidra_scripts/McpToolSmokeScript.java` drives every tool headless against an imported binary (it is excluded from the extension zip):
+No unit tests. `ghidra_scripts/McpToolSmokeScript.java` drives every tool headless against a fresh import of `/bin/ls` (it is excluded from the extension zip). Run it with:
 
 ```bash
-mkdir -p /tmp/mcpsmoke && cp /bin/ls /tmp/ls.bin
-$GHIDRA_INSTALL_DIR/support/analyzeHeadless /tmp/mcpsmoke smoke \
-  -import /tmp/ls.bin -scriptPath ./ghidra_scripts -postScript McpToolSmokeScript
+./gradlew smokeTest     # -> build/smoke/smoke.log; fails the build unless the script reaches SMOKE COMPLETE
 ```
 
-The `.mcp.json` in this repo also connects this Claude Code session directly to a running instance (`ghidra-program` / `ghidra-application-level` MCP servers), so tools can be exercised live when Ghidra is up.
+**Never invoke `analyzeHeadless` by hand.** The task exists because a hand-rolled headless run tests the wrong build in two ways, and both bit us:
+
+- Ghidra also loads extensions extracted under `<install>/Ghidra/Extensions/`, and `installExtension` does *not* refresh that copy (it only extracts into `GHIDRA_USER_EXTENSIONS_DIR` and drops the *zip* into `Extensions/Ghidra`). That copy went stale at 0.4.0 and every headless smoke run silently exercised it for several versions. `smokeTest` re-extracts the freshly built zip there on every run.
+- A headless run launched from a normal shell is *outside* the flatpak, so Ghidra resolves its settings dir to the native `~/.config/ghidra` instead of the flatpak tree the IDE uses (see the config-paths note). `smokeTest` pins it into `build/smoke/settings` via `-Dapplication.settingsdir` (passed through `GHIDRA_JAVA_OPTIONS`, analyzeHeadless's VM-arg hook), so `~/.config/ghidra` is never created.
+
+Note that `analyzeHeadless` exits 0 even when a post-script throws, so the exit code proves nothing — the script prints its own verdict line and the Gradle task greps for it.
+
+The `.mcp.json` in this repo also connects this Claude Code session directly to a running instance (`ghidra-program` / `ghidra-application-level` MCP servers), so tools can be exercised live when Ghidra is up — which is the only way to verify the build the *IDE* is running.
 
 ## Architecture
 

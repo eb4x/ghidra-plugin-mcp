@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (39 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (40 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -80,7 +80,9 @@ addresses (`g_savegame_head` 5370) legitimately stays at 0, the three husk-hunt 
 (0.5.0: `list kind=bookmarks`, `list kind=functions` body size + `min_body`/`max_body`,
 `disassemble` announcing undefined/offcut starts), and the ERROR-bookmark channel those
 exposed — 100% false positives on VICEROY until the fork's `RTLinkOverlayAnalyzer` swept
-its own stale marks (540 → 2, both survivors real)._
+its own stale marks (540 → 2, both survivors real), and the from-range `xrefs` gap (0.6.0:
+`xrefs` takes a `function` body or a `min_address`/`max_address` range with a `filter` on the
+other endpoint, and `clear` is a `batch` op — ~1500 calls become two)._
 
 
 ## 2026-07-14 — migrate — `signatures` silently drops custom storage, producing *wrong* decompilation
@@ -136,29 +138,3 @@ its own stale marks (540 → 2, both survivors real)._
   and drove it with `analyze analyzer="RTLink/Plus Overlay"`. That works, and the one-shot
   `analyzer` parameter is genuinely the right escape hatch, but it means the only way to edit
   program state of this class is to go and write Java.
-
-## 2026-07-14 — xrefs / clear — no way to ask "which references come *from* this range?"
-- **Task:** Delete every reference **from** the RTLink runtime (`210d`, `275d`) **into**
-  DGROUP — the ones an over-broad `DS` assumption had invented. A bounded, well-defined set:
-  one from-range, one to-range.
-- **Friction:** Two gaps compounded.
-  1. `xrefs direction=from` takes a *location*, and on a function it returns only the refs
-     from the **entry address**, not from the body: `xrefs location=FUN_210d_4454 direction=from`
-     → "No from references", while `210d:449b` (inside it, +71) plainly had one. There is no
-     from-range query at all, so "refs out of segment 210d" is not askable.
-  2. So I had to invert it: enumerate every DGROUP symbol the runtime could possibly name
-     (1043 of them, bounded by the runtime segments' own extents), call `xrefs direction=to`
-     on each, and filter the from-side by segment. ~1043 calls to find 437 references.
-     Then `clear kind=reference` takes exactly one `(address, to_address)` pair, and `batch`'s
-     `op` enum has no `clear` — so that was 437 more calls.
-- **Expected:** `xrefs` with a from-range (`min_address`/`max_address`, or accepting a function
-  and meaning its whole body) and an optional filter on the other endpoint; and either a
-  ranged `clear kind=reference` or `clear` as a `batch` op. Any one of the three would have
-  turned ~1500 calls into a handful.
-- **Bonus hazard, worth a guard:** my *first* attempt at this audit diffed `DAT_` labels
-  between a good and a bad DB — and silently missed most of the bogus references, because I
-  had already applied `savegame_unit[300]` over the region and the array **absorbed the
-  interior `DAT_` labels**. The references still existed; their labels did not. A label-based
-  audit is not a reference-based audit, and `list kind=symbols` gives no hint that a typed
-  region is swallowing referenced addresses. A real from-range `xrefs` query would have made
-  the mistake impossible.
