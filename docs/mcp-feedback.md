@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (37 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (39 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -76,79 +76,12 @@ snapshot-based (`manage_files op=copy`; `migrate` auto-backs-up), and the DS-glo
 zero-xref entry — resolved in the fork's `RTLinkXrefAnalyzer`, not the plugin, exactly as
 the entry predicted: a deref pass (READ/WRITE) plus an address-of immediate pass
 (`RefType.DATA`), with the structural caveat that a base label no instruction ever
-addresses (`g_savegame_head` 5370) legitimately stays at 0._
+addresses (`g_savegame_head` 5370) legitimately stays at 0, the three husk-hunt entries
+(0.5.0: `list kind=bookmarks`, `list kind=functions` body size + `min_body`/`max_body`,
+`disassemble` announcing undefined/offcut starts), and the ERROR-bookmark channel those
+exposed — 100% false positives on VICEROY until the fork's `RTLinkOverlayAnalyzer` swept
+its own stale marks (540 → 2, both survivors real)._
 
-
-## 2026-07-13 — bookmarks — no way to read error bookmarks (Bad Instruction etc.)
-- **Task:** Diagnosing why OVERLAY_19::011958 was never disassembled on a fresh
-  import (the 1-byte-husk investigation). The disassembler records its failures as
-  ERROR bookmarks ("Bad Instruction", "Failed to disassemble at X due to
-  conflicting ..."), which would have distinguished "never attempted" from
-  "attempted and conflicted" in one call.
-- **Friction:** No tool exposes bookmarks: `inspect` shows comments but not
-  bookmarks, and `list` has no `kind=bookmarks`.
-- **Expected:** `list kind=bookmarks` (type/category/comment/address, filterable),
-  and/or bookmarks included in `inspect` output.
-- **Workaround:** Added temporary Msg.debug probes to Disassembler/DisassemblerQueue
-  through Eclipse and re-ran the import per hypothesis — five Ghidra restarts where
-  one bookmark listing might have sufficed.
-
-## 2026-07-13 — disassemble — undefined bytes at the requested address are skipped silently
-- **Task:** Same investigation: `disassemble address=OVERLAY_19::011958 count=...`
-  to see the (expected) code there.
-- **Friction:** The address held undefined bytes, and the output silently started at
-  the next instruction (011d8c) with nothing indicating the requested address was
-  skipped. Read as "function has no code; next instruction at 011d8c" it cost both
-  the human and the agent a wrong first theory — it looks like the tool disassembled
-  the gap and found nothing, when it never looked at those bytes at all.
-- **Expected:** A leading marker line when the requested start is not on a code unit,
-  e.g. "011958: undefined bytes (0x434 undefined until 011d8c)" — same for offcut
-  starts.
-- **Workaround:** `read_bytes` + `inspect` to establish the bytes were undefined,
-  then `create kind=instructions` to prove they decode.
-
-## 2026-07-13 — list kind=functions — no body size, so husk functions can't be enumerated
-- **Task:** Measure the blast radius of the 1-byte-husk bug: count functions whose
-  body is implausibly small (1 byte / no instruction at entry) on a fresh import.
-- **Friction:** `list kind=functions` shows entry, caller count and signature but
-  not body size or an instruction-at-entry flag; the only per-function source of
-  body size is `inspect`, which would have meant ~2800 calls.
-- **Expected:** Body size (bytes) per line, or a filter like `min_body`/`max_body`
-  (or a `husks` filter: body==1 or no instruction at entry).
-- **Workaround:** Built the enumeration into the fork's RTLinkOverlayAnalyzer
-  repair pass and read the count from `read_log` (343 of 2810 functions pre-fix).
-
-## 2026-07-13 — list kind=bookmarks filter=error — RESOLVED: the ERROR channel was 100% false positives
-- **Task:** Trust `list kind=bookmarks filter=error` as the "what could the disassembler
-  not decode" channel. A fresh VICEROY.EXE import reported 541-ish ERROR bookmarks;
-  every one was a fossil, so the channel said "541 things are broken" on a DB where
-  nothing was.
-- **Finding:** All of them sat in the two RTLink stub segments (281f/CODE_99,
-  2a1f/CODE_100), on dispatch stubs that `RTLinkOverlayAnalyzer` had in fact resolved.
-  A stub's `JMPF 0000:offset` only becomes valid when the overlay manager patches it at
-  run time, so any disassembly of it records "Could not follow disassembly flow into
-  non-existing memory". The analyzer then relocates and thunks the stub, but never
-  removed the mark it had invalidated.
-- **Correction to the original diagnosis:** the mark is not left over from an *earlier*
-  pass. `RTLinkOverlayAnalyzer` runs at `FORMAT_ANALYSIS.after()` (it has to — it creates
-  the overlay blocks everything else depends on), so on a fresh import it resolves each
-  stub *before* the disassembler ever walks into it: the marks are stamped **after** the
-  analyzer is done, and are stale the moment they are written. Clearing at resolve time
-  alone fixes only the retrofit/one-shot path (540 → 2 on a re-run) and does nothing on
-  a fresh import.
-- **Fix (fork `rtlink`, RTLinkOverlayAnalyzer):** `createThunkAtStub()` now reports
-  whether the stub is really resolved; resolved stub bodies are cleared *and recorded*,
-  and swept again in `analysisEnded()`, once every other analyzer has run. Stubs whose
-  resolution genuinely failed keep their mark and their log line.
-- **Measured:** fresh import + full analysis, ERROR bookmarks **540 → 2** (analyzer logs
-  "Cleared 538 stale Bad Instruction bookmark(s)"). Both survivors are real:
-  `281f:0f71` (a CALLF+JMPF pair whose CALLF does not target a discovered dispatcher, so
-  it is not a dispatch stub and stays unresolved) and `275d:0778` ("Maximum run of
-  repeated byte instructions exceeded" — a run of 00 bytes walked as code). No
-  regressions: 2793 functions, 611 stubs + 370 trampolines resolved, 29 xrefs to
-  `2b5a:540e`, 3 one-byte functions (all real, no husks).
-- **Takeaway:** `filter=error` now means something on VICEROY — worth re-checking after
-  any analyzer change, since a diagnostic channel that is all noise is worse than none.
 
 ## 2026-07-14 — migrate — `signatures` silently drops custom storage, producing *wrong* decompilation
 - **Task:** Decide whether a re-import + `migrate` could recover a program whose
