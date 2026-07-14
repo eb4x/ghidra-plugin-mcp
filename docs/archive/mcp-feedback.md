@@ -932,3 +932,33 @@ where the project's own notes had estimated "3 of ~604". The fork fixed it (a co
 husks**, body mismatches fall 420 → 65, and the map renderer (`draw_map_tile` + 14 functions,
 ~2.3 KB) exists for the first time. Every step of that chain was a tool being made to say what it
 had glossed over.
+
+## 2026-07-13 — list kind=bookmarks filter=error — the ERROR channel was 100% false positives
+- **Task:** Trust `list kind=bookmarks filter=error` (new in 0.5.0, the entry above) as the "what
+  could the disassembler not decode" channel. A fresh VICEROY.EXE import reported 541-ish ERROR
+  bookmarks; every one was a fossil, so the channel said "541 things are broken" on a DB where
+  nothing was.
+- **Finding:** All of them sat in the two RTLink stub segments (281f/CODE_99, 2a1f/CODE_100), on
+  dispatch stubs that `RTLinkOverlayAnalyzer` had in fact resolved. A stub's `JMPF 0000:offset`
+  only becomes valid when the overlay manager patches it at run time, so any disassembly of it
+  records "Could not follow disassembly flow into non-existing memory". The analyzer then
+  relocates and thunks the stub, but never removed the mark it had invalidated.
+- **Correction to the original diagnosis:** the mark is not left over from an *earlier* pass.
+  `RTLinkOverlayAnalyzer` runs at `FORMAT_ANALYSIS.after()` (it has to — it creates the overlay
+  blocks everything else depends on), so on a fresh import it resolves each stub *before* the
+  disassembler ever walks into it: the marks are stamped **after** the analyzer is done, and are
+  stale the moment they are written. Clearing at resolve time alone fixes only the
+  retrofit/one-shot path (540 → 2 on a re-run) and does nothing on a fresh import.
+- **Fix (fork `rtlink`, RTLinkOverlayAnalyzer — not the plugin):** `createThunkAtStub()` now
+  reports whether the stub is really resolved; resolved stub bodies are cleared *and recorded*,
+  and swept again in `analysisEnded()`, once every other analyzer has run. Stubs whose resolution
+  genuinely failed keep their mark and their log line.
+- **Measured:** fresh import + full analysis, ERROR bookmarks **540 → 2** (analyzer logs "Cleared
+  538 stale Bad Instruction bookmark(s)"). Both survivors are real: `281f:0f71` (a CALLF+JMPF pair
+  whose CALLF does not target a discovered dispatcher, so it is not a dispatch stub and stays
+  unresolved) and `275d:0778` ("Maximum run of repeated byte instructions exceeded" — a run of 00
+  bytes walked as code). No regressions: 2793 functions, 611 stubs + 370 trampolines resolved, 29
+  xrefs to `2b5a:540e`, 3 one-byte functions (all real, no husks).
+- **Takeaway:** `filter=error` now means something on VICEROY — worth re-checking after any
+  analyzer change, since a diagnostic channel that is all noise is worse than none. The channel the
+  three husk entries won was only worth having once the thing writing to it stopped lying.
