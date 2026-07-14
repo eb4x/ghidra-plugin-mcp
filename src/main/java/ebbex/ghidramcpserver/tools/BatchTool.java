@@ -37,10 +37,11 @@ public class BatchTool implements ProgramTool {
 
 	@Override
 	public String description() {
-		return "Apply many edits to one program in a single call (e.g. a whole rename plan). " +
-			"'edits' is a list of objects, each with an 'op' (rename|set_comment|set_data_type|" +
-			"set_function_signature|create) plus that op's arguments (same as the standalone tool, " +
-			"minus 'program'). Edits run in order, continue on error, and the program is saved once.";
+		return "Apply many edits to one program in a single call (e.g. a whole rename plan, or " +
+			"deleting a set of bogus references found with xrefs). 'edits' is a list of objects, " +
+			"each with an 'op' (" + String.join("|", ops.keySet()) + ") plus that op's arguments " +
+			"(same as the standalone tool, minus 'program'). Edits run in order, continue on error, " +
+			"and the program is saved once.";
 	}
 
 	@Override

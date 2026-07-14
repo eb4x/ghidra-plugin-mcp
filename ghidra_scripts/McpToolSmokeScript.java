@@ -89,14 +89,35 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
 
+			// xrefs over a range, not a point: a function's 'from' references live on the
+			// instructions that make them, so a point query on its name only sees the entry.
+			prog("xrefs", Map.of("function", "_init", "direction", "from", "limit", 5), program);
+			prog("xrefs", Map.of("function", "_init", "direction", "both", "limit", 5), program);
+			// A range over one address space, with the other endpoint constrained by 'filter' —
+			// the shape that answers "which references leave this segment?".
+			String rangeMin = program.getMinAddress().toString();
+			String rangeMax = program.getMinAddress().add(0x40000).toString();
+			prog("xrefs", Map.of("min_address", rangeMin, "max_address", rangeMax,
+				"direction", "from", "filter", "CALL", "limit", 5), program);
+			// A target is required, and the three target forms are mutually exclusive.
+			prog("xrefs", Map.of("direction", "from"), program);
+			prog("xrefs", Map.of("location", "_init", "function", "_init"), program);
+			prog("xrefs", Map.of("min_address", rangeMax, "max_address", rangeMin), program);
+			// A range may not straddle two address spaces (the overlay case, caught explicitly).
+			prog("xrefs", Map.of("min_address", rangeMin,
+				"max_address", program.getMaxAddress().toString()), program);
+
 			// create/clear kind=reference round-trip: the ref shows up in xrefs, then goes away.
 			String refFrom = program.getMinAddress().toString();
 			String refTo = program.getMaxAddress().toString();
 			prog("create", Map.of("kind", "reference", "address", refFrom, "to_address", refTo,
 				"ref_type", "computed_jump"), program);
 			prog("xrefs", Map.of("location", refTo, "direction", "to", "limit", 5), program);
-			prog("clear", Map.of("kind", "reference", "address", refFrom, "to_address", refTo),
-				program);
+			// clear runs as a batch op too — deleting a set of references found by a range query
+			// is the case that motivated it (one xrefs call, one batch, not ~1500 calls).
+			prog("batch", Map.of("edits", List.of(
+				Map.of("op", "clear", "kind", "reference", "address", refFrom,
+					"to_address", refTo))), program);
 			prog("clear", Map.of("kind", "reference", "address", refFrom, "to_address", refTo),
 				program); // now gone: exercises the no-such-reference error
 
