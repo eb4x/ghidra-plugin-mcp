@@ -223,8 +223,10 @@ public class XrefsTool implements ProgramTool {
 		if (function == null) {
 			return "";
 		}
+		// A function body need not be contiguous, so an address inside it can precede the entry
+		// point: the offset is legitimately negative and must not render as "+-166".
 		long offset = address.subtract(function.getEntryPoint());
-		return "  in " + function.getName() + "+" + offset;
+		return "  in " + function.getName() + (offset < 0 ? "-" : "+") + Math.abs(offset);
 	}
 
 	private static String type(Reference ref) {
