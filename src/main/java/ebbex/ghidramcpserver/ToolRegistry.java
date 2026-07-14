@@ -65,7 +65,8 @@ public final class ToolRegistry {
 			new SetCommentTool(),
 			new SetDataTypeTool(decompilers),
 			new SetFunctionSignatureTool(decompilers),
-			new CreateTool());
+			new CreateTool(),
+			new ClearTool());
 
 		List<ProgramTool> tools = new ArrayList<>();
 		// lifecycle
@@ -82,7 +83,6 @@ public final class ToolRegistry {
 		tools.add(new CallsTool());
 		tools.add(new SyscallsTool());
 		tools.add(new SearchMemoryTool());
-		tools.add(new ClearTool());
 		// write
 		tools.add(new SaveTool());
 		tools.addAll(editTools);
