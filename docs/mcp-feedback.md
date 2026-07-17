@@ -138,3 +138,88 @@ other endpoint, and `clear` is a `batch` op — ~1500 calls become two)._
   and drove it with `analyze analyzer="RTLink/Plus Overlay"`. That works, and the one-shot
   `analyzer` parameter is genuinely the right escape hatch, but it means the only way to edit
   program state of this class is to go and write Java.
+
+## 2026-07-14 — `calls`/`xrefs` — callers of a thunked function are hidden behind the thunk
+- **Task:** Find who calls `draw_colony_sprite` (`112b:0c64`, a resident function reached
+  from the overlays through a far-call gate in segment `281f`) so I could read the map pass
+  that supplies its arguments.
+- **Friction:** Both call-graph tools dead-ended, and did so *confusingly*, because the
+  thunk carries the same name as its target:
+  - `calls function="draw_colony_sprite" kind=callers` → `281f:02a8  draw_colony_sprite`
+    (1 total). Read literally: "draw_colony_sprite is called by draw_colony_sprite."
+  - `xrefs location="draw_colony_sprite" direction=to` → `TO 281f:02ad in
+    draw_colony_sprite+5 [UNCONDITIONAL_CALL]` — a reference *from inside a function of the
+    same name*, at a `+5` offset that belongs to a different function than the one I asked
+    about. Nothing in either output says "this is a thunk".
+  - The five real callers only appeared after I guessed what was going on, ran `inspect
+    281f:02a8` (which *does* say `thunk → draw_colony_sprite (112b:0c64)`), and re-ran
+    `xrefs` on the thunk's address.
+- **Expected:** `calls kind=callers` should resolve *through* thunks by default — a thunk is
+  a call-graph edge, not a caller — and list the five overlay functions. Failing that, both
+  tools should mark the entry: `281f:02a8 (thunk) → 5 callers`, so the one-hop indirection
+  is visible instead of looking like a self-call. Since the RTLink binary reaches most
+  resident code through these gates, this hits nearly every cross-overlay call chain.
+- **Workaround:** `inspect` the returned address to discover it was a thunk, then `xrefs
+  direction=to` on the *thunk's* address to get the real callers. Two extra calls, and only
+  because the self-referential output was odd enough to make me look.
+
+## 2026-07-14 — `manage_types` — `op=rename_field` cannot split/retype a field, only rename it
+- **Task:** The colony record's `unkd[8]` turned out to be two distinct per-nation arrays
+  (`seen_population[4]` at `+0xba`, `seen_defense[4]` at `+0xbe`). I wanted the Ghidra
+  `savegame_colony` type to say so, matching the project's canonical `src/savegame.h`.
+- **Friction:** `rename_field` renames in place; there is no way to replace one 8-byte array
+  field with two 4-byte ones. `define_types` would mean re-declaring the whole 202-byte
+  struct just to change 8 bytes of it, and re-applying it everywhere.
+- **Expected:** a field-level edit on an existing struct — e.g. `op=set_field` with
+  `offset`, `type`, `name` (and a `count` for arrays) — so a struct can be refined
+  incrementally as the RE lands, which is how struct knowledge actually arrives.
+- **Workaround:** Renamed the array to `seen_population_and_defense` (`op=rename_field`,
+  field `0xba`) and let `src/savegame.h` carry the real split. The Ghidra type is now
+  *less* precise than the C header it was imported from.
+
+## 2026-07-14 — `read_bytes` — an uninitialized block reads as a flat failure, hiding the real news
+- **Task:** Read the unit-type table (`g_unit_type_table`, 2b5a:5232) and the order->badge-letter
+  table (2b5a:54de) out of the data segment, to reproduce what the map draws.
+- **Friction:** `read_bytes address="2b5a:5232" length=364` →
+  `read_bytes failed: ghidra.program.model.mem.MemoryAccessException: Unable to read bytes at
+  ram:2b5a:5232`. The same message would come back for a bogus address, so my first reading was
+  "I got the address wrong". In fact the address was right and the failure WAS the answer: those
+  bytes live in an uninitialized (BSS) block, because the tables are not compiled into the
+  executable at all — the game parses them out of NAMES.TXT at startup. That is the single most
+  important fact about them, and the tool had it and threw it away.
+- **Expected:** distinguish the two cases. If the address resolves to a memory block that is not
+  initialized, say so — `2b5a:5232 is in uninitialized block DATA (no bytes in the image)` —
+  rather than a generic access failure. Better still, `inspect` should report the containing
+  block's initialized flag; it already prints the block name, so the caller has no way to tell an
+  initialized block from a BSS one today.
+- **Workaround:** Noticed that BOTH tables failed the same way, went looking for their writers with
+  `xrefs direction=to ... [WRITE]`, found `data_load_names_text` on both, and went to the data file.
+  The right conclusion, reached by inference rather than by being told.
+
+## 2026-07-16 — VICEROY.EXE UI geometry RE (overlay stub resolution)
+
+- **What I tried:** `decompile` / `calls` on RTLink overlay thunks, e.g. `OVLSTUB_20_0EB0`,
+  `OVLSTUB_08_0424`, `OVLSTUB_09_093C`.
+- **What I expected:** to be pointed at the real target function in the overlay.
+- **What happened:** every stub decompiles to the same opaque two instructions —
+  `rtlink_smart_vector_dispatch(0x281f); halt_baddata();` — with a "Bad instruction / Truncating
+  control flow" warning, and `calls kind=callees` on the stub is likewise useless. There is no
+  reference from the stub to its target, so the call graph is severed at every overlay boundary.
+- **Workaround:** the stub *name* encodes the target: `OVLSTUB_<NN>_<OFFS>` -> `OVERLAY_<NN>::03a000
+  + 0xOFFS`. So `OVLSTUB_20_0EB0` -> `OVERLAY_20::03aeb0`. I had to hand-compute that address for
+  every single stub and then `decompile` it. It works but it is pure manual arithmetic, and it only
+  works because a previous analyst named the stubs consistently.
+- **Suggestion:** either (a) have `decompile`/`calls` follow the `OVLSTUB_*` naming convention and
+  report the resolved overlay target, or (b) expose a small `resolve_overlay_stub` capability, or
+  at minimum (c) mention the `OVLSTUB_<NN>_<OFFS>` -> `OVERLAY_<NN>::03a000+OFFS` rule in the
+  tool description for `decompile`, since without it an agent can get stuck at the first thunk.
+
+- **Second, smaller item:** 16-bit real-mode functions here pass args in AX/DX/BX plus the stack, and
+  the decompiler's default guess renders those as bogus `in_AX`/`in_DX`/`in_BX` locals, silently
+  mis-ordering the *stack* args too. The decompiled output looks plausible but is wrong — e.g.
+  `surface_fill_rect` appeared to take `(color, h, desc...)` with no x/y at all. Only
+  `disassemble` revealed `MOV AX,0xf1 / MOV DX,0x32 / MOV BX,0x4f`.
+  `set_function_signature` with `parameters[].storage` fixed this perfectly and the callers then
+  decompiled with correct literals — that tool is excellent. The friction is that nothing *warns*
+  you the prototype is a guess. A hint in `decompile` output when a function has no committed
+  prototype and the decompiler invented `in_<REG>` inputs would have saved a lot of cross-checking.

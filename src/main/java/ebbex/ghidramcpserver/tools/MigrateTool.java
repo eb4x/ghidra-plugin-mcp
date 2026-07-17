@@ -30,7 +30,12 @@ import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Listing;
+import ghidra.program.model.listing.Parameter;
+import ghidra.program.model.listing.ParameterImpl;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.listing.ReturnParameterImpl;
+import ghidra.program.model.listing.Variable;
+import ghidra.program.model.listing.VariableStorage;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolTable;
@@ -357,7 +362,26 @@ public class MigrateTool implements ProgramTool {
 			}
 
 			if (doSignatures && sourceFunction.getSignatureSource() != SourceType.DEFAULT) {
-				if (!dryRun) {
+				if (sourceFunction.hasCustomVariableStorage()) {
+					// A C prototype cannot express pinned register/stack storage, so the
+					// ApplyFunctionSignatureCmd path below would re-derive it from the calling
+					// convention and decompile the function WRONG (params/return at the default
+					// offsets) without any error. Carry the exact storage instead. This is the
+					// whole point of the fix: 18 of VICEROY's 95 signatures are custom-storage
+					// (long params, far-pointer returns in DX:AX) and all silently regressed.
+					try {
+						if (!dryRun) {
+							applyCustomStorage(target, targetFunction, sourceFunction);
+						}
+						report.signaturesApplied++;
+						report.signaturesCustomStorage++;
+					}
+					catch (Exception e) {
+						report.signaturesCustomStorageFailed.add(entry + "  " +
+							sourceFunction.getName() + ": " + e.getMessage());
+					}
+				}
+				else if (!dryRun) {
 					// ApplyFunctionSignatureCmd resolves the source's types into the target's
 					// DataTypeManager, so this works across DBs without pre-copying types.
 					FunctionDefinitionDataType definition =
@@ -368,10 +392,44 @@ public class MigrateTool implements ProgramTool {
 						report.signaturesFailed++;
 						continue;
 					}
+					report.signaturesApplied++;
 				}
-				report.signaturesApplied++;
+				else {
+					report.signaturesApplied++;
+				}
 			}
 		}
+	}
+
+	/**
+	 * Carry a function's <em>custom variable storage</em> across DBs verbatim — the pinned
+	 * register/stack location of each parameter and the return.
+	 *
+	 * <p>{@link VariableStorage#getSerializationString()} is the same program-relative encoding
+	 * Ghidra persists in the DB, and both DBs are the same binary/architecture, so it
+	 * deserializes cleanly into the target. Data types resolve into the target's manager the same
+	 * way the C-prototype path relies on. Applied with {@code CUSTOM_STORAGE} so Ghidra keeps the
+	 * exact storage instead of re-deriving it from the calling convention.
+	 */
+	private static void applyCustomStorage(Program target, Function targetFunction,
+			Function sourceFunction) throws Exception {
+		DataTypeManager targetTypes = target.getDataTypeManager();
+		List<Variable> params = new ArrayList<>();
+		for (Parameter parameter : sourceFunction.getParameters()) {
+			DataType type =
+				targetTypes.resolve(parameter.getDataType(), DataTypeConflictHandler.KEEP_HANDLER);
+			VariableStorage storage = VariableStorage.deserialize(target,
+				parameter.getVariableStorage().getSerializationString());
+			params.add(new ParameterImpl(parameter.getName(), type, storage, target));
+		}
+		Parameter sourceReturn = sourceFunction.getReturn();
+		DataType returnType =
+			targetTypes.resolve(sourceReturn.getDataType(), DataTypeConflictHandler.KEEP_HANDLER);
+		VariableStorage returnStorage = VariableStorage.deserialize(target,
+			sourceReturn.getVariableStorage().getSerializationString());
+		Variable returnVar = new ReturnParameterImpl(returnType, returnStorage, target);
+		targetFunction.updateFunction(sourceFunction.getCallingConventionName(), returnVar, params,
+			Function.FunctionUpdateType.CUSTOM_STORAGE, true, SourceType.USER_DEFINED);
 	}
 
 	/** Non-dynamic, non-function labels (function symbols are handled as functions). */
@@ -598,6 +656,7 @@ public class MigrateTool implements ProgramTool {
 		int namesApplied;
 		int namesAlreadyEqual;
 		int signaturesApplied;
+		int signaturesCustomStorage;
 		int signaturesFailed;
 		int labelsApplied;
 		int labelsAlreadyEqual;
@@ -613,6 +672,7 @@ public class MigrateTool implements ProgramTool {
 		int dataFailed;
 		final List<String> sourceOnly = new ArrayList<>();
 		final List<String> namesSkippedNamed = new ArrayList<>();
+		final List<String> signaturesCustomStorageFailed = new ArrayList<>();
 		final List<String> dataSkippedCode = new ArrayList<>();
 		final List<BodyMismatch> bodyMismatches = new ArrayList<>();
 
@@ -633,8 +693,16 @@ public class MigrateTool implements ProgramTool {
 			}
 			if (kinds.contains("signatures")) {
 				sb.append("\nSignatures:      ").append(signaturesApplied).append(" applied");
+				if (signaturesCustomStorage > 0) {
+					sb.append(" (").append(signaturesCustomStorage)
+							.append(" with custom register/stack storage carried verbatim)");
+				}
 				if (signaturesFailed > 0) {
 					sb.append(", ").append(signaturesFailed).append(" failed");
+				}
+				if (!signaturesCustomStorageFailed.isEmpty()) {
+					sb.append(", ").append(signaturesCustomStorageFailed.size())
+							.append(" custom-storage NOT carried (see below)");
 				}
 			}
 			if (kinds.contains("labels")) {
@@ -702,6 +770,14 @@ public class MigrateTool implements ProgramTool {
 						.append("disassembly is kept. If a site here is genuinely data, clear the ")
 						.append("code there deliberately (clear kind=code) and re-run:");
 				appendCapped(sb, dataSkippedCode, 40);
+			}
+			if (!signaturesCustomStorageFailed.isEmpty()) {
+				sb.append("\n\nCUSTOM STORAGE NOT CARRIED (").append(signaturesCustomStorageFailed.size())
+						.append(") — these functions pin register/stack storage the target could not ")
+						.append("reconstruct, so their prototype was left as-is rather than applied ")
+						.append("WRONG. A silent re-derivation is exactly this tool's worst failure; ")
+						.append("re-pin them by hand with set_function_signature parameters[].storage:");
+				appendCapped(sb, signaturesCustomStorageFailed, 40);
 			}
 			if (!namesSkippedNamed.isEmpty()) {
 				sb.append("\n\nKEPT target names (").append(namesSkippedNamed.size())

@@ -226,7 +226,15 @@ public class XrefsTool implements ProgramTool {
 		// A function body need not be contiguous, so an address inside it can precede the entry
 		// point: the offset is legitimately negative and must not render as "+-166".
 		long offset = address.subtract(function.getEntryPoint());
-		return "  in " + function.getName() + (offset < 0 ? "-" : "+") + Math.abs(offset);
+		String where = "  in " + function.getName() + (offset < 0 ? "-" : "+") + Math.abs(offset);
+		// A thunk carries its target's name, so a ref "in draw_colony_sprite+5" that is really a
+		// far-call gate reads as a self-reference unless the thunk is called out (calls resolves
+		// through these; xrefs at least names them so the one-hop indirection is visible).
+		if (function.isThunk()) {
+			Function to = function.getThunkedFunction(true);
+			where += " (thunk -> " + to.getName() + " @ " + to.getEntryPoint() + ")";
+		}
+		return where;
 	}
 
 	private static String type(Reference ref) {

@@ -88,6 +88,9 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("inspect", Map.of("location", "_init"), program);
 			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
 			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
+			// callees exercises the thunk-annotation path: ELF PLT stubs are thunk functions, so
+			// a caller of library code lists thunks that get marked "(thunk -> target)".
+			prog("calls", Map.of("function", "_init", "kind", "callees", "limit", 10), program);
 
 			// xrefs over a range, not a point: a function's 'from' references live on the
 			// instructions that make them, so a point query on its name only sees the entry.
