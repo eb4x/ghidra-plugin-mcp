@@ -991,3 +991,47 @@ had glossed over.
   interior `DAT_` labels, so a label-based audit silently misses references that still exist, and
   `list kind=symbols` gives no hint. The from-range query makes the reference-based audit possible,
   which is the real answer, but the label-absorption trap itself is unguarded.
+
+## 2026-07-14 — migrate — `signatures` silently dropped custom storage, decompiling WRONG — fixed (0.7.0)
+- **Task:** Carry RE work across a re-import with `migrate`. The question was what it actually
+  preserves.
+- **Friction:** `signatures` round-tripped through the **C prototype only**
+  (`FunctionDefinitionDataType` + `ApplyFunctionSignatureCmd`), so any signature pinned with
+  `set_function_signature`'s `parameters[].storage` / `return.storage` came back re-derived from
+  Ghidra's default calling convention — and decompiled **wrong** without any error. `fseek`
+  (`1d1d:0a3e`), pinned `offset@Stack[0x6]` because MSC pushes an unaligned `long`, came back at
+  `Stack[0x8]`, and the body reverted to `if (0x2ffff < offset)` instead of `if (2 < origin)`.
+  18–55 of VICEROY's signatures are custom-storage; all regressed silently.
+- **Fix:** the signature path now checks `hasCustomVariableStorage()`. For those functions it
+  carries the exact storage across DBs — `VariableStorage.getSerializationString()` (the same
+  program-relative encoding Ghidra persists) deserialized into the target, applied with
+  `updateFunction(… CUSTOM_STORAGE)` — instead of the prototype path. The report counts them
+  (`163 applied (55 with custom register/stack storage carried verbatim)`), and any it genuinely
+  cannot reconstruct are listed by name under **CUSTOM STORAGE NOT CARRIED** rather than downgraded
+  in silence. Prototype-only signatures keep the `ApplyFunctionSignatureCmd` path.
+- **Verified live (0.7.0):** copied VICEROY, broke `fseek` to a plain C prototype (`offset` slid to
+  `Stack[0x8]`, `origin` to `Stack[0xc]`), migrated signatures back from the good DB → `offset`
+  restored to `Stack[0x6]`, `origin` to `Stack[0xa]`, and `fseek` decompiled `if (2 < origin)` with
+  `offset`/`origin` passed correctly to `lseek`. 55 signatures reported as custom-storage carried.
+- **Not done:** `migrate` still has no `context` kind (register-context is its own open entry) — the
+  custom-storage fix is orthogonal to that.
+
+## 2026-07-14 — `calls`/`xrefs` — callers hidden behind a same-named thunk gate — fixed (0.7.0)
+- **Task:** Find who calls `draw_colony_sprite` (`112b:0c64`), a resident function the overlays reach
+  through a far-call gate in segment `281f`.
+- **Friction:** the thunk carries its target's name, so both tools dead-ended confusingly.
+  `calls kind=callers draw_colony_sprite` → `281f:02a8 draw_colony_sprite` (reads as "called by
+  itself"); `xrefs direction=to` showed a ref `in draw_colony_sprite+5` with nothing saying it was a
+  thunk. The five real callers only surfaced after `inspect`-ing the address to discover the thunk,
+  then re-running `xrefs` on the thunk's own address. Hits nearly every cross-overlay call chain.
+- **Fix:** `calls kind=callers` now resolves *through* thunk gates — a caller that is a thunk to the
+  queried function is replaced by *its* callers (through chains), each marked `(via thunk … @ addr)`;
+  a gate with no callers of its own is surfaced, not dropped. Thunk callees are annotated with their
+  ultimate target, and `xrefs` names any endpoint that lies in a thunk `(thunk -> target @ addr)`.
+- **Verified live (0.7.0):** `calls kind=callers draw_colony_sprite` returns exactly the five overlay
+  callers the plate comment names (`draw_colonies_on_map`, `report_sons_of_liberty`,
+  `report_colony_defenses`, `draw_side_info_panel`, `combat_show_analysis_dialog`), each
+  `(via thunk draw_colony_sprite @ 281f:02a8)`.
+- **Not the same as** the 2026-07-16 `OVLSTUB_*` entry (still open): those RTLink dispatch stubs are
+  NOT Ghidra thunk functions — they decompile to an opaque runtime `rtlink_smart_vector_dispatch`
+  with no thunk relationship to follow, so this fix does not resolve them.
