@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (40 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (42 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -82,39 +82,14 @@ addresses (`g_savegame_head` 5370) legitimately stays at 0, the three husk-hunt 
 exposed — 100% false positives on VICEROY until the fork's `RTLinkOverlayAnalyzer` swept
 its own stale marks (540 → 2, both survivors real), and the from-range `xrefs` gap (0.6.0:
 `xrefs` takes a `function` body or a `min_address`/`max_address` range with a `filter` on the
-other endpoint, and `clear` is a `batch` op — ~1500 calls become two)._
+other endpoint, and `clear` is a `batch` op — ~1500 calls become two), the `migrate`
+custom-storage regression (0.7.0: pinned register/stack storage is carried verbatim across DBs
+instead of re-derived WRONG — fseek's `offset` restored to Stack[0x6], 55 of VICEROY's signatures
+carried; any it can't reconstruct are named, never silently downgraded), and the thunk-gate
+blindness in `calls`/`xrefs` (0.7.0: `calls kind=callers` resolves through thunk gates to the real
+callers — draw_colony_sprite's 5 overlay callers via the 281f gate — and both tools annotate
+thunks)._
 
-
-## 2026-07-14 — migrate — `signatures` silently drops custom storage, producing *wrong* decompilation
-- **Task:** Decide whether a re-import + `migrate` could recover a program whose
-  **analyzer-baked state** was wrong (a stale `DS=DGROUP` register context over the
-  RTLink runtime's code blocks). Migration is the documented answer to "re-import
-  without losing the work", so the question was what it actually preserves.
-- **Friction:** It preserves a great deal — measured on VICEROY.EXE, `dry_run` reported
-  142 function names, 95 signatures, 125 comments, 39 data types, 6 labels, 28 defined
-  data. But `signatures` round-trips through the **C prototype only**, so any signature
-  pinned with `set_function_signature`'s `parameters[].storage` / `return.storage` comes
-  back re-derived from Ghidra's default calling convention. Those functions do not fail
-  loudly — they decompile **wrong**:
-  - `fseek` (`1d1d:0a3e`), pinned `offset@Stack[0x6]` because MSC pushes a `long`
-    unaligned and Ghidra's 16-bit cspec 4-byte-aligns it, came back at `Stack[0x8]`.
-    `origin` slid with it, and the body reverted to reading `origin` out of `offset`'s
-    high word: `if (0x2ffff < offset)` instead of `if (2 < origin)`.
-  - `crt_fstrcpy` (`1d1d:117e`), a far-pointer routine returning in `DX:AX`, lost the
-    return storage — so Ghidra decided the 4-byte return needed a hidden pointer and
-    invented `__return_storage_ptr__` at `Stack[0x4]`, shifting `dest`/`src` to
-    `Stack[0x8]`/`Stack[0xc]`. Every argument is now at the wrong offset.
-  18 of the 95 signatures on this program are custom-storage (6 with `long` params/returns,
-  12 far-pointer string routines). All 18 regress, and nothing in the migrate report says so.
-- **Expected:** `signatures` should carry `VariableStorage` (custom param + return storage,
-  and the "has custom storage" flag), not just the prototype. Failing that, the report
-  must **name the functions whose custom storage could not be carried** — the same way it
-  already calls out HUSK/body-mismatch entries, which is exactly the right instinct. A
-  silent downgrade from "pinned, correct" to "inferred, wrong" is the worst outcome,
-  because the decompilation still looks plausible.
-- **Workaround:** Avoided migration entirely; fixed the analyzer so the state could be
-  repaired in place instead (see the next entry). Had I migrated, I would have shipped 18
-  quietly-wrong functions.
 
 ## 2026-07-14 — no register-context tool — analyzer-baked context is invisible and unfixable
 - **Task:** A program had `DS=DGROUP` asserted over the RTLink runtime's code blocks
@@ -138,30 +113,6 @@ other endpoint, and `clear` is a `batch` op — ~1500 calls become two)._
   and drove it with `analyze analyzer="RTLink/Plus Overlay"`. That works, and the one-shot
   `analyzer` parameter is genuinely the right escape hatch, but it means the only way to edit
   program state of this class is to go and write Java.
-
-## 2026-07-14 — `calls`/`xrefs` — callers of a thunked function are hidden behind the thunk
-- **Task:** Find who calls `draw_colony_sprite` (`112b:0c64`, a resident function reached
-  from the overlays through a far-call gate in segment `281f`) so I could read the map pass
-  that supplies its arguments.
-- **Friction:** Both call-graph tools dead-ended, and did so *confusingly*, because the
-  thunk carries the same name as its target:
-  - `calls function="draw_colony_sprite" kind=callers` → `281f:02a8  draw_colony_sprite`
-    (1 total). Read literally: "draw_colony_sprite is called by draw_colony_sprite."
-  - `xrefs location="draw_colony_sprite" direction=to` → `TO 281f:02ad in
-    draw_colony_sprite+5 [UNCONDITIONAL_CALL]` — a reference *from inside a function of the
-    same name*, at a `+5` offset that belongs to a different function than the one I asked
-    about. Nothing in either output says "this is a thunk".
-  - The five real callers only appeared after I guessed what was going on, ran `inspect
-    281f:02a8` (which *does* say `thunk → draw_colony_sprite (112b:0c64)`), and re-ran
-    `xrefs` on the thunk's address.
-- **Expected:** `calls kind=callers` should resolve *through* thunks by default — a thunk is
-  a call-graph edge, not a caller — and list the five overlay functions. Failing that, both
-  tools should mark the entry: `281f:02a8 (thunk) → 5 callers`, so the one-hop indirection
-  is visible instead of looking like a self-call. Since the RTLink binary reaches most
-  resident code through these gates, this hits nearly every cross-overlay call chain.
-- **Workaround:** `inspect` the returned address to discover it was a thunk, then `xrefs
-  direction=to` on the *thunk's* address to get the real callers. Two extra calls, and only
-  because the self-referential output was odd enough to make me look.
 
 ## 2026-07-14 — `manage_types` — `op=rename_field` cannot split/retype a field, only rename it
 - **Task:** The colony record's `unkd[8]` turned out to be two distinct per-nation arrays
