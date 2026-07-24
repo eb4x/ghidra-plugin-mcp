@@ -1,4 +1,4 @@
-# ebbex-ghidra-mcp — Dogfooding Feedback
+# ghidra-plugin-mcp — Dogfooding Feedback
 
 The friction log for this MCP server, kept in the repo where the fixes land. The
 viceroy RE project (`../viceroy`) dogfoods this server for all its Ghidra work:
