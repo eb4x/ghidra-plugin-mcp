@@ -18,12 +18,12 @@ Requires JDK 21+ and two paths, supplied as env vars or Gradle properties. Both 
 
   ```bash
   mkdir -p ghidra-sdk && cd ghidra-sdk
-  unzip ../../ghidra/rtlink/build/dist/ghidra_<ver>_DEV_<date>_linux_x86_64.zip
+  unzip ../../ghidra/dailydriver/build/dist/ghidra_<ver>_DEV_<date>_linux_x86_64.zip
   ```
 
   Extract *that* zip (rather than using a released Ghidra) so the extension's version stamp matches the Ghidra you actually run.
 
-- **`GHIDRA_USER_EXTENSIONS_DIR`** — where `installExtension` extracts the built extension. Point it at the flatpak Eclipse's Ghidra config dir, e.g. `~/.var/app/org.eclipse.Java/config/ghidra/ghidra_<ver>_DEV_location_rtlink/Extensions`, so the Eclipse-launched Ghidra picks it up on restart. (The default, `~/.config/ghidra/...`, is the wrong place for this setup.)
+- **`GHIDRA_USER_EXTENSIONS_DIR`** — where `installExtension` extracts the built extension. Point it at the flatpak Eclipse's Ghidra config dir, e.g. `~/.var/app/org.eclipse.Java/config/ghidra/ghidra_<ver>_DEV_location_dailydriver/Extensions`, so the Eclipse-launched Ghidra picks it up on restart. (The default, `~/.config/ghidra/...`, is the wrong place for this setup.)
 
 Because `buildExtension` packages the whole project dir minus a fixed exclude list, anything new at the repo root must be added to the `buildExtension.exclude` lines in `build.gradle` — `ghidra-sdk/` and `gradle.properties` already are.
 
@@ -40,7 +40,7 @@ Because `buildExtension` packages the whole project dir minus a fixed exclude li
 
 Our Eclipse IDE (running as a flatpak, `org.eclipse.Java`) drives Ghidra development. Agent sessions reach it through two layered MCP servers:
 
-- **Eclipse MCP** (`eclipse-ide`, `eclipse-coder`, `eclipse-git`, `eclipse-runner`) drives the Eclipse workspace. The Ghidra source loaded into that workspace and built from it currently lives in a git worktree (branch `rtlink`) at `../ghidra/rtlink`, exposed as projects like *Features Base* — but that location is incidental and may change.
+- **Eclipse MCP** (`eclipse-ide`, `eclipse-coder`, `eclipse-git`, `eclipse-runner`) drives the Eclipse workspace. The Ghidra source loaded into that workspace and built from it currently lives in a git worktree (branch `dailydriver`) at `../ghidra/dailydriver`, exposed as projects like *Features Base* — but that location is incidental and may change.
 - **Ghidra MCP** (`ghidra-program`, `ghidra-application-level`) is served by *this* extension and is reachable only while Ghidra is running, at `http://127.0.0.1:8765/mcp/...`.
 
 The loop:
