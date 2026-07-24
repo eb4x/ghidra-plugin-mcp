@@ -1,4 +1,4 @@
-# ebbex-ghidra-mcp — Dogfooding Feedback (Archive)
+# ghidra-plugin-mcp — Dogfooding Feedback (Archive)
 
 Resolved friction moved out of [mcp-feedback.md](mcp-feedback.md) to keep the active log
 focused on open items. Each entry below was reproduced, fixed, and verified live; the

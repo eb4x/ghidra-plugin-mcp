@@ -44,6 +44,7 @@ repositories {
 // used when running it headless.
 buildExtension.exclude 'ghidra_scripts/**'
 // Keep project/dev clutter out of the packaged extension.
+buildExtension.exclude '.github/**'
 buildExtension.exclude '.claude/**'
 buildExtension.exclude '.mcp.json'
 buildExtension.exclude 'gradle/**'
