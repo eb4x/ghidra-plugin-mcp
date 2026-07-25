@@ -79,6 +79,10 @@ jobs:
           export GHIDRA_INSTALL_DIR="$(echo "$HOME"/ghidra/ghidra_*)"
           ./gradlew smokeTest
 
+      - name: Smoke log on failure
+        if: failure()
+        run: tail -n 200 build/smoke/smoke.log
+
       - uses: actions/upload-artifact@v4
         with:
           name: zip-ghidra-${{ matrix.ghidra }}
