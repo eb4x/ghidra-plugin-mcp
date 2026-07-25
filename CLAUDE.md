@@ -54,7 +54,7 @@ The loop:
 
 ## Testing
 
-No unit tests. `ghidra_scripts/McpToolSmokeScript.java` drives every tool headless against a fresh import of `/bin/ls` (it is excluded from the extension zip). Run it with:
+No unit tests. `ghidra_scripts/McpToolSmokeScript.java` drives every tool headless against a fresh import of a tiny C target the smoke task compiles on the spot (the script is excluded from the extension zip; the script's rename chain needs the `_init` symbol, which a compiled unstripped ELF always has — the host's `/bin/ls` only has it on distros that ship symbols). Run it with:
 
 ```bash
 ./gradlew smokeTest     # -> build/smoke/smoke.log; fails the build unless the script reaches SMOKE COMPLETE
