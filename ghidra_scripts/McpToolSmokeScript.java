@@ -80,6 +80,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			// One-shot path: an unknown analyzer name reports the available ones (exercises
 			// arg parsing + the analyzer enumeration). The RTLink retrofit is the real user.
 			prog("analyze", Map.of("analyzer", "No Such Analyzer"), program);
+			waitForAnalysis(program);
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
 			prog("decompile", Map.of("function", "_init"), program);
@@ -276,8 +277,15 @@ public class McpToolSmokeScript extends GhidraScript {
 	private void waitForAnalysis(Program program) throws Exception {
 		AutoAnalysisManager mgr = AutoAnalysisManager.getAnalysisManager(program);
 		long deadline = System.currentTimeMillis() + 180_000;
-		while ((mgr.isAnalyzing() || program.getCurrentTransactionInfo() != null ||
-			program.isChanged()) && System.currentTimeMillis() < deadline) {
+		// The analyze tool returns before its background thread has opened its
+		// transaction, so a single quiet sample races a slow thread start (the tool
+		// thread then blocks batch calls mid-script and outlives the run; bit us on a
+		// loaded CI runner). Only trust quiet that lasts: 8 consecutive samples.
+		int quiet = 0;
+		while (quiet < 8 && System.currentTimeMillis() < deadline) {
+			boolean busy = mgr.isAnalyzing() || program.getCurrentTransactionInfo() != null ||
+				program.isChanged();
+			quiet = busy ? 0 : quiet + 1;
 			Thread.sleep(500);
 		}
 		println("=== analysis settled (analyzing=" + mgr.isAnalyzing() + ", changed=" +
