@@ -83,20 +83,20 @@ public class McpToolSmokeScript extends GhidraScript {
 			waitForAnalysis(program);
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
-			prog("decompile", Map.of("function", "_init"), program);
-			prog("decompile", Map.of("function", "_init", "dump_symbols", true), program);
-			prog("decompile", Map.of("function", "_init", "dump_jumptables", true), program);
-			prog("inspect", Map.of("location", "_init"), program);
-			prog("xrefs", Map.of("location", "_init", "direction", "to", "limit", 5), program);
-			prog("calls", Map.of("function", "_init", "kind", "callers", "limit", 5), program);
+			prog("decompile", Map.of("function", "main"), program);
+			prog("decompile", Map.of("function", "main", "dump_symbols", true), program);
+			prog("decompile", Map.of("function", "main", "dump_jumptables", true), program);
+			prog("inspect", Map.of("location", "main"), program);
+			prog("xrefs", Map.of("location", "main", "direction", "to", "limit", 5), program);
+			prog("calls", Map.of("function", "main", "kind", "callers", "limit", 5), program);
 			// callees exercises the thunk-annotation path: ELF PLT stubs are thunk functions, so
 			// a caller of library code lists thunks that get marked "(thunk -> target)".
-			prog("calls", Map.of("function", "_init", "kind", "callees", "limit", 10), program);
+			prog("calls", Map.of("function", "main", "kind", "callees", "limit", 10), program);
 
 			// xrefs over a range, not a point: a function's 'from' references live on the
 			// instructions that make them, so a point query on its name only sees the entry.
-			prog("xrefs", Map.of("function", "_init", "direction", "from", "limit", 5), program);
-			prog("xrefs", Map.of("function", "_init", "direction", "both", "limit", 5), program);
+			prog("xrefs", Map.of("function", "main", "direction", "from", "limit", 5), program);
+			prog("xrefs", Map.of("function", "main", "direction", "both", "limit", 5), program);
 			// A range over one address space, with the other endpoint constrained by 'filter' —
 			// the shape that answers "which references leave this segment?".
 			String rangeMin = program.getMinAddress().toString();
@@ -105,7 +105,7 @@ public class McpToolSmokeScript extends GhidraScript {
 				"direction", "from", "filter", "CALL", "limit", 5), program);
 			// A target is required, and the three target forms are mutually exclusive.
 			prog("xrefs", Map.of("direction", "from"), program);
-			prog("xrefs", Map.of("location", "_init", "function", "_init"), program);
+			prog("xrefs", Map.of("location", "main", "function", "main"), program);
 			prog("xrefs", Map.of("min_address", rangeMax, "max_address", rangeMin), program);
 			// A range may not straddle two address spaces (the overlay case, caught explicitly).
 			prog("xrefs", Map.of("min_address", rangeMin,
@@ -161,9 +161,9 @@ public class McpToolSmokeScript extends GhidraScript {
 			// name the consumer (McpToolSmokeScript), not just say "open elsewhere".
 			app("manage_files", Map.of("op", "delete", "path", "/ls"), project);
 			// clear kind=local_variable: exercise the delete branch (not-found path is deterministic).
-			prog("clear", Map.of("kind", "local_variable", "function", "_init",
+			prog("clear", Map.of("kind", "local_variable", "function", "main",
 				"variable_name", "__mcp_no_such_local__"), program);
-			prog("rename", Map.of("kind", "function", "function", "_init",
+			prog("rename", Map.of("kind", "function", "function", "main",
 				"new_name", "mcp_renamed_init"), program);
 
 			// ---- set_data_type kind=struct: supplied layout + inferred ----
