@@ -101,8 +101,7 @@ public final class Endpoints {
 						program = context.openProgram(path);
 					}
 					catch (Exception e) {
-						return Results.error("Could not open program '" + path + "': " +
-							e.getMessage());
+						return Results.error(describeOpenFailure(context, path, e));
 					}
 					// Reads run lock-free; writes serialize per program so a concurrent
 					// save() can't corrupt the file.
@@ -135,6 +134,28 @@ public final class Endpoints {
 					}
 				})
 				.build();
+	}
+
+	/**
+	 * Explain why a program could not be opened. Every program tool's open failure comes through
+	 * here, and when the cause is the whole project rather than this one file, the underlying
+	 * exception is worse than useless: a project whose directory has been moved reports a missing
+	 * {@code …/idata/12/~0000012b.db/db.832.gbf}, naming an internal blob no caller can act on,
+	 * while listings keep working from cache. Lead with the cause and the fix, and keep the
+	 * original message last so it is still there to diagnose with.
+	 */
+	private static String describeOpenFailure(ProjectContext context, String path, Exception e) {
+		Project project = context.project();
+		String problem = project == null ? null
+				: ProjectContext.storageProblem(project.getProjectLocator());
+		if (problem != null) {
+			return "Cannot read '" + path + "': the project's storage is unreachable — " +
+				problem + ", so the project directory has been moved, renamed, or deleted since " +
+				"Ghidra opened it. Listings still work from Ghidra's in-memory cache, but no file " +
+				"contents can be read. Reopen the project with manage_project op=open " +
+				"(op=list_recent shows what Ghidra knows). Underlying error: " + e.getMessage();
+		}
+		return "Could not open program '" + path + "': " + e.getMessage();
 	}
 
 	private static McpSchema.CallToolResult runTool(ProgramTool tool, Map<String, Object> args,

@@ -1,13 +1,17 @@
 package ebbex.ghidramcpserver.util;
 
+import java.io.File;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
+import ghidra.framework.data.DefaultProjectData;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
+import ghidra.framework.model.ProjectLocator;
 import ghidra.program.model.listing.Program;
 import ghidra.util.SystemUtilities;
 import ghidra.util.task.TaskMonitor;
@@ -15,11 +19,17 @@ import ghidra.util.task.TaskMonitor;
 /**
  * Resolves programs by their project path and manages their open lifetime.
  *
- * <p>The active project comes from {@link AppInfo#getActiveProject()}, so no
- * project open/close tracking is needed. Programs are opened on demand (shared
- * with any CodeBrowser that has the same file open), cached by path for the
- * duration of the server, and released when the plugin is disposed. Writes are
- * persisted with {@link #save(String)}.
+ * <p>The active project comes from {@link AppInfo#getActiveProject()}, which is re-read on
+ * every call — nothing here holds a {@link Project}. Programs are opened on demand (shared
+ * with any CodeBrowser that has the same file open), cached by path for the duration of the
+ * server, and released when the plugin is disposed. Writes are persisted with
+ * {@link #save(String)}.
+ *
+ * <p>The project can be opened and closed underneath us by {@code manage_project}, and the
+ * cache is keyed by project path — keys that mean something different, or nothing, in the next
+ * project. So every project change must drop the cache wholesale with {@link #releaseAll()}.
+ * That is the whole of the invalidation story precisely because no {@code Project} is held
+ * here: no listener, no state machine.
  */
 public class ProjectContext {
 
@@ -46,6 +56,57 @@ public class ProjectContext {
 	 */
 	public ReentrantLock writeLock(String path) {
 		return writeLocks.computeIfAbsent(path, p -> new ReentrantLock());
+	}
+
+	/**
+	 * Project paths this server currently has a write in flight on. Best effort — a write can
+	 * begin the instant after this returns. Ghidra's own {@code DomainFile.isBusy()} and
+	 * {@code PluginTool.isExecutingCommand()} can't see a short MCP write on another HTTP
+	 * thread, so {@code manage_project op=close} checks this too: {@link #releaseAll()} during
+	 * a write would close a program under an open transaction.
+	 */
+	public List<String> pathsBeingWritten() {
+		return writeLocks.entrySet()
+				.stream()
+				.filter(e -> e.getValue().isLocked())
+				.map(Map.Entry::getKey)
+				.toList();
+	}
+
+	/**
+	 * Why the project at {@code locator} cannot be opened (or, for the active project, why its
+	 * files can no longer be read), or null when its storage looks healthy.
+	 *
+	 * <p>Two conditions, in the order Ghidra hits them. Both would otherwise surface as a raw
+	 * filesystem error from deep inside the DB layer — a moved project reports its missing
+	 * {@code db.NNN.gbf} buffer file, which names a blob no caller can act on.
+	 * {@code ProjectLocator.exists()} alone is not enough: it checks the {@code .gpr} marker and
+	 * the {@code .rep} directory, not the data directory inside it.
+	 *
+	 * <p>Kept strictly factual: the same absence means "moved out from under us" for a project
+	 * Ghidra already had open and "you named it wrong" for an open target, so the callers that
+	 * know which one they are looking at supply that interpretation.
+	 */
+	public static String storageProblem(ProjectLocator locator) {
+		if (locator == null) {
+			return "no project location is known";
+		}
+		if (!locator.exists()) {
+			return "there is no " + locator.getName() + ".gpr marker file and " +
+				locator.getProjectDir().getName() + " directory at " + locator.getLocation();
+		}
+		File dir = locator.getProjectDir();
+		// DefaultProjectData tries the indexed folder first, then the legacy mangled one, and
+		// throws IOException("Project data directory not found") when neither is there.
+		boolean data = new File(dir, DefaultProjectData.INDEXED_DATA_FOLDER_NAME).isDirectory() ||
+			new File(dir, DefaultProjectData.MANGLED_DATA_FOLDER_NAME).isDirectory();
+		if (!data) {
+			return "project storage at " + dir + " has no data directory (expected " +
+				DefaultProjectData.INDEXED_DATA_FOLDER_NAME + "/ or " +
+				DefaultProjectData.MANGLED_DATA_FOLDER_NAME + "/) — it is incomplete, or was " +
+				"only partly moved";
+		}
+		return null;
 	}
 
 	/**
@@ -168,17 +229,34 @@ public class ProjectContext {
 		}
 	}
 
-	/** Release every program this context has opened (called on plugin dispose). */
-	public synchronized void releaseAll() {
+	/**
+	 * Release every program this context has opened, and forget the per-path write locks.
+	 * Called on plugin dispose, and by {@code manage_project} whenever the project changes
+	 * underneath us (open-replace / close).
+	 *
+	 * <p>Must run <em>before</em> {@code Project.close()}: {@code DefaultProjectData.close()}
+	 * returns early while any domain object is still open, deferring its {@code dispose()} — and
+	 * the project's {@code .lock} file is only released in {@code dispose()}. Leave programs open
+	 * here and the closed project keeps its lock, after which it cannot be reopened.
+	 *
+	 * <p>Best-effort per program: on a project whose storage has become unreachable the release
+	 * itself can fail, and that must not stop the rest.
+	 *
+	 * @return the number of programs released
+	 */
+	public synchronized int releaseAll() {
+		int released = openByPath.size();
 		for (Program program : openByPath.values()) {
 			try {
 				decompilers.release(program);
 				program.release(consumer);
 			}
 			catch (Exception e) {
-				// best effort on shutdown
+				// best effort on shutdown / on unreachable storage
 			}
 		}
 		openByPath.clear();
+		writeLocks.clear();
+		return released;
 	}
 }

@@ -58,6 +58,19 @@ public class McpToolSmokeScript extends GhidraScript {
 		app("import", Map.of("file", targetFile, "folder", "/"), project);
 		app("list_files", Map.of(), project);
 
+		// manage_project: only the paths that stay below the Swing boundary. Headless has no Front
+		// End tool, and the project this script hand-carries into every app(...) call is the one
+		// under test — actually opening or closing anything would invalidate it, the DomainFile and
+		// Program opened below, and HeadlessAnalyzer's own teardown. So op=list_recent (which falls
+		// back to the project's own manager when there is no Front End) plus both refusals.
+		app("manage_project", Map.of("op", "list_recent"), project);
+		app("manage_project",
+			Map.of("op", "open", "path", "/__no_such_dir__", "name", "__no_such_project__"),
+			project);
+		// Must come back as a clean refusal, not AssertException from AppInfo.getFrontEndTool().
+		app("manage_project", Map.of("op", "close"), project);
+		app("manage_project", Map.of("op", "__no_such_op__"), project);
+
 		// manage_files on folders: a throwaway copy in /smoke-scratch, so the program the rest
 		// of this script depends on is never at risk.
 		app("import", Map.of("file", targetFile, "folder", "/smoke-scratch"), project);
