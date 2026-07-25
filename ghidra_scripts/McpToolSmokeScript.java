@@ -44,16 +44,23 @@ public class McpToolSmokeScript extends GhidraScript {
 		println("=== project = " + project.getName() +
 			"  | AppInfo.getActiveProject() = " + AppInfo.getActiveProject() + " ===");
 
+		// The program everything below runs against is a fresh import of the same
+		// compiled-on-the-spot target analyzeHeadless brought us up on — never a host
+		// binary like /bin/ls, whose symbols vary by distro (Fedora's MiniDebugInfo has
+		// main/_init, Ubuntu's stripped coreutils have neither).
+		String targetFile = currentProgram.getExecutablePath();
+		String targetName = new java.io.File(targetFile).getName();
+
 		// ---- application-level tools ----
 		app("get_application_info", Map.of(), project);
 		app("read_log", Map.of("tail", 5), project);
 		app("read_log", Map.of("tail", 20, "filter", "log"), project);
-		app("import", Map.of("file", "/bin/ls", "folder", "/"), project);
+		app("import", Map.of("file", targetFile, "folder", "/"), project);
 		app("list_files", Map.of(), project);
 
 		// manage_files on folders: a throwaway copy in /smoke-scratch, so the program the rest
-		// of this script depends on (/ls) is never at risk.
-		app("import", Map.of("file", "/bin/ls", "folder", "/smoke-scratch"), project);
+		// of this script depends on is never at risk.
+		app("import", Map.of("file", targetFile, "folder", "/smoke-scratch"), project);
 		app("manage_files", Map.of("op", "delete", "path", "/"), project);
 		app("manage_files", Map.of("op", "delete", "path", "/__no_such_folder__"), project);
 		app("manage_files",
@@ -65,9 +72,9 @@ public class McpToolSmokeScript extends GhidraScript {
 		app("list_files", Map.of(), project);
 
 		// ---- open the imported program by its project path ----
-		DomainFile df = project.getProjectData().getFile("/ls");
+		DomainFile df = project.getProjectData().getFile("/" + targetName);
 		if (df == null) {
-			println("!! import did not create /ls");
+			println("!! import did not create /" + targetName);
 			return;
 		}
 		Program program = (Program) df.getDomainObject(this, false, false, TaskMonitor.DUMMY);
