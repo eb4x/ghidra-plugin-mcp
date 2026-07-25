@@ -260,8 +260,9 @@ tasks.register('smokeTest', Exec) {
 		// the distro ships symbols (Fedora's MiniDebugInfo has it, Ubuntu's stripped
 		// coreutils don't). A freshly compiled, unstripped ELF has it everywhere.
 		def targetSrc = new File(smokeDir, "target.c")
-		targetSrc.text = 'static int helper(int x) { return x * 3 + 1; }\n' +
-			'int main(int argc, char **argv) { return helper(argc); }\n'
+		targetSrc.text = '#include <stdio.h>\n' +
+			'static int helper(int x) { return x * 3 + 1; }\n' +
+			'int main(int argc, char **argv) { printf("smoke %d\\n", helper(argc)); return 0; }\n'
 		def cc = new ProcessBuilder("cc", "-O0", "-g0", "-o", target.path, targetSrc.path)
 			.redirectErrorStream(true).start()
 		def ccOut = cc.inputStream.text
