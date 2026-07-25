@@ -255,8 +255,19 @@ tasks.register('smokeTest', Exec) {
 		delete smokeDir
 		projectDir.mkdirs()
 		settingsDir.mkdirs()
-		// Any binary will do; /bin/ls is what the documented run has always used.
-		target.bytes = file("/bin/ls").bytes
+		// Compile a fixed target instead of borrowing the host's /bin/ls: the script's
+		// rename chain needs the _init symbol, which a distro binary only carries when
+		// the distro ships symbols (Fedora's MiniDebugInfo has it, Ubuntu's stripped
+		// coreutils don't). A freshly compiled, unstripped ELF has it everywhere.
+		def targetSrc = new File(smokeDir, "target.c")
+		targetSrc.text = 'static int helper(int x) { return x * 3 + 1; }\n' +
+			'int main(int argc, char **argv) { return helper(argc); }\n'
+		def cc = new ProcessBuilder("cc", "-O0", "-g0", "-o", target.path, targetSrc.path)
+			.redirectErrorStream(true).start()
+		def ccOut = cc.inputStream.text
+		if (cc.waitFor() != 0) {
+			throw new GradleException("cc failed to build the smoke target:\n" + ccOut)
+		}
 	}
 
 	environment 'GHIDRA_JAVA_OPTIONS', "-Dapplication.settingsdir=${settingsDir}"
