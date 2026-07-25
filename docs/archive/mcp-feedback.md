@@ -1032,6 +1032,69 @@ had glossed over.
   callers the plate comment names (`draw_colonies_on_map`, `report_sons_of_liberty`,
   `report_colony_defenses`, `draw_side_info_panel`, `combat_show_analysis_dialog`), each
   `(via thunk draw_colony_sprite @ 281f:02a8)`.
-- **Not the same as** the 2026-07-16 `OVLSTUB_*` entry (still open): those RTLink dispatch stubs are
-  NOT Ghidra thunk functions — they decompile to an opaque runtime `rtlink_smart_vector_dispatch`
-  with no thunk relationship to follow, so this fix does not resolve them.
+- **Was not the same as** the 2026-07-16 `OVLSTUB_*` entry, which at the time had no thunk
+  relationship to follow: those RTLink dispatch stubs were not Ghidra thunk functions, so this fix
+  did not reach them. Superseded on 2026-07-25 — the analyzer now makes them real thunks, and this
+  fix is exactly what resolves them through it. See that entry, archived below.
+
+## 2026-07-25 — no project lifecycle tools — a moved project dir stranded the session — fixed (0.8.0)
+- **Task:** Decompile `tile_prime_resource` (137f:04b0). Never got to make the call: the instance had
+  opened its project at `/home/erikberg/src/viceroy`, which was renamed to `viceroy-old` the next day.
+- **Friction:** `list_files` and `get_application_info` kept answering confidently from
+  `ProjectData`'s in-memory cache — including a `Location:` that no longer existed — while every tool
+  that reads file *contents* failed with a raw `…/idata/12/~0000012b.db/db.832.gbf (No such file or
+  directory)`. Nothing on the application-level surface could re-point the instance, and restarting
+  reopened the same stale locator.
+- **Fix:** `manage_project` with `op=open|close|list_recent` (one tool, not the three the entry asked
+  for), plus the two diagnostics the entry rightly wanted taken first:
+  - `get_application_info` now verifies the locator and flags `Location: … [UNREACHABLE — …]`, saying
+    outright that cached listings still work but no content can be read.
+  - every program tool's open failure leads with the cause and the fix instead of the `.gbf` path.
+  - `op=open` refuses while another project is open **and reachable**, but replaces an unreachable
+    one — the entry's own suggestion (refuse whenever a project is open) would not have unblocked the
+    session that logged it, because a stale project *was* open.
+  - `op=close` refuses while anything is busy or unsaved (`on_dirty=save|discard` to override), and
+    calls `setLastOpenedProject(null)` so a restart no longer reopens what you just closed.
+- **The two things that were nearly wrong.** (1) Cache release has to happen *before*
+  `Project.close()`: `DefaultProjectData.close()` defers its `dispose()` while any domain object is
+  still open, and the `.lock` release lives only in `dispose()` — so releasing afterwards leaves a
+  closed project holding its lock, unopenable. (2) `close()` + `setActiveProject(null)` is an
+  *incomplete* close. Ghidra fires `projectClosed` to its project listeners in between (see
+  `FileActionManager`'s delete-project branch), and skipping it fails only on the **next** open, where
+  `RecoverySnapshotMgrPlugin` throws "Unexpected - two or more projects active". Caught live, not by
+  reading: the first open→close→open cycle failed exactly there.
+- **Verified live (0.8.0):** from a cold no-project state, `op=list_recent` listed the recent projects
+  (the one thing that was previously a dead end), `op=open` opened `viceroy-old/viceroy` in 72ms with
+  all 15 files, `op=close` released the `.lock` file, and open→close→open→close cycled cleanly with no
+  listener errors in the log. Refusals all fire: missing `name`, blank `path` (which would silently
+  mean Ghidra's temp dir), a nonexistent project, the old moved-away path, and switching away from a
+  healthy project. Headless refusals verified by `smokeTest`.
+- **Not done:** `on_dirty=save`/`discard` and the busy/dirty refusals are verified by construction
+  only — making a file *stay* dirty is hard when the server auto-saves every call, and forcing the
+  busy path meant running analysis on a curated RE project. Also out of scope: `Transactions.modify`
+  still uses an unbounded `invokeAndWait`, so a modal dialog on the EDT hangs every mutating program
+  tool. `manage_project`'s own EDT hops are bounded; that one is not, and it is the remaining reason a
+  dialog can wedge the server.
+
+## 2026-07-16 — `decompile`/`calls` — RTLink overlay stubs severed the call graph — fixed in the analyzer
+- **Task:** VICEROY.EXE UI geometry RE. `decompile`/`calls` on overlay dispatch thunks such as
+  `OVLSTUB_20_0EB0` should have pointed at the real target function inside the overlay.
+- **Friction:** every stub decompiled to the same opaque `rtlink_smart_vector_dispatch(0x281f);
+  halt_baddata();` with a "Bad instruction / Truncating control flow" warning, and no reference tied
+  the stub to its target — the call graph was severed at every overlay boundary. The workaround was
+  pure manual arithmetic on the stub *name*: `OVLSTUB_<NN>_<OFFS>` → `OVERLAY_<NN>::03a000 + 0xOFFS`,
+  for every stub, and it only worked because an earlier analyst had named them consistently.
+- **Fix: not in this repo.** `RTLinkOverlayAnalyzer.createThunkAtStub` (now in the standalone
+  `ghidra-plugin-rtlink` extension) makes each stub a real Ghidra **thunk** of its overlay target —
+  refusing to plant a husk when the target never became code, stamping `__cdecl16far` so far call
+  sites decode their stack args, clearing the stale no-return flag that truncated every caller, and
+  sweeping the stub's own ERROR/WARNING bookmarks. The plugin side already met it halfway in 0.7.0:
+  `calls` annotates a thunk callee with its ultimate target and follows gates back to real callers.
+  So the suggested `resolve_overlay_stub` tool and the documented naming rule are both moot — nothing
+  depends on the stub's name any more.
+- **Verified live (0.8.0 / rtlink 0.3.0):** `inspect OVLSTUB_20_0EB0` reports
+  `thunk → draw_map_view (OVERLAY_20::03aeb0)` and `calls kind=callees` names
+  `OVERLAY_20::03aeb0 draw_map_view` — the address the entry had to compute by hand.
+- **Still open:** the entry's *second* item. Nothing warns that a function's prototype is a guess, so
+  16-bit register-args render as invented `in_AX`/`in_DX`/`in_BX` locals and mis-order the stack args
+  while looking plausible. That one is an MCP-side ask and stays in the open log.

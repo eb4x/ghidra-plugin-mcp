@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (42 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (44 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -88,7 +88,12 @@ instead of re-derived WRONG — fseek's `offset` restored to Stack[0x6], 55 of V
 carried; any it can't reconstruct are named, never silently downgraded), and the thunk-gate
 blindness in `calls`/`xrefs` (0.7.0: `calls kind=callers` resolves through thunk gates to the real
 callers — draw_colony_sprite's 5 overlay callers via the 281f gate — and both tools annotate
-thunks)._
+thunks), the RTLink overlay-stub resolution (fixed in the fork-turned-extension's
+`RTLinkOverlayAnalyzer`, not here: stubs are real Ghidra thunks now, so `inspect`/`calls` name the
+overlay target and nothing depends on the `OVLSTUB_<NN>_<OFFS>` naming rule), and the stranded-project
+gap (0.8.0: `manage_project op=open|close|list_recent`, plus `get_application_info` flagging an
+`[UNREACHABLE]` locator and program tools naming "project storage unreachable" instead of a raw
+`db.NNN.gbf` path)._
 
 
 ## 2026-07-14 — no register-context tool — analyzer-baked context is invisible and unfixable
@@ -147,25 +152,13 @@ thunks)._
   `xrefs direction=to ... [WRITE]`, found `data_load_names_text` on both, and went to the data file.
   The right conclusion, reached by inference rather than by being told.
 
-## 2026-07-16 — VICEROY.EXE UI geometry RE (overlay stub resolution)
+## 2026-07-16 — `decompile` — nothing warns that a function's prototype is a guess
 
-- **What I tried:** `decompile` / `calls` on RTLink overlay thunks, e.g. `OVLSTUB_20_0EB0`,
-  `OVLSTUB_08_0424`, `OVLSTUB_09_093C`.
-- **What I expected:** to be pointed at the real target function in the overlay.
-- **What happened:** every stub decompiles to the same opaque two instructions —
-  `rtlink_smart_vector_dispatch(0x281f); halt_baddata();` — with a "Bad instruction / Truncating
-  control flow" warning, and `calls kind=callees` on the stub is likewise useless. There is no
-  reference from the stub to its target, so the call graph is severed at every overlay boundary.
-- **Workaround:** the stub *name* encodes the target: `OVLSTUB_<NN>_<OFFS>` -> `OVERLAY_<NN>::03a000
-  + 0xOFFS`. So `OVLSTUB_20_0EB0` -> `OVERLAY_20::03aeb0`. I had to hand-compute that address for
-  every single stub and then `decompile` it. It works but it is pure manual arithmetic, and it only
-  works because a previous analyst named the stubs consistently.
-- **Suggestion:** either (a) have `decompile`/`calls` follow the `OVLSTUB_*` naming convention and
-  report the resolved overlay target, or (b) expose a small `resolve_overlay_stub` capability, or
-  at minimum (c) mention the `OVLSTUB_<NN>_<OFFS>` -> `OVERLAY_<NN>::03a000+OFFS` rule in the
-  tool description for `decompile`, since without it an agent can get stuck at the first thunk.
+(The overlay-stub-resolution item this entry opened with is resolved and archived — the RTLink
+analyzer makes each `OVLSTUB_*` a real Ghidra thunk, so `inspect`/`calls` report the overlay target
+and the hand-computed `OVERLAY_<NN>::03a000+OFFS` arithmetic is gone. This second item remains.)
 
-- **Second, smaller item:** 16-bit real-mode functions here pass args in AX/DX/BX plus the stack, and
+- 16-bit real-mode functions here pass args in AX/DX/BX plus the stack, and
   the decompiler's default guess renders those as bogus `in_AX`/`in_DX`/`in_BX` locals, silently
   mis-ordering the *stack* args too. The decompiled output looks plausible but is wrong — e.g.
   `surface_fill_rect` appeared to take `(color, h, desc...)` with no x/y at all. Only
@@ -174,3 +167,21 @@ thunks)._
   decompiled with correct literals — that tool is excellent. The friction is that nothing *warns*
   you the prototype is a guess. A hint in `decompile` output when a function has no committed
   prototype and the decompiler invented `in_<REG>` inputs would have saved a lot of cross-checking.
+
+## 2026-07-25 — `Transactions.modify` — a modal dialog on the EDT hangs every mutating tool forever
+- **Task:** Found while building `manage_project` (0.8.0), not while using a tool — but it is the
+  same failure class the project-lifecycle entry described, so it belongs here.
+- **Friction:** every write goes through `util/Transactions.modify`, which marshals onto the Swing
+  EDT with a bare `SwingUtilities.invokeAndWait` and **no timeout** (`Transactions.java:49`). Ghidra
+  raises modal dialogs from plenty of paths an agent can provoke — a program upgrade prompt, a
+  recovery-snapshot question, an error dialog — and a modal dialog pumps a nested event loop, so the
+  EDT never returns to our runnable. Every mutating program tool then blocks indefinitely, with no
+  error, no timeout, and nothing in the result to say a human needs to click something. The MCP
+  client just hangs.
+- **Expected:** the same treatment `manage_project` already gives its own EDT hops — post the work,
+  wait with a bound, and on expiry return a result that says the UI thread is blocked, most likely
+  by a dialog waiting for a human, and that the edit's state is indeterminate until they look. A
+  bounded wait cannot make the dialog go away, but it turns "the session is dead" into "go dismiss
+  the dialog in the Ghidra window", which is the whole difference.
+- **Workaround:** none. `manage_project` is bounded, so project lifecycle survives a wedged EDT;
+  every other write does not. Bounding this one call would make the whole server dialog-survivable.
