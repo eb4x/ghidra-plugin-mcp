@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (45 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (46 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -95,7 +95,10 @@ gap (0.8.0: `manage_project op=open|close|list_recent`, plus `get_application_in
 `[UNREACHABLE]` locator and program tools naming "project storage unreachable" instead of a raw
 `db.NNN.gbf` path), and the silently-guessed prototype (0.8.1: every `decompile` header says
 `prototype guessed`/`committed`, and names the UNDECLARED INPUTS the decompiler read but could not
-place — measured at 7 of a 12-function sample on VICEROY, so the normal state, not an edge case)._
+place — measured at 7 of a 12-function sample on VICEROY, so the normal state, not an edge case),
+and the unbounded EDT wait (0.8.2: one `util/Edt` policy for reaching the Swing thread, so a modal
+dialog can no longer hang every write tool indefinitely — verified by forcing the branch, which
+also surfaced the "Unable to lock due to active transaction" cascade a timeout leaves behind)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
@@ -167,21 +170,3 @@ remains is the read path._
 - **Workaround:** Noticed that BOTH tables failed the same way, went looking for their writers with
   `xrefs direction=to ... [WRITE]`, found `data_load_names_text` on both, and went to the data file.
   The right conclusion, reached by inference rather than by being told.
-
-## 2026-07-25 — `Transactions.modify` — a modal dialog on the EDT hangs every mutating tool forever
-- **Task:** Found while building `manage_project` (0.8.0), not while using a tool — but it is the
-  same failure class the project-lifecycle entry described, so it belongs here.
-- **Friction:** every write goes through `util/Transactions.modify`, which marshals onto the Swing
-  EDT with a bare `SwingUtilities.invokeAndWait` and **no timeout** (`Transactions.java:49`). Ghidra
-  raises modal dialogs from plenty of paths an agent can provoke — a program upgrade prompt, a
-  recovery-snapshot question, an error dialog — and a modal dialog pumps a nested event loop, so the
-  EDT never returns to our runnable. Every mutating program tool then blocks indefinitely, with no
-  error, no timeout, and nothing in the result to say a human needs to click something. The MCP
-  client just hangs.
-- **Expected:** the same treatment `manage_project` already gives its own EDT hops — post the work,
-  wait with a bound, and on expiry return a result that says the UI thread is blocked, most likely
-  by a dialog waiting for a human, and that the edit's state is indeterminate until they look. A
-  bounded wait cannot make the dialog go away, but it turns "the session is dead" into "go dismiss
-  the dialog in the Ghidra window", which is the whole difference.
-- **Workaround:** none. `manage_project` is bounded, so project lifecycle survives a wedged EDT;
-  every other write does not. Bounding this one call would make the whole server dialog-survivable.

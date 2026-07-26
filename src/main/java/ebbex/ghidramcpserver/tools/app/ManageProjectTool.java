@@ -5,17 +5,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
-import javax.swing.SwingUtilities;
-
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Edt;
 import ebbex.ghidramcpserver.util.ProjectContext;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
@@ -55,7 +50,7 @@ import io.modelcontextprotocol.spec.McpSchema;
  * <p><b>The hazard that shapes the whole class: a modal dialog raised inside our own call.</b>
  * Ghidra reports project-open failures with {@code Msg.showError}, which pumps a nested event
  * loop — so the call does not return until a human clicks. Every precheck below exists to make
- * a given dialog unreachable, and {@link #onEdt} bounds the wait so the MCP call returns even
+ * a given dialog unreachable, and {@link Edt#runNow} bounds the wait so the MCP call returns even
  * when one appears anyway. Three residual sources cannot be prechecked away: a filesystem
  * failure mid-open, a corrupt {@code projectState}, and a prompt from a <em>restored</em>
  * CodeBrowser (a required program upgrade, a missing language). On a timeout the instance's
@@ -251,7 +246,7 @@ public class ManageProjectTool implements ApplicationLevelTool {
 
 		// 8. The open itself, in one bounded hop on the EDT.
 		try {
-			String opened = onEdt(() -> {
+			String opened = Edt.runNow(() -> {
 				Project fresh = manager.openProject(locator, true, false);
 				frontEnd.setActiveProject(fresh);
 				return fresh.getName();
@@ -275,7 +270,7 @@ public class ManageProjectTool implements ApplicationLevelTool {
 		int unsaved = countChanged(stranded);
 		context.releaseAll();
 		try {
-			onEdt(() -> {
+			Edt.runNow(() -> {
 				closeAndNotify(frontEnd, stranded);
 				return null;
 			}, CLOSE_TIMEOUT_MS);
@@ -372,10 +367,18 @@ public class ManageProjectTool implements ApplicationLevelTool {
 
 		// 5. The close itself, in one bounded hop on the EDT.
 		try {
-			onEdt(() -> {
+			Edt.runNow(() -> {
 				closeAndNotify(frontEnd, open);
 				return null;
 			}, CLOSE_TIMEOUT_MS);
+		}
+		catch (TimeoutException e) {
+			// Its message is null, so it must be spelled out rather than passed to describe().
+			return Results.error("Closing '" + name + "' " +
+				Edt.timeoutAdvice(CLOSE_TIMEOUT_MS) +
+				" Here that means the project may or may not have closed: call " +
+				"get_application_info to see. This server has already released its cached " +
+				"program handles either way.");
 		}
 		catch (Exception e) {
 			return Results.error("Closing '" + name + "' failed: " + describe(e) +
@@ -533,38 +536,6 @@ public class ManageProjectTool implements ApplicationLevelTool {
 	}
 
 	/**
-	 * Run {@code body} on the Swing event thread, waiting at most {@code timeoutMs}.
-	 *
-	 * <p>Deliberately not {@code Swing.runNow}: its final barrier has no timeout, and its timed
-	 * variant falls through to an unbounded {@code invokeAndWait} in a development build. Since
-	 * Ghidra's project-open path can still raise a modal dialog despite every precheck above, an
-	 * unbounded wait would park this HTTP thread until a human clicked. The bound guarantees the
-	 * MCP call returns; the posted task is intentionally left to finish on its own, because
-	 * abandoning a half-open project would be worse than reporting the timeout.
-	 */
-	private static <T> T onEdt(Callable<T> body, long timeoutMs) throws Exception {
-		if (SwingUtilities.isEventDispatchThread()) {
-			return body.call();
-		}
-		CompletableFuture<T> future = new CompletableFuture<>();
-		SwingUtilities.invokeLater(() -> {
-			try {
-				future.complete(body.call());
-			}
-			catch (Throwable t) {
-				future.completeExceptionally(t);
-			}
-		});
-		try {
-			return future.get(timeoutMs, TimeUnit.MILLISECONDS);
-		}
-		catch (ExecutionException e) {
-			Throwable cause = e.getCause();
-			throw cause instanceof Exception ex ? ex : new RuntimeException(cause);
-		}
-	}
-
-	/**
 	 * Close a project the way Ghidra's own dialog-free path does — {@code FileActionManager}'s
 	 * delete-project branch is exactly {@code close()}, {@code fireProjectClosed()},
 	 * {@code setActiveProject(null)}.
@@ -639,12 +610,10 @@ public class ManageProjectTool implements ApplicationLevelTool {
 		String prefix = replaced != null ? replaced + "\nThe open then failed: " : "";
 		String name = locator.getName();
 		if (e instanceof TimeoutException) {
-			return prefix + "timed out after " + (OPEN_TIMEOUT_MS / 1000) + "s waiting for " +
-				"Ghidra to open '" + name + "'. The open is still running on Ghidra's UI thread — " +
-				"most likely a dialog is waiting for a human (a required program upgrade, a " +
-				"restore error). Look at the Ghidra window and dismiss it, then call " +
-				"get_application_info to see which project ended up open. Ghidra's UI is blocked " +
-				"until then, so other tools may also hang.";
+			return prefix + "opening '" + name + "' " + Edt.timeoutAdvice(OPEN_TIMEOUT_MS) +
+				" Here the dialog is most likely a restored CodeBrowser's own prompt (a required " +
+				"program upgrade, a missing language), which no precheck can pre-empt. Call " +
+				"get_application_info afterwards to see which project ended up open.";
 		}
 		if (e instanceof InterruptedException) {
 			Thread.currentThread().interrupt();

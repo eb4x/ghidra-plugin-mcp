@@ -83,6 +83,13 @@ public class MigrateTool implements ProgramTool {
 	private static final String BACKUP_FOLDER = "/backups";
 
 	/**
+	 * How long to let a migration hold the event thread before reporting it stuck. Deliberately
+	 * far above any real migration (VICEROY's whole-program run is the yardstick): this exists to
+	 * catch a modal dialog blocking the UI, not to time-limit legitimate bulk work.
+	 */
+	private static final long MIGRATE_TIMEOUT_MS = 600_000;
+
+	/**
 	 * Names that carry no information, so they are neither worth copying nor worth protecting.
 	 * Ghidra's own {@link SourceType#DEFAULT} placeholders ({@code FUN_*}, {@code LAB_*}, …) are
 	 * already identifiable by their source type, but an <em>analyzer</em> can assign an equally
@@ -211,10 +218,14 @@ public class MigrateTool implements ProgramTool {
 		}
 		report.backup = backup;
 
-		return Transactions.modify(target, "Migrate documentation from " + sourcePath, () -> {
-			migrate(source, target, kinds, overwrite, names, false, report);
-			return report.render(sourcePath, kinds);
-		});
+		// A whole-program migration is thousands of edits in one transaction, so it gets a bound
+		// of its own: the single-edit default would report a timeout on a migration that is
+		// simply still working.
+		return Transactions.modify(target, "Migrate documentation from " + sourcePath,
+			MIGRATE_TIMEOUT_MS, () -> {
+				migrate(source, target, kinds, overwrite, names, false, report);
+				return report.render(sourcePath, kinds);
+			});
 	}
 
 	/** Copy the target's saved state to /backups, returning the new project path. */
