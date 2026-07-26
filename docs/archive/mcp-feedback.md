@@ -1177,3 +1177,36 @@ had glossed over.
 - **Not done:** the policy is uniform for tool-driven writes, but `Edt.runNow` is only as good as the
   bound each caller picks, and a wedged event thread still freezes Ghidra's own UI. This makes the
   server survive a modal dialog; it does not make the dialog go away.
+
+## 2026-07-14 — `read_bytes` — an uninitialized block read as a flat failure — fixed (0.8.3)
+- **Task:** read the unit-type table (`g_unit_type_table`, 2b5a:5232) and the order→badge-letter
+  table (2b5a:54de) out of the data segment, to reproduce what the map draws.
+- **Friction:** `read_bytes address="2b5a:5232" length=364` came back as
+  `MemoryAccessException: Unable to read bytes at ram:2b5a:5232` — the identical message a bogus
+  address produces, so the first reading was "I got the address wrong". The address was right and
+  the failure *was* the answer: those bytes are in an uninitialized block because the tables are not
+  compiled into the executable at all; the game parses them out of NAMES.TXT at startup. The single
+  most important fact about that data, and the tool had it and threw it away.
+- **Fix:** `read_bytes` now diagnoses the failure instead of forwarding it, distinguishing three
+  cases — mapped nowhere (address wrong, or never loaded), inside an uninitialized block (named,
+  with its bounds), or a genuine read error in an initialized block. The uninitialized message says
+  the bytes were never in the image, that this is usually the answer rather than a problem, and
+  points at `xrefs direction=to … [WRITE]` to find what builds them at run time. `inspect` also
+  annotates its existing `Block:` line with `[UNINITIALIZED — …]`, which was the entry's "better
+  still" ask: the block name alone made a BSS address look identical to a data one.
+  Diagnosis happens in the `catch`, not as a pre-check, so the success path is untouched and the
+  explanation can never disagree with what the read actually did.
+- **Bonus, which is really the more useful fix:** a short read is now footed with
+  `(read 9 of 64 requested — the range runs off the end of readable memory at …)`. `Memory.getBytes`
+  returns a partial count rather than throwing when a range *starts* readable and runs out, so a
+  truncated dump used to be presented as the whole answer with nothing marking it.
+- **Process gap this exposed:** `read_bytes` had **no smoke coverage at all** — a registered program
+  tool that the script never called, despite CLAUDE.md requiring one call per tool. It now has four,
+  covering every branch above, and they are cheap because the compiled ELF target has a `.bss`.
+- **Verified live (0.8.3)** against the entry's exact calls: both 2b5a:5232 and 2b5a:54de now report
+  `inside 'DATA' (2b5a:2cc5-2b5a:e954), an UNINITIALIZED block`, and following the hint the message
+  gives lands on `text_load_game_tables+1305 [WRITE]` — the loader that fills the table, i.e. the
+  conclusion the original entry reached by inference. `inspect` shows the `[UNINITIALIZED]` marker on
+  `g_unit_type_table`, and an ordinary read (`1d1d:07e4`) is unchanged. Headless: the ELF header
+  reads normally, `.bss` gives the diagnosis, `0x7fffff000000` gives "nothing is mapped", and a read
+  past the last block gives the short-read footer.

@@ -21,6 +21,7 @@ import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -148,6 +149,39 @@ public class McpToolSmokeScript extends GhidraScript {
 			// search_memory kind=instruction: substring of disassembled text.
 			prog("search_memory", Map.of("kind", "instruction", "pattern", "PUSH", "limit", 5),
 				program);
+
+			// read_bytes, all three outcomes. The uninitialized case is the one worth pinning: a
+			// BSS read has to say the image carries no bytes there — the fact the caller was
+			// after — rather than fail the same way a wrong address does.
+			MemoryBlock loaded = null;
+			MemoryBlock bss = null;
+			for (MemoryBlock b : program.getMemory().getBlocks()) {
+				if (b.isInitialized() && loaded == null) {
+					loaded = b;
+				}
+				if (!b.isInitialized() && bss == null) {
+					bss = b;
+				}
+			}
+			if (loaded != null) {
+				prog("read_bytes", Map.of("address", loaded.getStart().toString(), "length", 32),
+					program);
+			}
+			if (bss == null) {
+				println("!! no uninitialized block in the target; read_bytes BSS case not covered");
+			}
+			else {
+				println("(uninitialized block for the read_bytes case: " + bss.getName() + ")");
+				prog("read_bytes", Map.of("address", bss.getStart().toString(), "length", 32),
+					program);
+				prog("inspect", Map.of("location", bss.getStart().toString()), program);
+			}
+			// Mapped nowhere: must not read as "uninitialized", and must not read as a bad length.
+			prog("read_bytes", Map.of("address", "0x7fffff000000", "length", 16), program);
+			// Starts readable and runs off the end: the dump must be footed with how much of the
+			// request was actually satisfied, or a short dump reads as the whole answer.
+			prog("read_bytes", Map.of("address", program.getMaxAddress().subtract(8).toString(),
+				"length", 64), program);
 
 			// list user_only: the curated symbol map (drops FUN_/LAB_/DAT_ auto names).
 			prog("list", Map.of("kind", "functions", "user_only", true, "limit", 5), program);

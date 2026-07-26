@@ -63,7 +63,14 @@ public class InspectTool implements ProgramTool {
 
 		MemoryBlock block = program.getMemory().getBlock(address);
 		if (block != null) {
-			sb.append("Block: ").append(block.getName()).append('\n');
+			sb.append("Block: ").append(block.getName());
+			// The block name alone doesn't say whether the image actually carries bytes here, so a
+			// BSS address looked identical to a data one until read_bytes failed on it.
+			if (!block.isInitialized()) {
+				sb.append("  [UNINITIALIZED — no bytes in the image; contents are built at run " +
+					"time, so read_bytes here will fail]");
+			}
+			sb.append('\n');
 		}
 
 		Symbol[] symbols = program.getSymbolTable().getSymbols(address);
