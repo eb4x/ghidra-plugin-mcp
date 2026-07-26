@@ -1143,3 +1143,37 @@ had glossed over.
   renders `(param_1, param_2)` from a `(void)` listing signature and only says `prototype guessed`.
   That is the right call for now (it is most of the program, and usually right), but it means
   "guessed" is doing real work in that header and should not be read as cosmetic.
+
+## 2026-07-25 — `Transactions.modify` — an unbounded EDT wait could hang every write — fixed (0.8.2)
+- **Task:** logged while building `manage_project` (0.8.0), which bounded its own event-thread hops
+  and so left the server with two different EDT policies — the tool I had just written, and every
+  write tool, which still used a bare unbounded `SwingUtilities.invokeAndWait`.
+- **Friction:** Ghidra raises *modal* dialogs from paths an agent can provoke (a program-upgrade
+  prompt, a recovery-snapshot question, an error dialog), and a modal dialog pumps a nested event
+  loop, so the event thread never returns to our runnable. Every mutating program tool then blocked
+  indefinitely — no error, no timeout, nothing saying a human had to click something. The MCP client
+  simply hung.
+- **Fix:** extracted the bounded marshaller into `util/Edt.runNow(Callable, timeoutMs)` — one EDT
+  policy for the server rather than two — and put `Transactions.modify` on it. `manage_project`'s
+  private copy is gone, and its open/close timeout messages now build on the shared
+  `Edt.timeoutAdvice`. Bounds: 60s for a single edit (absurdly generous next to the milliseconds one
+  takes; the point is to report a wedged event thread, not to police slow work) and 600s for
+  `migrate`, which is thousands of edits in one transaction and would otherwise report a timeout on
+  a migration that is merely still working. `analyze` was never affected — it runs its own
+  transaction off this path.
+- **What a timeout cannot do is cancel.** The task may be mid-transaction, and abandoning it
+  half-done would be worse than reporting it, so it runs to completion once the event thread frees.
+  A timeout therefore means *unknown outcome*, and the message says so — including that the edit, if
+  it did land, is only in memory until `save`.
+- **Verified by forcing the branch**, not by reasoning about it: temporarily setting the bound to 1ms
+  and running `smokeTest` produced the timeout result from five write tools and, notably, made
+  `batch`'s next edit fail with `IOException: Unable to lock due to active transaction` — because the
+  timed-out transaction is still open and still holds Ghidra's write lock. That cascade is now named
+  in the timeout message, since an agent would otherwise read each lock error as a fresh mystery
+  instead of as this timeout unwinding. Restored to 60s, `smokeTest` is green (it exercises every
+  write tool, and the bounded path works headless as well as under the GUI). Live check on a
+  throwaway import in a real GUI Ghidra: `rename` then `set_comment` both applied and read back,
+  then the scratch folder was deleted — the RE project was never written to.
+- **Not done:** the policy is uniform for tool-driven writes, but `Edt.runNow` is only as good as the
+  bound each caller picks, and a wedged event thread still freezes Ghidra's own UI. This makes the
+  server survive a modal dialog; it does not make the dialog go away.
