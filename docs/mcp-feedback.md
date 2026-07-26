@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (44 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (45 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -93,7 +93,9 @@ thunks), the RTLink overlay-stub resolution (fixed in the fork-turned-extension'
 overlay target and nothing depends on the `OVLSTUB_<NN>_<OFFS>` naming rule), and the stranded-project
 gap (0.8.0: `manage_project op=open|close|list_recent`, plus `get_application_info` flagging an
 `[UNREACHABLE]` locator and program tools naming "project storage unreachable" instead of a raw
-`db.NNN.gbf` path)._
+`db.NNN.gbf` path), and the silently-guessed prototype (0.8.1: every `decompile` header says
+`prototype guessed`/`committed`, and names the UNDECLARED INPUTS the decompiler read but could not
+place — measured at 7 of a 12-function sample on VICEROY, so the normal state, not an edge case)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
@@ -165,22 +167,6 @@ remains is the read path._
 - **Workaround:** Noticed that BOTH tables failed the same way, went looking for their writers with
   `xrefs direction=to ... [WRITE]`, found `data_load_names_text` on both, and went to the data file.
   The right conclusion, reached by inference rather than by being told.
-
-## 2026-07-16 — `decompile` — nothing warns that a function's prototype is a guess
-
-(The overlay-stub-resolution item this entry opened with is resolved and archived — the RTLink
-analyzer makes each `OVLSTUB_*` a real Ghidra thunk, so `inspect`/`calls` report the overlay target
-and the hand-computed `OVERLAY_<NN>::03a000+OFFS` arithmetic is gone. This second item remains.)
-
-- 16-bit real-mode functions here pass args in AX/DX/BX plus the stack, and
-  the decompiler's default guess renders those as bogus `in_AX`/`in_DX`/`in_BX` locals, silently
-  mis-ordering the *stack* args too. The decompiled output looks plausible but is wrong — e.g.
-  `surface_fill_rect` appeared to take `(color, h, desc...)` with no x/y at all. Only
-  `disassemble` revealed `MOV AX,0xf1 / MOV DX,0x32 / MOV BX,0x4f`.
-  `set_function_signature` with `parameters[].storage` fixed this perfectly and the callers then
-  decompiled with correct literals — that tool is excellent. The friction is that nothing *warns*
-  you the prototype is a guess. A hint in `decompile` output when a function has no committed
-  prototype and the decompiler invented `in_<REG>` inputs would have saved a lot of cross-checking.
 
 ## 2026-07-25 — `Transactions.modify` — a modal dialog on the EDT hangs every mutating tool forever
 - **Task:** Found while building `manage_project` (0.8.0), not while using a tool — but it is the
