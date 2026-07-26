@@ -30,6 +30,7 @@ import ghidra.program.model.pcode.PcodeDataTypeManager;
 import ghidra.program.model.pcode.SymbolEntry;
 import ghidra.program.model.pcode.XmlEncode;
 import ghidra.program.model.symbol.IdentityNameTransformer;
+import ghidra.program.model.symbol.SourceType;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Decompile a function to C. */
@@ -64,7 +65,12 @@ public class DecompileTool implements ProgramTool {
 	@Override
 	public String description() {
 		return "Decompile a function to C. Identify the function by name or by any address " +
-			"inside it.";
+			"inside it. The header says whether the signature you are reading is the program's " +
+			"('prototype committed') or the decompiler's own invention ('prototype guessed'), and " +
+			"warns about UNDECLARED INPUTS — register or stack arguments the prototype omits, " +
+			"which the decompiler renders as in_<REG> locals while silently mis-ordering the " +
+			"stack arguments around them. That output reads plausibly and is wrong, so treat the " +
+			"warning as a signal to cross-check with disassemble.";
 	}
 
 	@Override
@@ -138,7 +144,9 @@ public class DecompileTool implements ProgramTool {
 		String c = results == null || results.getDecompiledFunction() == null ? null
 				: results.getDecompiledFunction().getC();
 		if (c != null && !c.isBlank()) {
-			out.append(coverageHeader(program, function, results)).append(c);
+			out.append(coverageHeader(program, function, results))
+					.append(undeclaredInputWarning(function, results))
+					.append(c);
 			if (dumpSymbols) {
 				out.append(symbolDump(results.getHighFunction()));
 			}
@@ -313,6 +321,7 @@ public class DecompileTool implements ProgramTool {
 		int pct = (int) Math.round(100.0 * represented / total);
 		sb.append(", decompiler represented ").append(represented).append(" (").append(pct)
 				.append("%)");
+		sb.append(", prototype ").append(prototypeState(function));
 		boolean lowCoverage = total >= MIN_INSTRS_FOR_WARNING
 				&& (double) represented / total < LOW_COVERAGE_FRACTION;
 		if (lowCoverage || !results.decompileCompleted()) {
@@ -320,6 +329,79 @@ public class DecompileTool implements ProgramTool {
 				+ "or decompiler bailout); cross-check with disassemble");
 		}
 		return sb.append('\n').toString();
+	}
+
+	/**
+	 * {@code guessed} or {@code committed} — whether the signature in the rendering below is the
+	 * program's or the decompiler's invention.
+	 *
+	 * <p>{@code SourceType.DEFAULT} is exactly the discriminator the decompiler itself uses:
+	 * {@code FunctionPrototype.grabFromFunction} sets neither {@code outputlock} nor
+	 * {@code voidinputlock} for a DEFAULT signature, so the decompiler is free to derive its own
+	 * return type and parameter list — and does, silently. Any other source (ANALYSIS, IMPORTED,
+	 * USER_DEFINED) locks the listing's prototype, so the rendering is the program's own claim.
+	 * Note this is deliberately *not* "DEFAULT or ANALYSIS": an analyzer-applied signature (FID, a
+	 * demangler) does lock, and calling it a guess would cry wolf on every library match.
+	 *
+	 * <p>Thunks need no special case: {@code FunctionDB.getSignatureSource} already delegates to
+	 * the thunked function, which is the prototype that governs the rendering.
+	 */
+	private static String prototypeState(Function function) {
+		return function.getSignatureSource() == SourceType.DEFAULT ? "guessed" : "committed";
+	}
+
+	/**
+	 * Names the inputs the decompiler read but could not fit into the prototype, because they are
+	 * the difference between a decompilation that is wrong and one that merely looks wrong.
+	 *
+	 * <p>16-bit real-mode code passes arguments in AX/DX/BX as well as on the stack. When the
+	 * prototype doesn't declare them, the decompiler still sees the register being read before it
+	 * is written, so it materialises an "irregular input" — rendered {@code in_<REG>}, or
+	 * {@code in_<space>_<offset>} for one it can't name (an undeclared *stack* argument). It then
+	 * lays out whatever stack parameters it did recover around the gap, which is how a call comes
+	 * out with plausible arguments in the wrong order and none of them flagged. The motivating
+	 * case rendered {@code surface_fill_rect} as taking {@code (color, h, desc…)} with no x/y at
+	 * all, and read perfectly well.
+	 *
+	 * <p>Detected by the {@code in_} name prefix, which is what Ghidra's own
+	 * {@code FindPotentialDecompilerProblems} and {@code DecompilerParameterIdCmd} match on; the
+	 * prefix is emitted by the decompiler core itself ({@code database.cc}, "Irregular input").
+	 * {@code in_FS_OFFSET} is excluded for the same reason that script excludes it — it is an
+	 * x86-64 thread-local artefact, not a missed argument.
+	 */
+	private static String undeclaredInputWarning(Function function, DecompileResults results) {
+		HighFunction high = results.getHighFunction();
+		if (high == null) {
+			return "";
+		}
+		StringBuilder inputs = new StringBuilder();
+		Iterator<HighSymbol> symbols = high.getLocalSymbolMap().getSymbols();
+		while (symbols.hasNext()) {
+			HighSymbol symbol = symbols.next();
+			String name = symbol.getName();
+			if (name == null || !name.startsWith("in_") || name.equals("in_FS_OFFSET")) {
+				continue;
+			}
+			if (!inputs.isEmpty()) {
+				inputs.append(", ");
+			}
+			inputs.append(name).append(" (").append(symbol.getStorage()).append(')');
+		}
+		if (inputs.isEmpty()) {
+			return "";
+		}
+		// Kept to two lines on purpose. On the program this was built for, 7 of a 12-function
+		// sample carried undeclared inputs — it is the normal state of an uncommitted 16-bit
+		// function, not an exception — so a longer block would cost more than it teaches on every
+		// batch decompile. The reasoning lives in this tool's description, paid for once.
+		//
+		// The remedy differs: a guessed prototype needs one written, whereas a committed one is
+		// incomplete and its author believed they were finished — the more alarming of the two.
+		boolean committed = "committed".equals(prototypeState(function));
+		return "//   ⚠ UNDECLARED INPUTS: " + inputs + " — args the " +
+			(committed ? "committed (so incomplete)" : "guessed") + " prototype omits; the stack " +
+			"args\n//     around them may be mis-ordered. Cross-check disassemble, then pin with " +
+			"set_function_signature.\n";
 	}
 
 	/**

@@ -1098,3 +1098,48 @@ had glossed over.
 - **Still open:** the entry's *second* item. Nothing warns that a function's prototype is a guess, so
   16-bit register-args render as invented `in_AX`/`in_DX`/`in_BX` locals and mis-order the stack args
   while looking plausible. That one is an MCP-side ask and stays in the open log.
+
+## 2026-07-16 — `decompile` — nothing warned that a prototype was a guess — fixed (0.8.1)
+- **Task:** VICEROY.EXE UI geometry RE. (This was the second item of the overlay-stub entry archived
+  above; the two were split when the first half was resolved in the analyzer.)
+- **Friction:** 16-bit real-mode functions pass args in AX/DX/BX as well as on the stack. With no
+  committed prototype the decompiler invents one, rendering the register args as bogus
+  `in_AX`/`in_DX`/`in_BX` locals and silently mis-ordering the stack args around them.
+  `surface_fill_rect` appeared to take `(color, h, desc...)` with no x/y at all. The output reads
+  perfectly plausibly and is wrong, and nothing marked it — `set_function_signature` with
+  `parameters[].storage` fixes it beautifully once you know, but nothing tells you there is anything
+  to know.
+- **Fix:** two independent signals on the `decompile` header.
+  - Every header now ends `prototype guessed` or `prototype committed`. The discriminator is exactly
+    the one the decompiler itself uses — `SourceType.DEFAULT`, per
+    `FunctionPrototype.grabFromFunction`, which sets neither `outputlock` nor `voidinputlock` for a
+    DEFAULT signature and so lets the decompiler derive its own. Deliberately *not* "DEFAULT or
+    ANALYSIS": an analyzer-applied signature (FID, demangler) does lock the prototype, and calling
+    that a guess would cry wolf on every library match.
+  - A ⚠ UNDECLARED INPUTS line names the inputs the decompiler read but could not place in the
+    prototype, with their storage. These are the decompiler core's "irregular inputs"
+    (`database.cc`), rendered `in_<REG>` or `in_<space>_<offset>` for an undeclared *stack* arg;
+    detection is by the `in_` prefix, matching what Ghidra's own
+    `FindPotentialDecompilerProblems` and `DecompilerParameterIdCmd` do, and excluding
+    `in_FS_OFFSET` for the same reason they do.
+  - The two are orthogonal on purpose. An `in_AX` on a *committed* prototype is the more alarming
+    case — the signature is incomplete and its author believed they were finished — so the wording
+    changes to say so.
+- **How bad it actually was.** The entry cited one function; measuring it found **7 of a 12-function
+  sample** carrying undeclared inputs, including `draw_unit_icon_with_badge` (1483 bytes),
+  `draw_village_sprite` (1234) and `draw_colony_sprite` (594) — all three of which take their
+  coordinates in registers and were being rendered without them. The clean five were small
+  math/predicate helpers. So this was the normal state of an uncommitted 16-bit function here, not an
+  edge case, which is also why the warning is two lines rather than four: at that incidence a longer
+  block costs more than it teaches on every batch decompile, and the reasoning lives in the tool
+  description where it is paid for once.
+- **Verified live (0.8.1):** `screen_present_rect` → `prototype guessed` + `in_AX (AX:2)`;
+  `font_draw_string` → all three of `in_AX, in_BX, in_DX`; `surface_fill_rect` → `prototype
+  committed`, no warning, which is the regression check that the entry's own fix still holds;
+  `tile_unit_owner`/`crt_aFldiv` → `guessed` with no warning (invented *stack* params only, so no
+  false positive); and the x86-64 smoke target's `main` → `guessed`, no warning, confirming the
+  warning does not fire on a target whose args the decompiler models correctly.
+- **Not done:** nothing flags an invented *stack* parameter list on its own — `tile_unit_owner`
+  renders `(param_1, param_2)` from a `(void)` listing signature and only says `prototype guessed`.
+  That is the right call for now (it is most of the program, and usually right), but it means
+  "guessed" is doing real work in that header and should not be read as cosmetic.
