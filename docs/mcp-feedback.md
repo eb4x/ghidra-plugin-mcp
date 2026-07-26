@@ -96,28 +96,42 @@ gap (0.8.0: `manage_project op=open|close|list_recent`, plus `get_application_in
 `db.NNN.gbf` path)._
 
 
-## 2026-07-14 — no register-context tool — analyzer-baked context is invisible and unfixable
-- **Task:** A program had `DS=DGROUP` asserted over the RTLink runtime's code blocks
-  (segments `210d`/`275d`), where DS is emphatically not DGROUP — the overlay manager
-  reloads DS from its own saved-segment slots and does `MOV DS,CS`. I needed to (a) find
-  out whether the stale context was still there and (b) take it back out.
-- **Friction:** Nothing in the server exposes `ProgramContext`. There is no way to read a
-  register's assumed value at an address, and no way to set or clear one over a range. So:
-  - **(a)** was answered only by `decompile` and eyeballing: seeing `_DAT_2b5a_0000` and
-    `s_SAVEMEM_2b5a_2108` inside a function that plainly does `MOV DS,CS` is what told me
-    the context was still asserted. That is an inference from a rendering, not a reading.
-  - **(b)** had no answer at all. `migrate`'s `kinds` has no `context`, and re-analysis
-    cannot help either: an analyzer that only ever *sets* context can never unset it.
-- **Expected:** `inspect` should report assumed register values at the address (DS/CS/SS at
-  minimum, for segmented programs — it is the difference between a global resolving and not).
-  And a way to write them: e.g. `set_data_type`-style `kind=register_context` with
-  `register`, `value` (or absent = clear), `address`/`end_address`. Also a `context` kind on
-  `migrate`, since it is program documentation in every sense that matters.
-- **Workaround:** Changed the fork's `RTLinkOverlayAnalyzer` to be *corrective* — it now
-  re-runs on every pass and explicitly `ProgramContext.remove()`s DS over the runtime blocks —
-  and drove it with `analyze analyzer="RTLink/Plus Overlay"`. That works, and the one-shot
-  `analyzer` parameter is genuinely the right escape hatch, but it means the only way to edit
-  program state of this class is to go and write Java.
+## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
+_Rewritten 2026-07-25. As first logged this entry asked for a read **and** a write path, on the
+grounds that analyzer-baked context was "invisible and unfixable". The unfixable half was wrong, and
+the write half now looks like the wrong layer — see "Why the write half was dropped" below. What
+remains is the read path._
+
+- **Task:** A program had `DS=DGROUP` asserted over the RTLink runtime's code blocks (segments
+  `210d`/`275d`), where DS is emphatically not DGROUP — the overlay manager reloads DS from its own
+  saved-segment slots and does `MOV DS,CS`. I needed to find out whether the bad context was still
+  there.
+- **Friction:** nothing in the server exposes `ProgramContext`, so there is no way to read a
+  register's assumed value at an address. The question was answered only by `decompile` and
+  eyeballing: seeing `_DAT_2b5a_0000` and `s_SAVEMEM_2b5a_2108` inside a function that plainly does
+  `MOV DS,CS` is what told me the context was still asserted. That is an inference from a rendering,
+  not a reading — and the inference only works when you already suspect the answer.
+- **Expected:** `inspect` should report assumed register values at the address — DS/CS/SS at minimum
+  for segmented programs, where it is the difference between a global resolving and not. That is the
+  whole ask now: a reading, so a claim about context can be checked instead of inferred.
+- **Why this matters beyond the one incident.** A lot of this project's fixes land in *analyzers*
+  rather than in the server — `RTLinkXrefAnalyzer` for DS-relative xrefs, `RTLinkOverlayAnalyzer` for
+  stub thunking and the stale-bookmark sweep, and the DS assumption here. Register context is the one
+  piece of analyzer output with no MCP-side reading at all, so verifying it means opening the GUI or
+  arguing backwards from a decompilation. Everything else an analyzer writes — symbols, references,
+  bookmarks, thunk relationships, types — is directly inspectable.
+- **Why the write half was dropped.** The original entry also wanted a `kind=register_context` write
+  and a `context` kind on `migrate`. Both look wrong now: `RTLinkOverlayAnalyzer.assumeDataSegmentRegister`
+  *owns* this assertion (it walks executable blocks doing `context.setValue(ds, …)` after sniffing
+  DGROUP out of the C startup), and it re-applies on every pass. An MCP-side clear would simply be
+  overwritten by the next analysis — so the durable place to express "DS is not DGROUP here" is the
+  analyzer that knows why, which is where it ended up. Nothing in Ghidra core asserts DGROUP; this was
+  never core behaviour.
+- **Cause: fixed at source, in `ghidra-plugin-rtlink`.** The analyzer now skips the runtime blocks and
+  logs it ("skipped N RTLink runtime block(s), where DS is not DGROUP"), and *clears* rather than
+  merely skipping, so a program analyzed by the older build is retrofitted instead of staying wrong.
+  This also retracts the original entry's claim that "an analyzer that only ever sets context can
+  never unset it" — it unsets it now.
 
 ## 2026-07-14 — `manage_types` — `op=rename_field` cannot split/retype a field, only rename it
 - **Task:** The colony record's `unkd[8]` turned out to be two distinct per-nation arrays
