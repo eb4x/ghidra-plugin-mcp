@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (46 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (47 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -98,7 +98,10 @@ gap (0.8.0: `manage_project op=open|close|list_recent`, plus `get_application_in
 place — measured at 7 of a 12-function sample on VICEROY, so the normal state, not an edge case),
 and the unbounded EDT wait (0.8.2: one `util/Edt` policy for reaching the Swing thread, so a modal
 dialog can no longer hang every write tool indefinitely — verified by forcing the branch, which
-also surfaced the "Unable to lock due to active transaction" cascade a timeout leaves behind)._
+also surfaced the "Unable to lock due to active transaction" cascade a timeout leaves behind), and
+the uninitialized-block read (0.8.3: `read_bytes` tells "mapped nowhere" apart from "the image never
+carried these bytes" and points at the run-time writer, `inspect` marks the block `[UNINITIALIZED]`,
+and a short read is footed with how much of the request was met)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
@@ -152,21 +155,3 @@ remains is the read path._
   field `0xba`) and let `src/savegame.h` carry the real split. The Ghidra type is now
   *less* precise than the C header it was imported from.
 
-## 2026-07-14 — `read_bytes` — an uninitialized block reads as a flat failure, hiding the real news
-- **Task:** Read the unit-type table (`g_unit_type_table`, 2b5a:5232) and the order->badge-letter
-  table (2b5a:54de) out of the data segment, to reproduce what the map draws.
-- **Friction:** `read_bytes address="2b5a:5232" length=364` →
-  `read_bytes failed: ghidra.program.model.mem.MemoryAccessException: Unable to read bytes at
-  ram:2b5a:5232`. The same message would come back for a bogus address, so my first reading was
-  "I got the address wrong". In fact the address was right and the failure WAS the answer: those
-  bytes live in an uninitialized (BSS) block, because the tables are not compiled into the
-  executable at all — the game parses them out of NAMES.TXT at startup. That is the single most
-  important fact about them, and the tool had it and threw it away.
-- **Expected:** distinguish the two cases. If the address resolves to a memory block that is not
-  initialized, say so — `2b5a:5232 is in uninitialized block DATA (no bytes in the image)` —
-  rather than a generic access failure. Better still, `inspect` should report the containing
-  block's initialized flag; it already prints the block name, so the caller has no way to tell an
-  initialized block from a BSS one today.
-- **Workaround:** Noticed that BOTH tables failed the same way, went looking for their writers with
-  `xrefs direction=to ... [WRITE]`, found `data_load_names_text` on both, and went to the data file.
-  The right conclusion, reached by inference rather than by being told.
