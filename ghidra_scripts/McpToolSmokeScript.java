@@ -258,7 +258,39 @@ public class McpToolSmokeScript extends GhidraScript {
 					"field", "first", "new_name", "first_renamed"), program);
 				prog("manage_types", Map.of("op", "rename_field", "name", "mcp_smoke_struct",
 					"field", "0x8", "new_name", "second_renamed"), program);
+
+				// manage_types op=set_field, walking the case that motivated it: widen a field,
+				// then split it in two. Step 2 must report the undefined bytes it leaves behind,
+				// or a half-finished split reads as a finished one.
+				prog("manage_types", Map.of("op", "set_field", "name", "mcp_smoke_struct",
+					"offset", "0x8", "type", "uint", "new_name", "widened"), program);
+				prog("manage_types", Map.of("op", "set_field", "name", "mcp_smoke_struct",
+					"offset", "0x8", "type", "byte[2]", "new_name", "split_lo"), program);
+				prog("manage_types", Map.of("op", "set_field", "name", "mcp_smoke_struct",
+					"offset", "0xa", "type", "byte[2]", "new_name", "split_hi"), program);
+				// Refusals: past the end of the struct, and a type that doesn't parse.
+				prog("manage_types", Map.of("op", "set_field", "name", "mcp_smoke_struct",
+					"offset", "0x100", "type", "byte"), program);
+				prog("manage_types", Map.of("op", "set_field", "name", "mcp_smoke_struct",
+					"offset", "0x8", "type", "__no_such_type_t"), program);
+				// Not a struct (or an ambiguous simple name) — either way it must refuse, not write.
+				prog("manage_types", Map.of("op", "set_field", "name", "int",
+					"offset", "0", "type", "byte"), program);
 			}
+
+			// The packed case, which is the one that matters: define_types parses C, and a struct
+			// from C comes back packed, so this is the shape a real record actually has. set_field
+			// must refuse it by default (offsets would be recomputed) and work with freeze_layout.
+			prog("define_types", Map.of("source",
+				"struct mcp_packed_rec { unsigned int head; unsigned char pad[8]; };"), program);
+			prog("manage_types", Map.of("op", "set_field", "name", "mcp_packed_rec",
+				"offset", "0x4", "type", "byte[4]", "new_name", "lo"), program); // refused: packed
+			prog("manage_types", Map.of("op", "set_field", "name", "mcp_packed_rec",
+				"offset", "0x4", "type", "byte[4]", "new_name", "lo",
+				"freeze_layout", true), program);
+			// Now unpacked, so the second half of the split needs no flag.
+			prog("manage_types", Map.of("op", "set_field", "name", "mcp_packed_rec",
+				"offset", "0x8", "type", "byte[4]", "new_name", "hi"), program);
 
 			// manage_types: not-found path (deterministic; no custom types guaranteed here).
 			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);

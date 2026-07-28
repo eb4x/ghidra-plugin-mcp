@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (47 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (48 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -101,7 +101,10 @@ dialog can no longer hang every write tool indefinitely — verified by forcing 
 also surfaced the "Unable to lock due to active transaction" cascade a timeout leaves behind), and
 the uninitialized-block read (0.8.3: `read_bytes` tells "mapped nowhere" apart from "the image never
 carried these bytes" and points at the run-time writer, `inspect` marks the block `[UNINITIALIZED]`,
-and a short read is footed with how much of the request was met)._
+and a short read is footed with how much of the request was met), and the un-splittable struct field
+(0.9.0: `manage_types op=set_field` retypes whatever sits at a byte offset, with `freeze_layout=true`
+to turn off the packing that `define_types` gives anything parsed from C — offsets preserved — and
+output that names the undefined bytes a shrink leaves behind so a split can be finished)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
@@ -140,18 +143,4 @@ remains is the read path._
   merely skipping, so a program analyzed by the older build is retrofitted instead of staying wrong.
   This also retracts the original entry's claim that "an analyzer that only ever sets context can
   never unset it" — it unsets it now.
-
-## 2026-07-14 — `manage_types` — `op=rename_field` cannot split/retype a field, only rename it
-- **Task:** The colony record's `unkd[8]` turned out to be two distinct per-nation arrays
-  (`seen_population[4]` at `+0xba`, `seen_defense[4]` at `+0xbe`). I wanted the Ghidra
-  `savegame_colony` type to say so, matching the project's canonical `src/savegame.h`.
-- **Friction:** `rename_field` renames in place; there is no way to replace one 8-byte array
-  field with two 4-byte ones. `define_types` would mean re-declaring the whole 202-byte
-  struct just to change 8 bytes of it, and re-applying it everywhere.
-- **Expected:** a field-level edit on an existing struct — e.g. `op=set_field` with
-  `offset`, `type`, `name` (and a `count` for arrays) — so a struct can be refined
-  incrementally as the RE lands, which is how struct knowledge actually arrives.
-- **Workaround:** Renamed the array to `seen_population_and_defense` (`op=rename_field`,
-  field `0xba`) and let `src/savegame.h` carry the real split. The Ghidra type is now
-  *less* precise than the C header it was imported from.
 
