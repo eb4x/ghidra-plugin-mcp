@@ -229,8 +229,14 @@ public class ManageTypesTool implements ProgramTool {
 				" (" + old.getDataType().getName() + ", " + plural(old.getLength(), "byte") +
 				" at +0x" + Integer.toHexString(old.getOffset()) + ")";
 		}
-		int holeStart = offset + fieldType.getLength();
-		int holeEnd = old == null ? holeStart : old.getOffset() + old.getLength();
+		// Both sides of the replaced component can be orphaned, not just the tail. Writing into the
+		// MIDDLE of a field — which is what an offset lands on whenever the caller's idea of the
+		// layout is off, e.g. assuming a 4-byte int in a 16-bit program — leaves undefined bytes
+		// in front of the new field as well. Reporting only the tail is how a split gets left
+		// half-finished while reading as complete.
+		int leadStart = old == null ? offset : old.getOffset();
+		int tailStart = offset + fieldType.getLength();
+		int tailEnd = old == null ? tailStart : old.getOffset() + old.getLength();
 
 		return Transactions.modify(program, "Set struct field", () -> {
 			StringBuilder sb = new StringBuilder();
@@ -253,12 +259,25 @@ public class ManageTypesTool implements ProgramTool {
 			// Shrinking a field leaves undefined bytes where the rest of it was. Saying so is what
 			// makes a two-step split (write the first half, then the second) finishable — silence
 			// here reads as "done".
-			if (holeEnd > holeStart) {
-				sb.append("\nThat leaves ").append(plural(holeEnd - holeStart, "undefined byte"))
-						.append(" at +0x").append(Integer.toHexString(holeStart))
-						.append("..+0x").append(Integer.toHexString(holeEnd - 1))
-						.append(" — the remainder of what was replaced. Set them with another " +
-							"op=set_field if they are a field of their own.");
+			List<String> gaps = new ArrayList<>();
+			if (offset > leadStart) {
+				gaps.add(range(leadStart, offset));
+			}
+			if (tailEnd > tailStart) {
+				gaps.add(range(tailStart, tailEnd));
+			}
+			if (!gaps.isEmpty()) {
+				sb.append("\nThat leaves ").append(String.join(" and ", gaps))
+						.append(" of what was replaced still undefined. Set them with another " +
+							"op=set_field if they are fields of their own.");
+				if (offset > leadStart) {
+					// Landing mid-field usually means the caller's model of the layout is wrong —
+					// worth saying, because the edit "worked" and the struct is now odd-looking.
+					sb.append(" Note +0x").append(Integer.toHexString(offset))
+							.append(" was inside the previous field rather than at its start (+0x")
+							.append(Integer.toHexString(leadStart))
+							.append("), so check that is the boundary you meant.");
+				}
 			}
 			sb.append('\n').append(neighbourhood(structure, offset));
 			return sb.toString();
@@ -299,6 +318,12 @@ public class ManageTypesTool implements ProgramTool {
 
 	private static String plural(int count, String noun) {
 		return count + " " + noun + (count == 1 ? "" : "s");
+	}
+
+	/** {@code "2 bytes at +0x8..+0x9"} for a half-open byte range. */
+	private static String range(int start, int end) {
+		return plural(end - start, "byte") + " at +0x" + Integer.toHexString(start) +
+			(end - start > 1 ? "..+0x" + Integer.toHexString(end - 1) : "");
 	}
 
 	/** Locate a field by its current name, or by a byte offset given as decimal or 0x-hex. */
