@@ -1244,9 +1244,16 @@ had glossed over.
   splits `unsigned char pad[8]` into `lo`/`hi` at +0x4/+0x8 with `head` still at +0x0 and the struct
   still 12 bytes, confirming the freeze preserved the layout. Refusals covered: offset past the end,
   an unparseable type, and a non-struct.
-- **Not verified in a GUI Ghidra:** Eclipse died mid-session, so the live round trip is pending. Low
-  risk — `set_field` adds no Swing interaction beyond `Transactions.modify`, which was verified
-  under the GUI in 0.8.2 — but it is untested there.
+- **Verified live afterwards — and the live run paid for itself (0.9.1).** Repeating the exercise
+  against VICEROY on a throwaway type caught a bug the headless test could not, purely because the
+  target is 16-bit: `unsigned int` is 2 bytes there, so `pad[8]` sat at `+0x2` rather than `+0x4`
+  and the test offset landed in the *middle* of it. `replaceAtOffset` handled that fine, but the
+  result only reported the undefined bytes *after* the new field, silently orphaning the ones in
+  front — the very "half-finished split reads as finished" failure the gap report exists to
+  prevent, implemented for one side only. Both sides are now reported, plus a note when the offset
+  was inside the previous field rather than at its start, since landing mid-field usually means the
+  caller's model of the layout is wrong and the edit will have "worked" anyway. Covered headless by
+  a dedicated mid-field case so it cannot come back.
 - **Not done:** the real `savegame_colony` split has NOT been applied; that is a change to the RE
   project's data, not to this server. `set_field` + `freeze_layout=true` at `+0xba` and `+0xbe` is
-  now all it takes.
+  now all it takes — and note the 16-bit `int` caveat above when picking those offsets.

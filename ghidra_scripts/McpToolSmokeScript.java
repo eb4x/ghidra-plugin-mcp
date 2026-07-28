@@ -292,6 +292,16 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("manage_types", Map.of("op", "set_field", "name", "mcp_packed_rec",
 				"offset", "0x8", "type", "byte[4]", "new_name", "hi"), program);
 
+			// Landing in the MIDDLE of a field, which is what happens whenever the caller's idea of
+			// the layout is off (assuming a 4-byte int in a 16-bit program, say). Both sides of the
+			// replaced field are orphaned, and the result has to name BOTH gaps — reporting only
+			// the tail is how a split gets left half-finished while reading as complete.
+			prog("define_types", Map.of("source",
+				"struct mcp_midfield_rec { unsigned int head; unsigned char body[8]; };"), program);
+			prog("manage_types", Map.of("op", "set_field", "name", "mcp_midfield_rec",
+				"offset", "0x6", "type", "byte[2]", "new_name", "middle",
+				"freeze_layout", true), program);
+
 			// manage_types: not-found path (deterministic; no custom types guaranteed here).
 			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);
 			// batch: exercises the settle-then-save path (ProjectContext.saveSettled).
