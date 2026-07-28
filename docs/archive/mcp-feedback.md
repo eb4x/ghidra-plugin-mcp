@@ -1254,6 +1254,14 @@ had glossed over.
   was inside the previous field rather than at its start, since landing mid-field usually means the
   caller's model of the layout is wrong and the edit will have "worked" anyway. Covered headless by
   a dedicated mid-field case so it cannot come back.
+- **Verified live on 0.9.1**, repeating the call that exposed the bug: it now reports
+  `2 bytes at +0x2..+0x3 and 2 bytes at +0x8..+0x9 … still undefined` plus the mid-field note, where
+  0.9.0 named only `+0x8..+0x9`. Following that guidance to its conclusion — filling both gaps —
+  leaves the record fully described with no undefined bytes anywhere
+  (`head`/`before`/`lo`/`after`/`tail`, 12 bytes), which is the point: the output has to be
+  actionable, not merely correct. The throwaway type was deleted afterwards and
+  `savegame_colony` was only ever probed with an out-of-range offset, so it remains packed and
+  unmodified.
 - **Not done:** the real `savegame_colony` split has NOT been applied; that is a change to the RE
   project's data, not to this server. `set_field` + `freeze_layout=true` at `+0xba` and `+0xbe` is
   now all it takes — and note the 16-bit `int` caveat above when picking those offsets.
