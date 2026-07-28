@@ -1210,3 +1210,43 @@ had glossed over.
   `g_unit_type_table`, and an ordinary read (`1d1d:07e4`) is unchanged. Headless: the ELF header
   reads normally, `.bss` gives the diagnosis, `0x7fffff000000` gives "nothing is mapped", and a read
   past the last block gives the short-read footer.
+
+## 2026-07-14 — `manage_types` — could only rename a field, not split or retype one — fixed (0.9.0)
+- **Task:** the colony record's `unkd[8]` turned out to be two per-nation arrays
+  (`seen_population[4]` at `+0xba`, `seen_defense[4]` at `+0xbe`), and `savegame_colony` should say
+  so, matching the project's canonical `src/savegame.h`.
+- **Friction:** `rename_field` renames in place, so there was no way to replace one 8-byte array
+  with two 4-byte ones. `define_types` would mean re-declaring the whole 202-byte struct to change
+  8 bytes of it, and re-applying it everywhere. The workaround left the Ghidra type *less* precise
+  than the C header it was imported from.
+- **Fix:** `op=set_field` — retype (and optionally rename) whatever occupies a byte offset.
+  Placement is by offset rather than field name precisely because the interesting offset is often
+  *not* a field start: a split means writing at the old field's start and again at its midpoint.
+  No `count` argument as the entry suggested; `type` carries array syntax (`byte[4]`) through
+  `DataTypeParser`, which is what `set_data_type` and `set_function_signature` already do.
+- **The part the entry didn't know it needed: `freeze_layout`.** Probing the real
+  `savegame_colony` (with a deliberately out-of-range offset, so nothing was written) showed it has
+  **packing enabled** — which is how `define_types` creates anything parsed from C, so it is the
+  shape a real record actually has. On a packed struct Ghidra recomputes every offset on repack and
+  treats an offset that isn't inside a component as an *insert* that shifts everything after it, so
+  honouring a caller's offset is impossible. Refusing outright would have made the feature useless
+  for exactly the case it was built for. Instead it refuses by default and names `freeze_layout=true`,
+  which turns packing off first: verified in `StructureDataType.repack`, which calls
+  `adjustNonPackedComponents()` rather than recomputing when packing is off, so the offsets are kept
+  exactly as they stand and only stop being recalculated. The result says so loudly, because it
+  changes the whole type rather than one field.
+- **Self-guiding output.** A shrink leaves undefined bytes where the rest of the old field was, and
+  the result names them (`That leaves 4 undefined bytes at +0x8..+0xb`) plus echoes the surrounding
+  fields. Without that, a half-finished split reads as a finished one — and there is still no tool
+  that dumps a type's layout on its own, so the echo is the only feedback available.
+- **Verified headless** (`smokeTest`, which had no `set_field` coverage to regress): the non-packed
+  path widens a field then splits it in two; the packed path refuses, then with `freeze_layout=true`
+  splits `unsigned char pad[8]` into `lo`/`hi` at +0x4/+0x8 with `head` still at +0x0 and the struct
+  still 12 bytes, confirming the freeze preserved the layout. Refusals covered: offset past the end,
+  an unparseable type, and a non-struct.
+- **Not verified in a GUI Ghidra:** Eclipse died mid-session, so the live round trip is pending. Low
+  risk — `set_field` adds no Swing interaction beyond `Transactions.modify`, which was verified
+  under the GUI in 0.8.2 — but it is untested there.
+- **Not done:** the real `savegame_colony` split has NOT been applied; that is a change to the RE
+  project's data, not to this server. `set_field` + `freeze_layout=true` at `+0xba` and `+0xbe` is
+  now all it takes.
