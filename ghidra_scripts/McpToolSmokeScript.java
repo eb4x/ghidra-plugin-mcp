@@ -85,6 +85,48 @@ public class McpToolSmokeScript extends GhidraScript {
 			project);
 		app("list_files", Map.of(), project);
 
+		// ---- raw-binary import: target.c is claimed by no loader, so the bare call must
+		// fail WITH the raw-binary hint, and the loader/processor/base_address form must
+		// load it at the requested base. Uses its own /raw folder so the /-path lookups
+		// below stay untouched. "Raw Binary" (the display name) deliberately exercises the
+		// name mapping — headless only takes the class name, BinaryLoader.
+		String rawFile = new java.io.File(targetFile).getParent() + "/target.c";
+		McpSchema.CallToolResult noLoader = app("import", Map.of("file", rawFile), project);
+		if (!text(noLoader).contains("headerless")) {
+			failures++;
+			println("!! no-loader import is missing the raw-binary hint");
+		}
+		app("import", Map.of("file", rawFile, "folder", "/raw",
+			"loader", "Raw Binary", "processor", "x86:LE:16:Real Mode",
+			"cspec", "default", "base_address", "07c0:0000"), project);
+		DomainFile rawDf = project.getProjectData().getFile("/raw/target.c");
+		if (rawDf == null) {
+			failures++;
+			println("!! raw import did not create /raw/target.c");
+		}
+		else {
+			Program rawProg = (Program) rawDf.getDomainObject(this, false, false, TaskMonitor.DUMMY);
+			try {
+				// BinaryLoader places the memory block at the base address without touching
+				// the image-base property (which stays 0000:0000), so assert where the bytes
+				// actually landed.
+				println("raw import: language=" + rawProg.getLanguageID() + " memory starts at " +
+					rawProg.getMinAddress());
+				if (!"07c0:0000".equals(rawProg.getMinAddress().toString())) {
+					failures++;
+					println("!! base_address was not applied");
+				}
+			}
+			finally {
+				rawProg.release(this);
+			}
+		}
+		// Refusals: the two dependency rules, then an unknown loader (lists the valid ones).
+		app("import", Map.of("file", rawFile, "cspec", "default"), project);
+		app("import", Map.of("file", rawFile, "base_address", "0x7c00"), project);
+		app("import", Map.of("file", rawFile, "loader", "__no_such_loader__"), project);
+		app("manage_files", Map.of("op", "delete", "path", "/raw", "recursive", true), project);
+
 		// ---- open the imported program by its project path ----
 		DomainFile df = project.getProjectData().getFile("/" + targetName);
 		if (df == null) {
@@ -388,11 +430,13 @@ public class McpToolSmokeScript extends GhidraScript {
 			program.isChanged() + ") ===");
 	}
 
-	private void app(String name, Map<String, Object> args, Project project) {
+	private McpSchema.CallToolResult app(String name, Map<String, Object> args, Project project) {
 		ApplicationLevelTool tool =
 			appTools.stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow();
 		println("\n----- app:" + name + " " + args + " -----");
-		print(call(() -> tool.execute(args, project), name));
+		McpSchema.CallToolResult result = call(() -> tool.execute(args, project), name);
+		print(result);
+		return result;
 	}
 
 	private void prog(String name, Map<String, Object> args, Program program) {
@@ -419,6 +463,16 @@ public class McpToolSmokeScript extends GhidraScript {
 			failures++;
 			return Results.error(name + " threw " + e);
 		}
+	}
+
+	private static String text(McpSchema.CallToolResult result) {
+		StringBuilder sb = new StringBuilder();
+		for (McpSchema.Content c : result.content()) {
+			if (c instanceof McpSchema.TextContent t) {
+				sb.append(t.text());
+			}
+		}
+		return sb.toString();
 	}
 
 	private void print(McpSchema.CallToolResult result) {

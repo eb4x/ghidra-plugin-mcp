@@ -1265,3 +1265,59 @@ had glossed over.
 - **Not done:** the real `savegame_colony` split has NOT been applied; that is a change to the RE
   project's data, not to this server. `set_field` + `freeze_layout=true` at `+0xba` and `+0xbe` is
   now all it takes — and note the 16-bit `int` caveat above when picking those offsets.
+
+## 2026-08-02 — `import` — no way to import a headerless binary: can't pick loader, language or base address
+- **Task:** Import two iPXE PXE network bootstrap images (`undionly.kpxe`,
+  `x86_64-pcbios-undionly.kpxe`, from https://boot.ipxe.org) into the `ipxe` project. These are
+  headerless real-mode images: byte 0 is `ea 08 00 c0 07` (`JMPF 07c0:0008`), and the PXE stack loads
+  them at linear `0x7C00`.
+- **Friction:** `import {file: "/home/erikberg/src/ipxe-config/undionly.kpxe"}` failed with
+
+  > `import failed: ghidra.app.util.opinion.LoadException: No load spec found`
+
+  This is not a bug — it is the documented behaviour ("Ghidra auto-detects the format") meeting a file
+  no loader claims. `BinaryLoader` returns a load spec flagged as requiring a language/compiler spec,
+  and `AutoImporter`'s best-guess path skips exactly those, so a raw binary can *never* import through
+  this tool no matter what the file is. The tool takes only `file` and `folder`; there is nowhere to
+  say "Raw Binary, x86:LE:16:Real Mode, base 07c0:0000". Nothing else in the server fills the gap
+  either: `create` works inside an existing program, `migrate` copies documentation between two
+  programs that already exist, and there is no image-base or set-language tool, so even a
+  hypothetically-imported blob couldn't be rebased afterwards.
+- **Expected:** optional passthrough on `import` for the three things the GUI's import dialog asks for
+  when auto-detect comes up empty — `loader` (e.g. `"Raw Binary"` / `BinaryLoader`), `processor`
+  (a language ID like `x86:LE:16:Real Mode`, plus `cspec`), and loader options, of which
+  `base_address` is the one that matters for raw images. Headless already models all of this as
+  `-loader` / `-processor` / `-cspec` / `-loader-baseAddr`, so it's a matter of forwarding, not new
+  machinery. A hint in the `LoadException` text — "no loader claims this file; pass `loader` +
+  `processor` to load it raw" — would also have shortened the dead end considerably.
+- **Workaround:** left the server entirely. Closed the project
+  (`manage_project op=close` — this part worked well, and made the workaround possible at all), ran
+  the external CLI against the now-unlocked project directory:
+
+  ```
+  .../dailydriver/Ghidra/RuntimeScripts/Linux/support/analyzeHeadless \
+    /home/erikberg/src/ipxe-config ipxe \
+    -import .../undionly.kpxe -import .../x86_64-pcbios-undionly.kpxe \
+    -loader BinaryLoader -loader-baseAddr 07c0:0000 \
+    -processor "x86:LE:16:Real Mode" -cspec default -noanalysis
+  ```
+
+  then `manage_project op=open` to get back in. Both programs loaded correctly and
+  `create kind=instructions` at `07c0:0000` disassembles the iPXE prefix as expected, so the resulting
+  state is exactly what an options-carrying `import` would have produced in one call.
+- **Cost of the workaround:** it needs a *matching* Ghidra install on disk (found by guessing from the
+  `read_log` path that the running instance is the `dailydriver` build) and it needs the project
+  closed, which is a heavier, more disruptive operation than the task deserved — for a project with
+  other work open, `on_dirty` handling and reopening make it genuinely risky rather than merely
+  annoying. Roughly half a dozen extra calls, a `Bash` hunt for the right install, and a full
+  headless JVM startup to do a one-call job.
+- **Resolved (0.10.0):** `import` takes optional `loader` (class simple name like `BinaryLoader` or
+  display name like `Raw Binary` — resolved via `ClassSearcher` so a miss lists every valid loader),
+  `processor`, `cspec` and `base_address`, forwarded straight to `ProgramLoader.Builder`
+  (`.loaders(Class)` / `.language` / `.compiler` / `addLoaderArg("-loader-baseAddr", …)`) — the same
+  chain headless uses. `cspec` or `base_address` without `processor` is refused up front (an address
+  literally cannot parse without a language; Ghidra's own failure for that case is the opaque
+  "Cannot load with null options"), and the bare no-loader failure now carries the requested hint
+  naming `loader`/`processor`/`base_address`. Smoke imports the build's own `target.c` (claimed by
+  no loader) raw at `07c0:0000` via the display name and asserts the image base stuck plus the hint
+  on the bare call.
