@@ -1319,5 +1319,12 @@ had glossed over.
   literally cannot parse without a language; Ghidra's own failure for that case is the opaque
   "Cannot load with null options"), and the bare no-loader failure now carries the requested hint
   naming `loader`/`processor`/`base_address`. Smoke imports the build's own `target.c` (claimed by
-  no loader) raw at `07c0:0000` via the display name and asserts the image base stuck plus the hint
-  on the bare call.
+  no loader) raw at `07c0:0000` via the display name and asserts the bytes landed there plus the
+  hint on the bare call. (Note: `BinaryLoader` places the memory *block* at the base address; the
+  program's image-base property stays `0000:0000` — assert `getMinAddress()`, not `getImageBase()`.)
+- **Verified live on 0.10.0** (git 057d8ac), repeating the exact scenario against the running
+  `ipxe` project: `import {file: …/undionly.kpxe, folder: "/scratch", loader: "Raw Binary",
+  processor: "x86:LE:16:Real Mode", base_address: "07c0:0000"}` loaded in one call — no project
+  close, no external CLI — and `create kind=instructions` + `disassemble` at `07c0:0000` gave
+  `JMPF LAB_07c0_0008`, byte-identical to what the headless workaround produced. The scratch copy
+  was deleted afterwards; the two programs imported via the original workaround were untouched.
