@@ -447,6 +447,64 @@ public class McpToolSmokeScript extends GhidraScript {
 				println("!! functions_at_labels did not recreate helper (and only helper)");
 			}
 			prog("create", Map.of("kind", "function"), program); // address required for the rest
+			// create kind=function on bytes nothing has decoded: CreateFunctionCmd alone makes a
+			// silent 1-byte husk there, so the tool must disassemble first and report a real body.
+			Function helperFn = null;
+			for (Function f : program.getFunctionManager().getFunctions(true)) {
+				if (f.getName().equals("helper")) {
+					helperFn = f;
+				}
+			}
+			if (helperFn == null) {
+				failures++;
+				println("!! helper is gone after functions_at_labels");
+			}
+			else {
+				String helperAddr = helperFn.getEntryPoint().toString();
+				int helperSize = (int) helperFn.getBody().getNumAddresses();
+				prog("clear", Map.of("kind", "function", "function", "helper"), program);
+				prog("clear", Map.of("kind", "code", "address", helperAddr, "length", helperSize),
+					program);
+				McpSchema.CallToolResult recreated = prog("create",
+					Map.of("kind", "function", "address", helperAddr, "name", "helper"), program);
+				if (!text(recreated).contains("disassembled") ||
+					text(recreated).contains("HUSK") ||
+					text(recreated).contains("body 1 bytes")) {
+					failures++;
+					println("!! create kind=function on undecoded bytes did not disassemble first");
+				}
+			}
+			// fid_build's name policy: on the stripped twin the five names fid_apply stamped are
+			// SourceType.ANALYSIS and must be filtered by default (the ELF loader's own four —
+			// entry, _DT_INIT, _FINI_0, _DT_FINI — are IMPORTED and stay); with
+			// include_analysis_names=true nothing is filtered. 'exclude' must drop exactly 'mix'.
+			String fidb2 = smokeDir + "/smoke2.fidb";
+			new java.io.File(fidb2).delete();
+			McpSchema.CallToolResult guesses = app("fid_build",
+				Map.of("fidb", fidb2, "programs", List.of("/bulk/ls-stripped.bin")), project);
+			if (!text(guesses).contains("5 analyzer-named or excluded")) {
+				failures++;
+				println("!! fid_build did not filter the five fid_apply-made names by default");
+			}
+			new java.io.File(fidb2).delete();
+			McpSchema.CallToolResult included = app("fid_build",
+				Map.of("fidb", fidb2, "programs", List.of("/bulk/ls-stripped.bin"),
+					"include_analysis_names", true), project);
+			if (!text(included).contains("0 excluded by name")) {
+				failures++;
+				println("!! fid_build include_analysis_names=true still filtered names");
+			}
+			new java.io.File(fidb2).delete();
+			app("fid_build", Map.of("fidb", fidb2, "programs", List.of("/" + targetName),
+				"exclude", "[unclosed"), project);
+			McpSchema.CallToolResult excluded = app("fid_build",
+				Map.of("fidb", fidb2, "programs", List.of("/" + targetName), "exclude", "^mix$",
+					"detail", true), project);
+			if (!text(excluded).contains("Ingested 8 of") ||
+				!text(excluded).contains("1 analyzer-named or excluded")) {
+				failures++;
+				println("!! fid_build exclude='^mix$' did not drop exactly one function");
+			}
 			app("manage_files", Map.of("op", "delete", "path", "/bulk", "recursive", true),
 				project);
 		}

@@ -4,6 +4,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.util.Args;
@@ -12,6 +15,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.feature.fid.db.FidDB;
 import ghidra.feature.fid.db.FidFile;
 import ghidra.feature.fid.db.FidFileManager;
+import ghidra.feature.fid.hash.FidHashQuad;
 import ghidra.feature.fid.hash.FidHasher;
 import ghidra.feature.fid.service.FidPopulateResult;
 import ghidra.feature.fid.service.FidPopulateResult.Disposition;
@@ -23,6 +27,7 @@ import ghidra.program.model.lang.LanguageID;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.symbol.SourceType;
+import generic.stl.Pair;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -43,9 +48,11 @@ public class FidBuildTool implements ApplicationLevelTool {
 		return "Build a Function ID database (.fidb) from the named functions of project " +
 			"program(s), for later fid_apply to sibling binaries. Give 'fidb' (output host path) " +
 			"and optionally 'programs' (project paths; defaults to every program in the project). " +
-			"All sources must share one language. Only named (non-default) functions become " +
-			"signatures; the result breaks down why the rest were skipped, and detail=true adds " +
-			"that breakdown per program.";
+			"All sources must share one language. Only functions with a user-defined or imported " +
+			"name become signatures — analyzer-made names (FID's own, overlay stubs, thunk_…) are " +
+			"skipped unless include_analysis_names=true, and 'exclude' drops names matching a " +
+			"regex. The result breaks down why functions were skipped; detail=true adds that " +
+			"breakdown per program.";
 	}
 
 	@Override
@@ -60,6 +67,12 @@ public class FidBuildTool implements ApplicationLevelTool {
 				"library", Schemas.stringProp("Library family name label (default 'corpus')"),
 				"version", Schemas.stringProp("Library version label (default '1')"),
 				"variant", Schemas.stringProp("Library variant label (default 'default')"),
+				"include_analysis_names", Schemas.boolProp("Also ingest functions whose name " +
+					"came from an analyzer (SourceType.ANALYSIS) rather than a user or importer " +
+					"(default false: those names are guesses, and propagating them stamps guesses " +
+					"onto other binaries)"),
+				"exclude", Schemas.stringProp("Regex (find, not full match): functions whose " +
+					"name matches are not ingested, e.g. '^(OVL\\d+_|OVLSTUB_|thunk_)'"),
 				"detail", Schemas.boolProp("Also list, per program, how many functions were " +
 					"eligible and why the rest were skipped (default false)")),
 			"required", List.of("fidb"));
@@ -102,6 +115,18 @@ public class FidBuildTool implements ApplicationLevelTool {
 		String version = Args.stringArg(args, "version", "1");
 		String variant = Args.stringArg(args, "variant", "default");
 		boolean detail = Args.boolArg(args, "detail", false);
+		boolean includeAnalysis = Args.boolArg(args, "include_analysis_names", false);
+		String excludeArg = Args.stringArg(args, "exclude", null);
+		Pattern exclude = null;
+		if (excludeArg != null && !excludeArg.isBlank()) {
+			try {
+				exclude = Pattern.compile(excludeArg);
+			}
+			catch (PatternSyntaxException e) {
+				return Results.error("'exclude' is not a valid regex: " + e.getDescription());
+			}
+		}
+		Predicate<Function> eligible = nameFilter(includeAnalysis, exclude);
 
 		FidFileManager fidManager = FidFileManager.getInstance();
 		File dbFile = new File(dbPath);
@@ -117,12 +142,14 @@ public class FidBuildTool implements ApplicationLevelTool {
 		String message;
 		try {
 			FidService service = new FidService();
+			Predicate<Pair<Function, FidHashQuad>> functionFilter =
+				pair -> eligible.test(pair.first);
 			FidPopulateResult result = service.createNewLibraryFromPrograms(fidDb, library, version,
-				variant, programs, /*functionFilter*/ null, languageId, /*linkLibraries*/ null,
+				variant, programs, functionFilter, languageId, /*linkLibraries*/ null,
 				/*commonSymbols*/ List.of(), TaskMonitor.DUMMY);
 			fidDb.saveDatabase("Saving", TaskMonitor.DUMMY);
 			message = summarize(result, programs.size(), dbPath, languageId, service, programs,
-				detail);
+				eligible, includeAnalysis, detail);
 		}
 		finally {
 			fidDb.close();
@@ -134,13 +161,30 @@ public class FidBuildTool implements ApplicationLevelTool {
 	}
 
 	/**
+	 * The name policy: Ghidra's ingest skips only DEFAULT names, so an analyzer's guesses
+	 * (FID's own labels, RTLink's {@code OVLnn_xxxx} overlay names, {@code thunk_…}) would be
+	 * ingested and then stamped onto other binaries as if they were facts. Trusted means
+	 * USER_DEFINED or IMPORTED — the same bar the FID analyzer applies before overwriting.
+	 */
+	private static Predicate<Function> nameFilter(boolean includeAnalysis, Pattern exclude) {
+		return function -> {
+			if (!includeAnalysis &&
+				!function.getSymbol().getSource().isHigherOrEqualPriorityThan(SourceType.IMPORTED)) {
+				return false;
+			}
+			return exclude == null || !exclude.matcher(function.getName()).find();
+		};
+	}
+
+	/**
 	 * The ingest's own verdict (exact, including the cross-program duplicate check) plus,
 	 * on request, the same classification redone per program. Ghidra reports dispositions
 	 * only as a total, so the per-program pass re-runs its rules — default name, thunk,
 	 * hashable — with the same hasher; it cannot see duplicates, which are global.
 	 */
 	private static String summarize(FidPopulateResult result, int programCount, String dbPath,
-			LanguageID languageId, FidService service, List<DomainFile> programs, boolean detail)
+			LanguageID languageId, FidService service, List<DomainFile> programs,
+			Predicate<Function> eligible, boolean includeAnalysis, boolean detail)
 			throws Exception {
 		StringBuilder sb = new StringBuilder();
 		Map<Disposition, Integer> failures = result.getFailures();
@@ -151,6 +195,8 @@ public class FidBuildTool implements ApplicationLevelTool {
 		sb.append("\nSkipped: ")
 				.append(count(failures, Disposition.NO_DEFINED_SYMBOL)).append(" unnamed (default name), ")
 				.append(count(failures, Disposition.IS_THUNK)).append(" thunks, ")
+				.append(count(failures, Disposition.FAILED_FUNCTION_FILTER))
+				.append(includeAnalysis ? " excluded by name, " : " analyzer-named or excluded, ")
 				.append(count(failures, Disposition.FAILS_MINIMUM_SHORTHASH_LENGTH))
 				.append(" too short to hash (< ").append(FidService.SHORT_HASH_CODE_UNIT_LENGTH)
 				.append(" code units, e.g. husks), ")
@@ -159,14 +205,17 @@ public class FidBuildTool implements ApplicationLevelTool {
 				.append(count(failures, Disposition.MEMORY_ACCESS_EXCEPTION))
 				.append(" with unreadable bytes.");
 		if (result.getTotalAdded() == 0) {
-			sb.append("\nNothing usable: name the functions first (a signature needs a " +
-				"non-default function name, not a plain label — create kind=functions_at_labels " +
-				"turns named labels into functions).");
+			sb.append("\nNothing usable: a signature needs a user-defined or imported function " +
+				"name — not a plain label (create kind=functions_at_labels turns named labels " +
+				"into functions)" +
+				(includeAnalysis ? "." : ", and not an analyzer's guess (pass " +
+					"include_analysis_names=true to ingest those anyway)."));
 		}
 		if (!detail) {
 			return sb.toString();
 		}
-		sb.append("\nPer program (eligible / functions; unnamed, thunks, too-short, unreadable):");
+		sb.append("\nPer program (eligible / functions; unnamed, thunks, filtered, too-short, " +
+			"unreadable):");
 		Object consumer = new Object();
 		for (DomainFile df : programs) {
 			Program program = (Program) df.getImmutableDomainObject(consumer,
@@ -178,7 +227,8 @@ public class FidBuildTool implements ApplicationLevelTool {
 					continue;
 				}
 				FidHasher hasher = service.getHasher(program);
-				int total = 0, eligible = 0, unnamed = 0, thunks = 0, tooShort = 0, unreadable = 0;
+				int total = 0, kept = 0, unnamed = 0, thunks = 0, filtered = 0, tooShort = 0,
+						unreadable = 0;
 				for (Function function : program.getFunctionManager().getFunctions(true)) {
 					if (function.isExternal()) {
 						continue;
@@ -195,8 +245,11 @@ public class FidBuildTool implements ApplicationLevelTool {
 							if (hasher.hash(function) == null) {
 								tooShort++;
 							}
+							else if (!eligible.test(function)) {
+								filtered++;
+							}
 							else {
-								eligible++;
+								kept++;
 							}
 						}
 						catch (Exception e) {
@@ -204,10 +257,10 @@ public class FidBuildTool implements ApplicationLevelTool {
 						}
 					}
 				}
-				sb.append("\n  ").append(df.getPathname()).append(": ").append(eligible)
+				sb.append("\n  ").append(df.getPathname()).append(": ").append(kept)
 						.append(" / ").append(total).append("; ").append(unnamed).append(", ")
-						.append(thunks).append(", ").append(tooShort).append(", ")
-						.append(unreadable);
+						.append(thunks).append(", ").append(filtered).append(", ")
+						.append(tooShort).append(", ").append(unreadable);
 			}
 			finally {
 				program.release(consumer);

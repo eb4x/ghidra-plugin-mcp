@@ -1401,3 +1401,42 @@ had glossed over.
   program: Ghidra only totals dispositions, so the per-program pass re-applies its rules
   (default-name, thunk, `FidHasher.hash == null`) with the same hasher; it cannot see the duplicate
   check, which is global across the build.
+
+## 2026-08-31 — `fid_build` — ingested analyzer-made names, so `fid_apply` stamped guesses as facts — fixed (0.12.0)
+- **Task:** (MSC 6.0 CRT-naming run, `mads`) build a `.fidb` from NEBULAR and apply it to SPHERE.
+- **Friction:** the build picked up the RTLink extension's overlay-function auto-names
+  (`OVLnn_xxxx`), and `fid_apply` then stamped `OVL61_0010` onto SPHERE's resident CRT routine at
+  `160f:2cfa` — a real library function (probably `qsort`). Ghidra's
+  `FidServiceLibraryIngest` skips only `SourceType.DEFAULT` names; every other source is ingested.
+- **Expected:** skip ANALYSIS-sourced names too, or a name-pattern exclusion, as a `fid_build` option
+  with a sensible default. Ownership was settled between sessions: the policy lives here
+  (`ghidra-dailydriver` confirmed core deliberately ingests all named functions), and
+  `ghidra-plugin-rtlink` guarantees its auto-names are `SourceType.ANALYSIS` so the default is
+  principled.
+- **Resolved (0.12.0):** `fid_build` passes a `functionFilter` to `createNewLibraryFromPrograms`:
+  a function is ingested only if its name is USER_DEFINED or IMPORTED — the same bar the FID
+  analyzer applies before overwriting — unless `include_analysis_names=true`; `exclude` is a regex
+  (find semantics, validated up front) dropping matching names either way. Filtered functions
+  show up as "N analyzer-named or excluded" in the breakdown (and as the `filtered` column of
+  `detail=true`), and a zero-ingest build now points at `include_analysis_names`. Smoke: a build
+  from the stripped twin after `fid_apply` filters exactly the 5 stamped names and keeps the ELF
+  loader's 4 imported ones; `include_analysis_names=true` filters 0; `exclude='^mix$'` drops
+  exactly one; an unclosed regex is refused.
+
+## 2026-08-31 — `create kind=function` — a silent 1-byte husk on bytes nothing had decoded — fixed (0.12.0)
+- **Task:** (same run) create functions at entry points that auto-analysis never reached.
+- **Friction:** on never-disassembled bytes, `create kind=function` returned a 1-byte function
+  without complaint. Agents learned to `create kind=instructions` first and re-create.
+  `end_address` was also documented as *forcing* the body, but Ghidra renormalises to flow.
+- **Cause:** `CreateFunctionCmd` never disassembles. With no instruction at the entry,
+  `getFunctionBody` follows flow from the one *undefined* code unit and gets exactly that byte —
+  and `createFunction` only refuses when there is no code unit at all, which an undefined byte
+  satisfies. The GUI's Create Function action disassembles first, which is why it never shows this.
+- **Resolved (0.12.0):** `create kind=function` (and the `functions_at_labels` sweep) runs
+  `DisassembleCommand` at the entry when no instruction is there — refusing outright if defined
+  data sits there (say `clear kind=code` first) or the bytes do not decode — and the result says
+  `disassembled N bytes first`. If a 1-byte body over an undefined byte still results, the result
+  ends with `HUSK: …`, and the sweep counts those separately from created. The `end_address`
+  description now says Ghidra renormalises the body to flow and that the result reports the size it
+  kept. Smoke: clear `helper`'s code, create the function on the bare bytes, assert it disassembled
+  first and came out 21 bytes, not 1.

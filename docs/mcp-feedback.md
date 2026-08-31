@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (53 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (55 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -112,7 +112,11 @@ every function it named — address, old → new, score, library — and every m
 why; `import` takes a directory or glob, expands container files (OMF `.LIB`, `ar`, zip) into one
 program per member, and queues analysis with `analyze=true` on the shared `util/Analysis` worker;
 `create kind=functions_at_labels` promotes every user/imported label in code to a function; and
-`fid_build` breaks down its skips, per program with `detail=true`)._
+`fid_build` breaks down its skips, per program with `detail=true`), the two follow-ups from the same
+run (0.12.0: `fid_build` ingests only user/imported names unless `include_analysis_names=true`, with an
+`exclude` regex either way — the overlay auto-names that got stamped onto SPHERE's CRT — and `create
+kind=function` disassembles first on undecoded bytes instead of silently making a 1-byte husk, naming
+a HUSK when one still results)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
