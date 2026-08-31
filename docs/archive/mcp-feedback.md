@@ -1370,9 +1370,10 @@ had glossed over.
   `analyze=true` (waited on via `Analysis.awaitIdle`), an empty glob, and an `ar` archive of the
   object expanding to `/bulk/archive/target.o` — Ghidra's `CoffArchiveFileSystem` claims GNU `ar`
   too. Not verified here: an actual OMF `.LIB` (none on this machine); the code path is the same
-  probe, so the `mads` session is the place to confirm it. (Status: still unverified on a real
-  `.LIB` — the mads run finished without needing it and deferred the test; the glob +
-  `analyze=true` path was exercised live at scale instead.)
+  probe, so the `mads` session is the place to confirm it. (Status: **verified live on 0.12.1**
+  from this session after the mads run deferred it — one `import` of
+  `~/dosbox/RTLTEST/LIB/LLIBC7.LIB` produced 596 member programs via `OmfArchiveFileSystem`,
+  `qsort` spot-checked as a real Program, scratch folder deleted after.)
 
 ## 2026-08-31 — `create` — no way to turn every named label into a function at once — fixed (0.11.0)
 - **Task:** (same session) make `fid_build` see the OMF objects' entry points. OMF imports leave
@@ -1496,3 +1497,50 @@ had glossed over.
 - **Verified live on 0.12.1** (mads session, RETURN): `9c fa 2e f6 06` returned
   `192c:0b3a  in $$VM_UNKR` etc. — block-relative framing with the containing-function
   annotation, pasteable straight into read_bytes/inspect.
+
+## 2026-07-14 — `inspect` — assumed register context is invisible — fixed (0.13.0)
+_Rewritten 2026-07-25. As first logged this entry asked for a read **and** a write path, on the
+grounds that analyzer-baked context was "invisible and unfixable". The unfixable half was wrong, and
+the write half now looks like the wrong layer — see "Why the write half was dropped" below. What
+remains is the read path._
+
+- **Task:** A program had `DS=DGROUP` asserted over the RTLink runtime's code blocks (segments
+  `210d`/`275d`), where DS is emphatically not DGROUP — the overlay manager reloads DS from its own
+  saved-segment slots and does `MOV DS,CS`. I needed to find out whether the bad context was still
+  there.
+- **Friction:** nothing in the server exposes `ProgramContext`, so there is no way to read a
+  register's assumed value at an address. The question was answered only by `decompile` and
+  eyeballing: seeing `_DAT_2b5a_0000` and `s_SAVEMEM_2b5a_2108` inside a function that plainly does
+  `MOV DS,CS` is what told me the context was still asserted. That is an inference from a rendering,
+  not a reading — and the inference only works when you already suspect the answer.
+- **Expected:** `inspect` should report assumed register values at the address — DS/CS/SS at minimum
+  for segmented programs, where it is the difference between a global resolving and not. That is the
+  whole ask now: a reading, so a claim about context can be checked instead of inferred.
+- **Why this matters beyond the one incident.** A lot of this project's fixes land in *analyzers*
+  rather than in the server — `RTLinkXrefAnalyzer` for DS-relative xrefs, `RTLinkOverlayAnalyzer` for
+  stub thunking and the stale-bookmark sweep, and the DS assumption here. Register context is the one
+  piece of analyzer output with no MCP-side reading at all, so verifying it means opening the GUI or
+  arguing backwards from a decompilation. Everything else an analyzer writes — symbols, references,
+  bookmarks, thunk relationships, types — is directly inspectable.
+- **Why the write half was dropped.** The original entry also wanted a `kind=register_context` write
+  and a `context` kind on `migrate`. Both look wrong now: `RTLinkOverlayAnalyzer.assumeDataSegmentRegister`
+  *owns* this assertion (it walks executable blocks doing `context.setValue(ds, …)` after sniffing
+  DGROUP out of the C startup), and it re-applies on every pass. An MCP-side clear would simply be
+  overwritten by the next analysis — so the durable place to express "DS is not DGROUP here" is the
+  analyzer that knows why, which is where it ended up. Nothing in Ghidra core asserts DGROUP; this was
+  never core behaviour.
+- **Cause: fixed at source, in `ghidra-plugin-rtlink`.** The analyzer now skips the runtime blocks and
+  logs it ("skipped N RTLink runtime block(s), where DS is not DGROUP"), and *clears* rather than
+  merely skipping, so a program analyzed by the older build is retrofitted instead of staying wrong.
+  This also retracts the original entry's claim that "an analyzer that only ever sets context can
+  never unset it" — it unsets it now.
+- **Resolved (0.13.0):** `inspect` now ends its header block with `Register context (assumed
+  values):` — one line per register with an explicitly-set value at the address
+  (`ProgramContext.getNonDefaultValue`, so analyzer/user assertions only, never language
+  defaults), as `DS = 0x2b5a  [asserted over 210d:0000 - 210d:ffff]` — the range comes from
+  `getRegisterValueRangeContaining`, so "is the bad context still there, and how far does it
+  reach" is one call. Subregisters that merely inherit a parent's value are folded into the
+  parent line, and the disassembly context register is skipped (internal state, not an
+  assumption). There is still deliberately no MCP write path — the durable place to change an
+  assumption remains the analyzer that owns it, exactly as this entry concluded. Smoke: sets GS
+  at a function entry via the API and asserts the line + range appear.
