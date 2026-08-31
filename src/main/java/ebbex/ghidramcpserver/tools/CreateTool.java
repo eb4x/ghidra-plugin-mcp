@@ -67,11 +67,14 @@ public class CreateTool implements ProgramTool {
 	@Override
 	public String description() {
 		return "Create something at an address. kind=function disassembles/creates a function " +
-			"(optional 'name'); kind=label adds a label ('name' required); kind=bookmark adds a " +
+			"(optional 'name'), disassembling at the address first if nothing is there — as the " +
+			"GUI does — and saying HUSK if the body still comes out one byte; kind=label adds a " +
+			"label ('name' required); kind=bookmark adds a " +
 			"note bookmark (optional 'category', 'comment' is the text); kind=instructions " +
 			"disassembles from the address (like pressing 'D'), e.g. after clear. For kind=function " +
-			"an optional 'end_address' forces the body to that inclusive range (works on an existing " +
-			"function too); omit it to auto-compute from flow. For kind=label an optional " +
+			"an optional 'end_address' asks for that inclusive body range (works on an existing " +
+			"function too), but Ghidra normalises the body to what flow reaches and the result " +
+			"reports the size it actually kept; omit it to auto-compute from flow. For kind=label an optional " +
 			"'namespace' ('::'-separated path, e.g. \"main::override\") puts the label in that " +
 			"namespace, creating missing levels. kind=reference adds a memory reference from " +
 			"'address' to 'to_address' with 'ref_type' (e.g. computed_jump for hand-applied " +
@@ -94,7 +97,8 @@ public class CreateTool implements ProgramTool {
 		properties.put("category", Schemas.stringProp("Bookmark category (for kind=bookmark)"));
 		properties.put("comment", Schemas.stringProp("Bookmark text (for kind=bookmark)"));
 		properties.put("end_address", Schemas.stringProp(
-			"Inclusive end address forcing the function body range (for kind=function)"));
+			"Inclusive end address requested for the function body (for kind=function); Ghidra " +
+			"renormalises it to flow, and the result says what it kept"));
 		properties.put("namespace", Schemas.stringProp(
 			"'::'-separated namespace path for the label (for kind=label)"));
 		properties.put("to_address",
@@ -157,6 +161,7 @@ public class CreateTool implements ProgramTool {
 			List<String> created = new ArrayList<>();
 			List<String> onData = new ArrayList<>();
 			List<String> failed = new ArrayList<>();
+			List<String> husks = new ArrayList<>();
 			int existing = 0;
 			int notCode = 0;
 			// Snapshot first: creating functions mutates the symbol table under an iterator.
@@ -188,12 +193,25 @@ public class CreateTool implements ProgramTool {
 					onData.add(symbol.getName() + " @ " + address);
 					continue;
 				}
+				try {
+					ensureInstructionAt(program, address);
+				}
+				catch (IllegalArgumentException e) {
+					failed.add(symbol.getName() + " @ " + address + ": " + e.getMessage());
+					continue;
+				}
 				CreateFunctionCmd cmd =
 					new CreateFunctionCmd(null, address, null, SourceType.USER_DEFINED);
 				if (cmd.applyTo(program, TaskMonitor.DUMMY)) {
 					Function function = program.getFunctionManager().getFunctionAt(address);
-					created.add((function != null ? function.getName() : symbol.getName()) +
-						" @ " + address);
+					String name = (function != null ? function.getName() : symbol.getName()) +
+						" @ " + address;
+					if (function != null && !huskNote(program, function).isEmpty()) {
+						husks.add(name);
+					}
+					else {
+						created.add(name);
+					}
 				}
 				else {
 					failed.add(symbol.getName() + " @ " + address + ": " + cmd.getStatusMsg());
@@ -205,8 +223,10 @@ public class CreateTool implements ProgramTool {
 					.append(existing).append(" already function starts, ")
 					.append(onData.size()).append(" on defined data, ")
 					.append(notCode).append(" outside executable memory")
+					.append(husks.isEmpty() ? "" : ", " + husks.size() + " came out as 1-byte husks")
 					.append(failed.isEmpty() ? "." : ", " + failed.size() + " failed.");
 			appendNames(sb, "Created", created);
+			appendNames(sb, "HUSKS (1-byte body, bytes did not disassemble)", husks);
 			appendNames(sb, "On data (not created)", onData);
 			appendNames(sb, "Failed", failed);
 			return sb.toString();
@@ -254,6 +274,7 @@ public class CreateTool implements ProgramTool {
 		}
 		AddressSetView functionBody = body;
 		return Transactions.modify(program, "Create function", () -> {
+			String prelude = ensureInstructionAt(program, address);
 			// With an explicit body, recreateFunction=true so it applies even to an existing
 			// function (setBody); without one, auto-compute the body from flow as before.
 			CreateFunctionCmd cmd = functionBody != null
@@ -284,8 +305,45 @@ public class CreateTool implements ProgramTool {
 				bodyNote += " (requested " + functionBody.getNumAddresses() +
 					"; Ghidra normalized it to the flow-derived body)";
 			}
-			return "Created function @ " + address + " (" + created.getName() + ")" + bodyNote;
+			return "Created function @ " + address + " (" + created.getName() + ")" + bodyNote +
+				prelude + huskNote(program, created);
 		});
+	}
+
+	/**
+	 * {@link CreateFunctionCmd} never disassembles: on bytes nothing has decoded yet it
+	 * takes the one undefined code unit at the entry as the whole body — a 1-byte husk, and
+	 * a silent one. The GUI's Create Function action disassembles first, so do the same.
+	 * Returns a note for the result, "" when an instruction was already there.
+	 */
+	private static String ensureInstructionAt(Program program, Address address) {
+		if (program.getListing().getInstructionAt(address) != null) {
+			return "";
+		}
+		if (program.getListing().getDefinedDataContaining(address) != null) {
+			throw new IllegalArgumentException("Defined data at " + address +
+				" — clear it first (clear kind=code) if this really is code");
+		}
+		DisassembleCommand disassemble = new DisassembleCommand(address, null, true);
+		if (!disassemble.applyTo(program, TaskMonitor.DUMMY) ||
+			program.getListing().getInstructionAt(address) == null) {
+			throw new IllegalArgumentException("No instruction at " + address +
+				" and the bytes there do not disassemble" +
+				(disassemble.getStatusMsg() != null ? ": " + disassemble.getStatusMsg() : ""));
+		}
+		long bytes = disassemble.getDisassembledAddressSet() != null
+				? disassemble.getDisassembledAddressSet().getNumAddresses()
+				: 0;
+		return "; disassembled " + bytes + " bytes first (nothing was decoded at the entry)";
+	}
+
+	/** A one-byte body with no instruction under it is a husk, not a function — say so. */
+	private static String huskNote(Program program, Function function) {
+		if (function.getBody().getNumAddresses() > 1 ||
+			program.getListing().getInstructionAt(function.getEntryPoint()) != null) {
+			return "";
+		}
+		return " — HUSK: 1-byte body over an undefined byte; the bytes did not disassemble";
 	}
 
 	private McpSchema.CallToolResult createLabel(Program program, Address address, String name,
