@@ -1328,3 +1328,76 @@ had glossed over.
   close, no external CLI — and `create kind=instructions` + `disassemble` at `07c0:0000` gave
   `JMPF LAB_07c0_0008`, byte-identical to what the headless workaround produced. The scratch copy
   was deleted afterwards; the two programs imported via the original workaround were untouched.
+
+## 2026-08-31 — `fid_apply` — said how many functions it named, never which — fixed (0.11.0)
+- **Task:** (reported by the MSC 6.0 CRT-naming session on the `mads` project) propagate names from a
+  hand-labelled CRT object across ~600 sibling OMF objects with `fid_apply`.
+- **Friction:** the result was `Applied N FID name(s)` and nothing else. Learning *what* changed
+  meant diffing `list kind=functions user_only=true` before and after every call; multi-match
+  conflicts were invisible unless you went looking for `FID_conflict:` labels.
+- **Expected:** one line per function — address, previous name, new name, match score, source
+  library — plus the candidates it declined to apply and why.
+- **Resolved (0.11.0):** Ghidra's `ApplyFidEntriesCommand` keeps all of that private, so the tool
+  runs the same `FidService.processProgram` search once more *before* the command (one extra hash
+  pass — cheap next to the DB queries) to learn the candidates, and diffs the symbol table around
+  the command's `getFIDLocations()` to learn what was applied. Output: `Applied:` lines
+  (`addr  old -> new  [conflict: also …]  score S  from name (lib ver variant)`), then
+  `Matched but not renamed (N):` with the reason — `kept (user/imported name; FID never overrides
+  one)` is the command's own gate, otherwise `not applied` with the candidate list, and a footer
+  stating the multi-name threshold rule. Gotcha found by the smoke: a `FunctionRecord`'s name is a
+  lazy strings-table lookup, so every candidate must be rendered *while the query service is
+  open* — reading it after the try-with-resources closes NPEs in `FidDB.getStringsTable()`.
+  Smoke: `fid_build` from the named build, `fid_apply` on a stripped twin, asserting the report
+  names `mix` (a name only the database could have supplied).
+
+## 2026-08-31 — `import` — one host file per call; an OMF `.LIB` rejected outright — fixed (0.11.0)
+- **Task:** import a split MSC `.LIB` — 670 OMF objects — into a project (same session as above).
+- **Friction:** `import` took one `file`, so that was ~1400 sequential tool calls across three agents
+  (import + analyze each). The `.LIB` itself (magic `0xF0`) came back "No load spec found" even
+  though Ghidra ships `OmfArchiveFileSystem`.
+- **Expected:** a directory or glob with one summary result, an `analyze=true` flag, and a `.LIB`
+  importing straight into a folder as one program per member.
+- **Resolved (0.11.0):** `file` is a file, a directory (its files, one level) or a glob (`*`, `?`,
+  `[..]`, `{a,b}`, `**` recursing), expanded with a `PathMatcher` under the longest glob-free prefix.
+  A file no loader claims is probed with `FileSystemService.probeFileForFilesystem`; if it is a
+  container (OMF `.LIB`, `ar`/COFF archive, zip…) every member file is imported via
+  `ProgramLoader.Builder.source(FSRL)` — the same route the GUI's batch import takes. `analyze=true`
+  queues every created program on the new shared `util/Analysis` worker (one analysis at a time;
+  `analyze` uses the same queue now, so a bulk import no longer spawns a thread per program). The
+  summary lists created paths (capped at 200, then points at `list_files`), per-file failures, and
+  how many analyses were queued. Single-file calls keep their old error shape (the raw-binary hint,
+  the `cspec`/`base_address` dependency refusals). Smoke: a `*.bin` glob importing two ELFs with
+  `analyze=true` (waited on via `Analysis.awaitIdle`), an empty glob, and an `ar` archive of the
+  object expanding to `/bulk/archive/target.o` — Ghidra's `CoffArchiveFileSystem` claims GNU `ar`
+  too. Not verified here: an actual OMF `.LIB` (none on this machine); the code path is the same
+  probe, so the `mads` session is the place to confirm it.
+
+## 2026-08-31 — `create` — no way to turn every named label into a function at once — fixed (0.11.0)
+- **Task:** (same session) make `fid_build` see the OMF objects' entry points. OMF imports leave
+  most PUBDEF entry points as plain labels, and `fid_build` ingests only *functions* with
+  non-default names.
+- **Friction:** the pass was label-by-label `batch create kind=function` over ~600 programs (~444
+  creations for the 74 RTLUTILS objects alone).
+- **Expected:** one program op that creates a function at every user/imported-named label in
+  executable memory, skipping labels that sit on defined data.
+- **Resolved (0.11.0):** `create kind=functions_at_labels` (no `address` — `required` is now just
+  `kind`, and the other kinds say "address is required for kind=…"). Trusted means the FID
+  analyzer's own bar, `SourceType.IMPORTED` or higher, so analysis-made `LAB_`/switch labels are left
+  alone. A label inside another function's *body* still gets a function (the earlier function's
+  flow ran through it — the adjacent-CRT-routine case); only a function already *starting* there
+  disqualifies it. Reports created / already-function / on-data / not-executable counts and names
+  the created ones (capped at 50). Smoke: `clear kind=function helper` leaves the imported label,
+  the sweep recreates exactly `helper` (41 labels seen, 3 already functions, 37 data-side).
+
+## 2026-08-31 — `fid_build` — no way to see why a build came out thin — fixed (0.11.0)
+- **Task:** (same session) diagnose a poor `.fidb` — ingested far fewer functions than expected.
+- **Friction:** the result was `Ingested N of M functions`; the skip reasons (husks failing the
+  minimum short-hash length, default names, thunks) could only be guessed.
+- **Expected:** per-program counts of ingested vs. skipped with the reasons.
+- **Resolved (0.11.0):** the summary now breaks the skips down from Ghidra's own
+  `FidPopulateResult.getFailures()` — unnamed (default name), thunks, too short to hash (< 4 code
+  units, the husk case), duplicates, unreadable bytes — and a zero-ingest build says to name
+  functions first (pointing at `create kind=functions_at_labels`). `detail=true` adds one line per
+  program: Ghidra only totals dispositions, so the per-program pass re-applies its rules
+  (default-name, thunk, `FidHasher.hash == null`) with the same hasher; it cannot see the duplicate
+  check, which is global across the build.

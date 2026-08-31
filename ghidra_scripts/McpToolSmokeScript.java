@@ -10,6 +10,7 @@ import java.util.concurrent.Callable;
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.ToolRegistry;
+import ebbex.ghidramcpserver.util.Analysis;
 import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.ProjectContext;
@@ -377,6 +378,77 @@ public class McpToolSmokeScript extends GhidraScript {
 
 			df.save(TaskMonitor.DUMMY);
 			prog("list", Map.of("kind", "functions", "filter", "mcp_renamed_init"), program);
+
+			// ---- FID round trip, bulk import, functions_at_labels ----
+			// fid_build ingests this (named, analyzed) build; fid_apply must put those names back
+			// on the stripped twin the smoke task compiled beside it, and the report has to say
+			// WHICH functions it named — the whole point of the per-function output.
+			String smokeDir = new java.io.File(targetFile).getParent();
+			String fidb = smokeDir + "/smoke.fidb";
+			new java.io.File(fidb).delete();
+			McpSchema.CallToolResult built = app("fid_build",
+				Map.of("fidb", fidb, "programs", List.of("/" + targetName), "detail", true),
+				project);
+			if (!text(built).contains("Per program")) {
+				failures++;
+				println("!! fid_build detail=true printed no per-program breakdown");
+			}
+			// Bulk import: one glob, two ELFs (the named build and its stripped twin), analysis
+			// queued in the same call. The empty-glob and container cases ride along.
+			app("import", Map.of("file", smokeDir + "/*.nomatch"), project);
+			McpSchema.CallToolResult bulk = app("import",
+				Map.of("file", smokeDir + "/*.bin", "folder", "/bulk", "analyze", true), project);
+			if (!text(bulk).contains("Imported 2 program(s)")) {
+				failures++;
+				println("!! glob import did not report two programs");
+			}
+			// ar archive: no loader claims it, so it must be expanded member by member.
+			McpSchema.CallToolResult archive = app("import",
+				Map.of("file", smokeDir + "/smoke.a", "folder", "/bulk/archive"), project);
+			if (!text(archive).contains("/bulk/archive/target.o")) {
+				failures++;
+				println("!! ar-archive import did not expand into its member");
+			}
+			if (!Analysis.awaitIdle(180_000)) {
+				failures++;
+				println("!! queued bulk analysis did not finish in time");
+			}
+			DomainFile strippedDf = project.getProjectData().getFile("/bulk/ls-stripped.bin");
+			if (strippedDf == null) {
+				failures++;
+				println("!! bulk import did not create /bulk/ls-stripped.bin");
+			}
+			else {
+				Program stripped =
+					(Program) strippedDf.getDomainObject(this, false, false, TaskMonitor.DUMMY);
+				try {
+					println("stripped twin: analyzed=" + ghidra.program.util.GhidraProgramUtilities
+							.isAnalyzed(stripped) + ", functions=" +
+						stripped.getFunctionManager().getFunctionCount());
+					McpSchema.CallToolResult applied =
+						prog("fid_apply", Map.of("fidb", fidb, "score_threshold", 5), stripped);
+					if (!text(applied).contains(" -> mix")) {
+						failures++;
+						println("!! fid_apply did not report naming mix on the stripped twin");
+					}
+				}
+				finally {
+					stripped.release(this);
+				}
+			}
+			// functions_at_labels: deleting a function leaves its (imported) label behind, so the
+			// sweep has exactly one thing to recreate — and must skip everything else.
+			prog("clear", Map.of("kind", "function", "function", "helper"), program);
+			McpSchema.CallToolResult swept =
+				prog("create", Map.of("kind", "functions_at_labels"), program);
+			if (!text(swept).contains("Created 1 function(s)") ||
+				!text(swept).contains("helper @")) {
+				failures++;
+				println("!! functions_at_labels did not recreate helper (and only helper)");
+			}
+			prog("create", Map.of("kind", "function"), program); // address required for the rest
+			app("manage_files", Map.of("op", "delete", "path", "/bulk", "recursive", true),
+				project);
 		}
 		finally {
 			program.release(this);
@@ -439,11 +511,13 @@ public class McpToolSmokeScript extends GhidraScript {
 		return result;
 	}
 
-	private void prog(String name, Map<String, Object> args, Program program) {
+	private McpSchema.CallToolResult prog(String name, Map<String, Object> args, Program program) {
 		ProgramTool tool =
 			programTools.stream().filter(t -> t.name().equals(name)).findFirst().orElseThrow();
 		println("\n----- program:" + name + " " + args + " -----");
-		print(call(() -> tool.execute(args, program), name));
+		McpSchema.CallToolResult result = call(() -> tool.execute(args, program), name);
+		print(result);
+		return result;
 	}
 
 	/**

@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (49 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (53 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -107,7 +107,12 @@ to turn off the packing that `define_types` gives anything parsed from C — off
 output that names the undefined bytes a shrink leaves behind so a split can be finished), and the
 raw-binary import gap (0.10.0: `import` takes `loader` — class name or display name — `processor`,
 `cspec` and `base_address`, forwarded straight to Ghidra's loader machinery, and the no-load-spec
-error says to pass them)._
+error says to pass them), and the four MSC-CRT bulk-naming requests (0.11.0: `fid_apply` reports
+every function it named — address, old → new, score, library — and every match it declined with
+why; `import` takes a directory or glob, expands container files (OMF `.LIB`, `ar`, zip) into one
+program per member, and queues analysis with `analyze=true` on the shared `util/Analysis` worker;
+`create kind=functions_at_labels` promotes every user/imported label in code to a function; and
+`fid_build` breaks down its skips, per program with `detail=true`)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked

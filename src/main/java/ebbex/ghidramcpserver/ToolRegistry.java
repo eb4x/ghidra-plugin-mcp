@@ -51,7 +51,7 @@ public final class ToolRegistry {
 			new ManageProjectTool(context),
 			new ListFilesTool(),
 			new ManageFilesTool(context),
-			new ImportTool(),
+			new ImportTool(context),
 			new FidBuildTool());
 	}
 

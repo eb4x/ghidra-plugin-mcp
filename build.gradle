@@ -262,13 +262,32 @@ tasks.register('smokeTest', Exec) {
 		def targetSrc = new File(smokeDir, "target.c")
 		targetSrc.text = '#include <stdio.h>\n' +
 			'static int helper(int x) { return x * 3 + 1; }\n' +
-			'int main(int argc, char **argv) { printf("smoke %d\\n", helper(argc)); return 0; }\n'
-		def cc = new ProcessBuilder("cc", "-O0", "-g0", "-o", target.path, targetSrc.path)
-			.redirectErrorStream(true).start()
-		def ccOut = cc.inputStream.text
-		if (cc.waitFor() != 0) {
-			throw new GradleException("cc failed to build the smoke target:\n" + ccOut)
+			'static int mix(int a, int b) { int r = 0; for (int i = 0; i < a; i++) r += b ^ i; return r; }\n' +
+			'int main(int argc, char **argv) {\n' +
+			'  int total = 0;\n' +
+			'  for (int i = 0; i < argc; i++) total += mix(helper(i), argc) + (argv[i] ? 1 : 0);\n' +
+			'  printf("smoke %d %d\\n", helper(argc), total);\n' +
+			'  return total & 1;\n' +
+			'}\n'
+		def run = { String what, String... cmd ->
+			def proc = new ProcessBuilder(cmd).redirectErrorStream(true).start()
+			def out = proc.inputStream.text
+			if (proc.waitFor() != 0) {
+				throw new GradleException(what + " failed:\n" + out)
+			}
 		}
+		run("cc (smoke target)", "cc", "-O0", "-g0", "-o", target.path, targetSrc.path)
+		// A stripped twin of the same build: fid_build ingests the named one, fid_apply has
+		// to put those names back on this one. Its main() is padded with a loop so it clears
+		// the FID score threshold on its own (a bare printf main is ~15 code units, right on
+		// Ghidra's 14.6 default).
+		run("cc (stripped smoke target)", "cc", "-O0", "-g0", "-s",
+			"-o", new File(smokeDir, "ls-stripped.bin").path, targetSrc.path)
+		// An ar archive of the object: the container path of import (one program per member).
+		run("cc -c (smoke object)", "cc", "-O0", "-g0", "-c",
+			"-o", new File(smokeDir, "target.o").path, targetSrc.path)
+		run("ar (smoke archive)", "ar", "rcs", new File(smokeDir, "smoke.a").path,
+			new File(smokeDir, "target.o").path)
 	}
 
 	environment 'GHIDRA_JAVA_OPTIONS', "-Dapplication.settingsdir=${settingsDir}"
