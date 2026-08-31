@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -9,6 +10,10 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressRange;
+import ghidra.program.model.lang.Register;
+import ghidra.program.model.lang.RegisterValue;
+import ghidra.program.model.listing.ProgramContext;
 import ghidra.program.model.listing.Bookmark;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
@@ -33,8 +38,10 @@ public class InspectTool implements ProgramTool {
 	public String description() {
 		return "Describe a single location: its symbols, the function containing it (with " +
 			"signature), any defined data and its type/value, all comments, any bookmarks " +
-			"(including the disassembler's own ERROR marks, e.g. 'Bad Instruction'), and " +
-			"cross-reference counts. Accepts an address or a symbol name.";
+			"(including the disassembler's own ERROR marks, e.g. 'Bad Instruction'), " +
+			"cross-reference counts, and any assumed register values asserted at the address " +
+			"(e.g. DS in segmented programs — what makes a global resolve or not), with the " +
+			"range each assertion covers. Accepts an address or a symbol name.";
 	}
 
 	@Override
@@ -72,6 +79,8 @@ public class InspectTool implements ProgramTool {
 			}
 			sb.append('\n');
 		}
+
+		appendRegisterContext(sb, program, address);
 
 		Symbol[] symbols = program.getSymbolTable().getSymbols(address);
 		if (symbols.length > 0) {
@@ -135,6 +144,49 @@ public class InspectTool implements ProgramTool {
 		sb.append("Xrefs: ").append(toCount).append(" to, ").append(fromCount).append(" from\n");
 
 		return Results.ok(sb.toString());
+	}
+
+	/**
+	 * Assumed register values asserted at this address — the one piece of analyzer output
+	 * that had no MCP-side reading: a wrong {@code DS} assumption decides whether a global
+	 * resolves, and before this the only way to check it was to eyeball a decompilation.
+	 * Only explicitly-set values are shown ({@code getNonDefaultValue}), with the range the
+	 * assertion covers; the disassembly context register is internal state, not an
+	 * assumption, and is skipped.
+	 */
+	private static void appendRegisterContext(StringBuilder sb, Program program,
+			Address address) {
+		ProgramContext context = program.getProgramContext();
+		List<String> lines = new ArrayList<>();
+		for (Register register : context.getRegistersWithValues()) {
+			if (register.isProcessorContext()) {
+				continue;
+			}
+			RegisterValue value = context.getNonDefaultValue(register, address);
+			if (value == null || !value.hasValue()) {
+				continue;
+			}
+			// A set value is reported on the base register and every subregister; keep just
+			// the register the value was actually stored on (its own value, not inherited).
+			Register parent = register.getParentRegister();
+			if (parent != null) {
+				RegisterValue parentValue = context.getNonDefaultValue(parent, address);
+				if (parentValue != null && parentValue.hasValue()) {
+					continue;
+				}
+			}
+			AddressRange range = context.getRegisterValueRangeContaining(register, address);
+			lines.add("  " + register.getName() + " = 0x" +
+				value.getUnsignedValue().toString(16) +
+				(range != null ? "  [asserted over " + range.getMinAddress() + " - " +
+					range.getMaxAddress() + "]" : ""));
+		}
+		if (lines.isEmpty()) {
+			return;
+		}
+		lines.sort(null);
+		sb.append("Register context (assumed values):\n");
+		lines.forEach(line -> sb.append(line).append('\n'));
 	}
 
 	/** List the function's persisted parameters and locals (DB records, not decompiler view). */

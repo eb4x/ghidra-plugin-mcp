@@ -20,6 +20,7 @@ import ghidra.app.script.GhidraScript;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
+import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.MemoryBlock;
@@ -472,6 +473,33 @@ public class McpToolSmokeScript extends GhidraScript {
 					text(recreated).contains("body 1 bytes")) {
 					failures++;
 					println("!! create kind=function on undecoded bytes did not disassemble first");
+				}
+				// inspect must READ assumed register context — the one analyzer output that had
+				// no MCP-side reading (the DS/DGROUP entry). Assert by setting a value directly
+				// (there is deliberately no MCP write path for context) and reading it back.
+				ghidra.program.model.listing.ProgramContext ctx = program.getProgramContext();
+				ghidra.program.model.lang.Register gs = ctx.getRegister("GS");
+				if (gs == null) {
+					failures++;
+					println("!! no GS register in this language — pick another for the context check");
+				}
+				else {
+					Address helperEntry = program.getAddressFactory().getAddress(helperAddr);
+					int ctxTx = program.startTransaction("smoke register context");
+					try {
+						ctx.setValue(gs, helperEntry, helperEntry,
+							java.math.BigInteger.valueOf(0x2b));
+					}
+					finally {
+						program.endTransaction(ctxTx, true);
+					}
+					McpSchema.CallToolResult inspected =
+						prog("inspect", Map.of("location", "helper"), program);
+					if (!text(inspected).contains("GS = 0x2b") ||
+						!text(inspected).contains("asserted over")) {
+						failures++;
+						println("!! inspect did not report the asserted GS value with its range");
+					}
 				}
 			}
 			// rename kind=function must absorb a same-named SECONDARY label at the entry (what a

@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (59 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (60 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -120,7 +120,10 @@ a HUSK when one still results), and the four notes from the SPHERE/RETURN naming
 `rename kind=function` absorbs a same-named secondary label instead of refusing, `create` documents
 that `end_address` cannot shrink a function — clear first — and announces a THUNK result plus any
 function Ghidra created beside it, and `search_memory` frames segmented hits on the containing
-block's segment, not the image base)._
+block's segment, not the image base), and the last open tool gap — the invisible register context (0.13.0:
+`inspect` reports every explicitly-asserted register value at the address with the range it
+covers, so a DS assumption can be checked instead of inferred from a decompilation; writing
+context stays analyzer-territory by design)._
 
 
 ## 2026-08-31 — analyzer-side — an auto-created string swallowed the last byte of a JMP
@@ -139,41 +142,3 @@ works this area)._
   RTLink analyzers expose), and whether it can respect instruction boundaries / existing flow
   when picking a string start. No tool change proposed — `disassemble`'s offcut announcement and
   the ERROR-bookmark channel surfaced it exactly as designed.
-
-## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
-_Rewritten 2026-07-25. As first logged this entry asked for a read **and** a write path, on the
-grounds that analyzer-baked context was "invisible and unfixable". The unfixable half was wrong, and
-the write half now looks like the wrong layer — see "Why the write half was dropped" below. What
-remains is the read path._
-
-- **Task:** A program had `DS=DGROUP` asserted over the RTLink runtime's code blocks (segments
-  `210d`/`275d`), where DS is emphatically not DGROUP — the overlay manager reloads DS from its own
-  saved-segment slots and does `MOV DS,CS`. I needed to find out whether the bad context was still
-  there.
-- **Friction:** nothing in the server exposes `ProgramContext`, so there is no way to read a
-  register's assumed value at an address. The question was answered only by `decompile` and
-  eyeballing: seeing `_DAT_2b5a_0000` and `s_SAVEMEM_2b5a_2108` inside a function that plainly does
-  `MOV DS,CS` is what told me the context was still asserted. That is an inference from a rendering,
-  not a reading — and the inference only works when you already suspect the answer.
-- **Expected:** `inspect` should report assumed register values at the address — DS/CS/SS at minimum
-  for segmented programs, where it is the difference between a global resolving and not. That is the
-  whole ask now: a reading, so a claim about context can be checked instead of inferred.
-- **Why this matters beyond the one incident.** A lot of this project's fixes land in *analyzers*
-  rather than in the server — `RTLinkXrefAnalyzer` for DS-relative xrefs, `RTLinkOverlayAnalyzer` for
-  stub thunking and the stale-bookmark sweep, and the DS assumption here. Register context is the one
-  piece of analyzer output with no MCP-side reading at all, so verifying it means opening the GUI or
-  arguing backwards from a decompilation. Everything else an analyzer writes — symbols, references,
-  bookmarks, thunk relationships, types — is directly inspectable.
-- **Why the write half was dropped.** The original entry also wanted a `kind=register_context` write
-  and a `context` kind on `migrate`. Both look wrong now: `RTLinkOverlayAnalyzer.assumeDataSegmentRegister`
-  *owns* this assertion (it walks executable blocks doing `context.setValue(ds, …)` after sniffing
-  DGROUP out of the C startup), and it re-applies on every pass. An MCP-side clear would simply be
-  overwritten by the next analysis — so the durable place to express "DS is not DGROUP here" is the
-  analyzer that knows why, which is where it ended up. Nothing in Ghidra core asserts DGROUP; this was
-  never core behaviour.
-- **Cause: fixed at source, in `ghidra-plugin-rtlink`.** The analyzer now skips the runtime blocks and
-  logs it ("skipped N RTLink runtime block(s), where DS is not DGROUP"), and *clears* rather than
-  merely skipping, so a program analyzed by the older build is retrofitted instead of staying wrong.
-  This also retracts the original entry's claim that "an analyzer that only ever sets context can
-  never unset it" — it unsets it now.
-
