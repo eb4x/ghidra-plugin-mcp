@@ -10,6 +10,8 @@ import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.address.SegmentedAddress;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
@@ -101,7 +103,7 @@ public class SearchMemoryTool implements ProgramTool {
 			}
 			if (index >= offset) {
 				if (hits.size() < limit) {
-					hits.add(found + describeContainer(program, found));
+					hits.add(blockRelative(program, found) + describeContainer(program, found));
 				}
 				else {
 					more = true;
@@ -140,7 +142,7 @@ public class SearchMemoryTool implements ProgramTool {
 			}
 			if (index >= offset) {
 				if (hits.size() < limit) {
-					hits.add(instruction.getAddress() + "  " + instruction +
+					hits.add(blockRelative(program, instruction.getAddress()) + "  " + instruction +
 						describeContainer(program, instruction.getAddress()));
 				}
 				else {
@@ -161,6 +163,22 @@ public class SearchMemoryTool implements ProgramTool {
 					"; more available — raise 'limit' or page with 'offset')"
 				: "\n(" + hits.size() + " matches from offset " + offset + "; end of results)";
 		return Results.ok(String.join("\n", hits) + footer);
+	}
+
+	/**
+	 * Memory.findBytes hands back a segmented hit in the image base's framing
+	 * ({@code 1000:xxxx} for everything), while every other tool speaks the containing
+	 * block's {@code seg:off}. Re-frame it on the block's segment so a hit can be pasted
+	 * straight into read_bytes / inspect without a linear conversion.
+	 */
+	private static String blockRelative(Program program, Address address) {
+		if (address instanceof SegmentedAddress hit) {
+			MemoryBlock block = program.getMemory().getBlock(address);
+			if (block != null && block.getStart() instanceof SegmentedAddress start) {
+				return hit.normalize(start.getSegment()).toString();
+			}
+		}
+		return address.toString();
 	}
 
 	private static String normalizeInstructionText(String text) {

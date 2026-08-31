@@ -474,6 +474,22 @@ public class McpToolSmokeScript extends GhidraScript {
 					println("!! create kind=function on undecoded bytes did not disassemble first");
 				}
 			}
+			// rename kind=function must absorb a same-named SECONDARY label at the entry (what a
+			// FID pass leaves behind) instead of failing "already exists at this address".
+			if (helperFn != null) {
+				String helperAddr = helperFn.getEntryPoint().toString();
+				prog("create", Map.of("kind", "label", "address", helperAddr,
+					"name", "mcp_secondary"), program);
+				McpSchema.CallToolResult absorbed = prog("rename",
+					Map.of("kind", "function", "function", "helper", "new_name", "mcp_secondary"),
+					program);
+				if (!text(absorbed).contains("absorbed")) {
+					failures++;
+					println("!! rename kind=function did not absorb the secondary label");
+				}
+				prog("rename", Map.of("kind", "function", "function", "mcp_secondary",
+					"new_name", "helper"), program);
+			}
 			// fid_build's name policy: on the stripped twin the five names fid_apply stamped are
 			// SourceType.ANALYSIS and must be filtered by default (the ELF loader's own four —
 			// entry, _DT_INIT, _FINI_0, _DT_FINI — are IMPORTED and stay); with

@@ -94,9 +94,22 @@ public class RenameTool implements ProgramTool {
 		Function function = Locations.findFunction(program, ref);
 		return Transactions.modify(program, "Rename function", () -> {
 			String old = function.getName();
+			// A FID pass (or a multi-match) can leave the wanted name behind as a SECONDARY
+			// label at the entry; setName then fails with "A symbol named X already exists at
+			// this address". The caller's intent is unambiguous — make X the function — so
+			// absorb that label instead of bouncing the call back to clear it first.
+			String absorbed = "";
+			for (Symbol symbol : program.getSymbolTable().getSymbols(function.getEntryPoint())) {
+				if (!symbol.isPrimary() && symbol.getName().equals(newName)) {
+					absorbed = " (absorbed the secondary " + symbol.getSource() + " label '" +
+						newName + "' that was already at the entry)";
+					symbol.delete();
+					break;
+				}
+			}
 			function.setName(newName, SourceType.USER_DEFINED);
 			return "Renamed function " + old + " -> " + newName + " @ " +
-				function.getEntryPoint();
+				function.getEntryPoint() + absorbed;
 		});
 	}
 

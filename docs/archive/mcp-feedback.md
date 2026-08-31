@@ -1440,3 +1440,50 @@ had glossed over.
   description now says Ghidra renormalises the body to flow and that the result reports the size it
   kept. Smoke: clear `helper`'s code, create the function on the bare bytes, assert it disassembled
   first and came out 21 bytes, not 1.
+
+## 2026-08-31 — `rename kind=function` — refused when the wanted name was a secondary label at the entry — fixed (0.12.1)
+- **Task:** (SPHERE/RETURN naming agents, `mads`) rename functions to their canonical CRT names
+  after a games-wide FID propagation.
+- **Friction:** "A symbol named X already exists at this address!" whenever the FID pass had left X
+  as a *secondary* label at the same entry — ~40 cases per program. `rename kind=label` could not
+  reach it because it retargets the primary symbol, i.e. the function.
+- **Workaround:** `clear kind=label name=X` at the address, then rename — two calls per function.
+- **Resolved (0.12.1):** the intent is unambiguous (make X *the* function), so `rename
+  kind=function` deletes a non-primary label of that exact name at the entry before `setName`, and
+  the result says `(absorbed the secondary <source> label 'X' …)`. Smoke: a `create kind=label`
+  beside `helper`, then a rename to that name, asserting the absorb note.
+
+## 2026-08-31 — `create kind=function end_address` — cannot shrink an existing function — documented (0.12.1)
+- **Task:** (same run) re-bound five SPHERE functions whose containers had swallowed never-decoded
+  bytes.
+- **Friction:** with `end_address` over an existing function the result said "body N bytes
+  (requested M; Ghidra normalized it to the flow-derived body)" and nothing shrank; the five came
+  back as husks.
+- **Resolved (0.12.1, documentation):** the tool text now states that Ghidra renormalises the body
+  to flow and so `end_address` cannot shrink an existing function whose old body holds undecoded
+  bytes — `clear kind=function` first, then create. The husk half is 0.12.0's disassemble-first
+  fix (the entry gets decoded before the body is computed, and a leftover 1-byte body is named
+  `HUSK`).
+
+## 2026-08-31 — `create kind=function` on a JMP — a thunk plus a spurious target function, unannounced — fixed (0.12.1)
+- **Task:** (same run) create the function at SPHERE `1967:1d4b`, which begins with a 3-byte JMP.
+- **Friction:** Ghidra made `thunk_FUN_1967_1e40` and a `FUN_1967_1e40` at the jump target; both
+  had to be deleted and the real entry created three bytes later. Expected Ghidra behaviour, but
+  the result said only "Created function".
+- **Resolved (0.12.1):** the result now ends with `THUNK to <name> @ <addr> (the entry is a JMP; if
+  the real function starts after it, clear kind=function here and create there)`, and reports how
+  many other functions Ghidra created as a side effect (`Ghidra also created N other function(s)`),
+  computed from the function count around the command. Not smoke-tested: the ELF target has no
+  JMP-first entry to create on — the branch is a report-only change.
+
+## 2026-08-31 — `search_memory` — hits framed on the image base, not the containing block — fixed (0.12.1)
+- **Task:** (RETURN agent) locate byte patterns in a segmented real-mode program and inspect them.
+- **Friction:** every hit came back as `1000:(X+0x92c0)` for a block at `192c:X` — the linear
+  address re-framed on the image base — while `read_bytes`/`inspect` take the block-relative
+  `seg:off`, so each hit needed a hand conversion.
+- **Cause:** `Memory.findBytes` returns the segmented address as it computes it, normalised on
+  the search start (the image base); the listing and every other tool use the block's segment.
+- **Resolved (0.12.1):** both search kinds re-frame a `SegmentedAddress` hit with
+  `normalize(block.getStart().getSegment())` so it prints in the containing block's framing and
+  pastes straight into the other tools. Flat address spaces are untouched (the smoke ELF exercises
+  that path; the segmented one is verified by construction, not by smoke).
