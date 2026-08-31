@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,11 +22,14 @@ import ghidra.program.model.listing.BookmarkType;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolTable;
+import ghidra.program.model.symbol.SymbolType;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -33,7 +37,11 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class CreateTool implements ProgramTool {
 
 	private static final List<String> KINDS =
-		List.of("function", "label", "bookmark", "instructions", "reference");
+		List.of("function", "label", "bookmark", "instructions", "reference",
+			"functions_at_labels");
+
+	/** How many created/skipped names the functions_at_labels summary spells out. */
+	private static final int MAX_NAMED = 50;
 
 	/** ref_type values accepted by kind=reference, mapped to Ghidra's RefType constants. */
 	private static final Map<String, RefType> REF_TYPES = new LinkedHashMap<>();
@@ -68,7 +76,10 @@ public class CreateTool implements ProgramTool {
 			"namespace, creating missing levels. kind=reference adds a memory reference from " +
 			"'address' to 'to_address' with 'ref_type' (e.g. computed_jump for hand-applied " +
 			"jump-table targets); optional 'operand_index' ties it to an operand (default: the " +
-			"mnemonic).";
+			"mnemonic). kind=functions_at_labels takes no address: it creates a function at every " +
+			"user/imported-named label that sits in executable memory on no defined data and " +
+			"starts no function yet (the OMF PUBDEF case — entry points that import as plain " +
+			"labels); the label becomes the function's name.";
 	}
 
 	@Override
@@ -76,7 +87,8 @@ public class CreateTool implements ProgramTool {
 		Map<String, Object> properties = new LinkedHashMap<>();
 		properties.put("kind", Schemas.enumProp("What to create", KINDS));
 		properties.put("address", Schemas.stringProp(
-			"Address to create at (for kind=reference: the from/source address)"));
+			"Address to create at (for kind=reference: the from/source address; not used by " +
+			"kind=functions_at_labels)"));
 		properties.put("name",
 			Schemas.stringProp("Label or function name (for kind=function|label)"));
 		properties.put("category", Schemas.stringProp("Bookmark category (for kind=bookmark)"));
@@ -94,7 +106,7 @@ public class CreateTool implements ProgramTool {
 		return Map.of(
 			"type", "object",
 			"properties", properties,
-			"required", List.of("kind", "address"));
+			"required", List.of("kind"));
 	}
 
 	@Override
@@ -109,8 +121,11 @@ public class CreateTool implements ProgramTool {
 		if (kind == null || !KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
 		}
+		if (kind.equals("functions_at_labels")) {
+			return createFunctionsAtLabels(program);
+		}
 		if (addressArg == null) {
-			return Results.error("address is required");
+			return Results.error("address is required for kind=" + kind);
 		}
 		Address address = Locations.parseAddress(program, addressArg);
 		String label = Args.stringArg(args, "name", null);
@@ -128,6 +143,85 @@ public class CreateTool implements ProgramTool {
 				Args.intArg(args, "operand_index", CodeUnit.MNEMONIC));
 			default -> Results.error("unhandled kind " + kind);
 		};
+	}
+
+	/**
+	 * Promote every trusted label in code to a function. "Trusted" is the FID analyzer's own
+	 * bar — USER_DEFINED or IMPORTED — so analysis-made labels (LAB_, switch cases) are left
+	 * alone. A label inside another function's body is still a function start (the earlier
+	 * function's flow simply ran through it), so only a function <em>starting</em> at the
+	 * label disqualifies it; CreateFunctionCmd splits the body as it would from the GUI.
+	 */
+	private McpSchema.CallToolResult createFunctionsAtLabels(Program program) {
+		return Transactions.modify(program, "Create functions at labels", () -> {
+			List<String> created = new ArrayList<>();
+			List<String> onData = new ArrayList<>();
+			List<String> failed = new ArrayList<>();
+			int existing = 0;
+			int notCode = 0;
+			// Snapshot first: creating functions mutates the symbol table under an iterator.
+			List<Symbol> labels = new ArrayList<>();
+			for (Symbol symbol : program.getSymbolTable().getAllSymbols(false)) {
+				if (symbol.getSymbolType() != SymbolType.LABEL || symbol.isExternal()) {
+					continue;
+				}
+				if (!symbol.getSource().isHigherOrEqualPriorityThan(SourceType.IMPORTED)) {
+					continue;
+				}
+				labels.add(symbol);
+			}
+			for (Symbol symbol : labels) {
+				Address address = symbol.getAddress();
+				if (!address.isMemoryAddress()) {
+					continue;
+				}
+				MemoryBlock block = program.getMemory().getBlock(address);
+				if (block == null || !block.isExecute()) {
+					notCode++;
+					continue;
+				}
+				if (program.getFunctionManager().getFunctionAt(address) != null) {
+					existing++;
+					continue;
+				}
+				if (program.getListing().getDefinedDataContaining(address) != null) {
+					onData.add(symbol.getName() + " @ " + address);
+					continue;
+				}
+				CreateFunctionCmd cmd =
+					new CreateFunctionCmd(null, address, null, SourceType.USER_DEFINED);
+				if (cmd.applyTo(program, TaskMonitor.DUMMY)) {
+					Function function = program.getFunctionManager().getFunctionAt(address);
+					created.add((function != null ? function.getName() : symbol.getName()) +
+						" @ " + address);
+				}
+				else {
+					failed.add(symbol.getName() + " @ " + address + ": " + cmd.getStatusMsg());
+				}
+			}
+			StringBuilder sb = new StringBuilder();
+			sb.append("Created ").append(created.size()).append(" function(s) at ")
+					.append(labels.size()).append(" user/imported label(s); skipped ")
+					.append(existing).append(" already function starts, ")
+					.append(onData.size()).append(" on defined data, ")
+					.append(notCode).append(" outside executable memory")
+					.append(failed.isEmpty() ? "." : ", " + failed.size() + " failed.");
+			appendNames(sb, "Created", created);
+			appendNames(sb, "On data (not created)", onData);
+			appendNames(sb, "Failed", failed);
+			return sb.toString();
+		});
+	}
+
+	private static void appendNames(StringBuilder sb, String heading, List<String> names) {
+		if (names.isEmpty()) {
+			return;
+		}
+		sb.append('\n').append(heading).append(": ");
+		sb.append(String.join(", ", names.subList(0, Math.min(names.size(), MAX_NAMED))));
+		if (names.size() > MAX_NAMED) {
+			sb.append(", ... ").append(names.size() - MAX_NAMED).append(" more");
+		}
 	}
 
 	private McpSchema.CallToolResult createReference(Program program, Address from, String toArg,
