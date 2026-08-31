@@ -1370,7 +1370,9 @@ had glossed over.
   `analyze=true` (waited on via `Analysis.awaitIdle`), an empty glob, and an `ar` archive of the
   object expanding to `/bulk/archive/target.o` — Ghidra's `CoffArchiveFileSystem` claims GNU `ar`
   too. Not verified here: an actual OMF `.LIB` (none on this machine); the code path is the same
-  probe, so the `mads` session is the place to confirm it.
+  probe, so the `mads` session is the place to confirm it. (Status: still unverified on a real
+  `.LIB` — the mads run finished without needing it and deferred the test; the glob +
+  `analyze=true` path was exercised live at scale instead.)
 
 ## 2026-08-31 — `create` — no way to turn every named label into a function at once — fixed (0.11.0)
 - **Task:** (same session) make `fid_build` see the OMF objects' entry points. OMF imports leave
@@ -1440,6 +1442,10 @@ had glossed over.
   description now says Ghidra renormalises the body to flow and that the result reports the size it
   kept. Smoke: clear `helper`'s code, create the function on the bare bytes, assert it disassembled
   first and came out 21 bytes, not 1.
+- **Verified live on 0.12.1** (mads session): "disassembled N bytes first" appeared on ~15 real
+  creations across the four game programs with zero husks, and six container splits landed at the
+  planned sizes via the documented recipe (batch `clear kind=function` → re-create with
+  `end_address`).
 
 ## 2026-08-31 — `rename kind=function` — refused when the wanted name was a secondary label at the entry — fixed (0.12.1)
 - **Task:** (SPHERE/RETURN naming agents, `mads`) rename functions to their canonical CRT names
@@ -1487,3 +1493,6 @@ had glossed over.
   `normalize(block.getStart().getSegment())` so it prints in the containing block's framing and
   pastes straight into the other tools. Flat address spaces are untouched (the smoke ELF exercises
   that path; the segmented one is verified by construction, not by smoke).
+- **Verified live on 0.12.1** (mads session, RETURN): `9c fa 2e f6 06` returned
+  `192c:0b3a  in $$VM_UNKR` etc. — block-relative framing with the containing-function
+  annotation, pasteable straight into read_bytes/inspect.
