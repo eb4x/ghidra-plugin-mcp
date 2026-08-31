@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (55 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (59 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -116,7 +116,11 @@ program per member, and queues analysis with `analyze=true` on the shared `util/
 run (0.12.0: `fid_build` ingests only user/imported names unless `include_analysis_names=true`, with an
 `exclude` regex either way — the overlay auto-names that got stamped onto SPHERE's CRT — and `create
 kind=function` disassembles first on undecoded bytes instead of silently making a 1-byte husk, naming
-a HUSK when one still results)._
+a HUSK when one still results), and the four notes from the SPHERE/RETURN naming agents (0.12.1:
+`rename kind=function` absorbs a same-named secondary label instead of refusing, `create` documents
+that `end_address` cannot shrink a function — clear first — and announces a THUNK result plus any
+function Ghidra created beside it, and `search_memory` frames segmented hits on the containing
+block's segment, not the image base)._
 
 
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked

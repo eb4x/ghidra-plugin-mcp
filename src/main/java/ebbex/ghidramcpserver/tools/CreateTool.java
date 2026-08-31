@@ -74,7 +74,11 @@ public class CreateTool implements ProgramTool {
 			"disassembles from the address (like pressing 'D'), e.g. after clear. For kind=function " +
 			"an optional 'end_address' asks for that inclusive body range (works on an existing " +
 			"function too), but Ghidra normalises the body to what flow reaches and the result " +
-			"reports the size it actually kept; omit it to auto-compute from flow. For kind=label an optional " +
+			"reports the size it actually kept — so it cannot SHRINK an existing function whose old " +
+			"body holds undecoded bytes: clear kind=function first, then create. A function created " +
+			"on a JMP is a thunk to the jump target (and Ghidra makes the target a function too); " +
+			"the result says so — if the real entry is after the jump, create there instead. " +
+			"omit it to auto-compute from flow. For kind=label an optional " +
 			"'namespace' ('::'-separated path, e.g. \"main::override\") puts the label in that " +
 			"namespace, creating missing levels. kind=reference adds a memory reference from " +
 			"'address' to 'to_address' with 'ref_type' (e.g. computed_jump for hand-applied " +
@@ -274,6 +278,7 @@ public class CreateTool implements ProgramTool {
 		}
 		AddressSetView functionBody = body;
 		return Transactions.modify(program, "Create function", () -> {
+			int functionsBefore = program.getFunctionManager().getFunctionCount();
 			String prelude = ensureInstructionAt(program, address);
 			// With an explicit body, recreateFunction=true so it applies even to an existing
 			// function (setBody); without one, auto-compute the body from flow as before.
@@ -306,8 +311,31 @@ public class CreateTool implements ProgramTool {
 					"; Ghidra normalized it to the flow-derived body)";
 			}
 			return "Created function @ " + address + " (" + created.getName() + ")" + bodyNote +
-				prelude + huskNote(program, created);
+				prelude + huskNote(program, created) +
+				thunkNote(program, created, functionsBefore);
 		});
+	}
+
+	/**
+	 * A function whose first instruction is a JMP becomes a Ghidra thunk, and Ghidra creates
+	 * the jump target as a function of its own — two symbols the caller did not ask for, and
+	 * the wrong two when the JMP is a 3-byte stub in front of the real entry. Say so.
+	 */
+	private static String thunkNote(Program program, Function created, int functionsBefore) {
+		StringBuilder sb = new StringBuilder();
+		if (created.isThunk()) {
+			Function target = created.getThunkedFunction(false);
+			sb.append(" — THUNK to ").append(target != null ? target.getName() : "?")
+					.append(target != null ? " @ " + target.getEntryPoint() : "")
+					.append(" (the entry is a JMP; if the real function starts after it, " +
+						"clear kind=function here and create there)");
+		}
+		int extra = program.getFunctionManager().getFunctionCount() - functionsBefore - 1;
+		if (extra > 0) {
+			sb.append(" — Ghidra also created ").append(extra).append(" other function(s)")
+					.append(created.isThunk() ? " (the thunk target)" : " (call/flow targets)");
+		}
+		return sb.toString();
 	}
 
 	/**
