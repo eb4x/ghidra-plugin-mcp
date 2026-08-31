@@ -123,6 +123,23 @@ function Ghidra created beside it, and `search_memory` frames segmented hits on 
 block's segment, not the image base)._
 
 
+## 2026-08-31 — analyzer-side — an auto-created string swallowed the last byte of a JMP
+_Not an MCP-tool gap: logged here because the tools are how it was found and fixed, and the fix
+belongs in an analyzer (probably the fork — flag to the ghidra-dailydriver session when someone
+works this area)._
+
+- **Task:** (mads session, VICEROY) clean Bad Instruction bookmarks after the games-wide naming
+  passes.
+- **What happened:** an analysis-time ASCII string at `210d:152b` had been defined one byte too
+  early, swallowing the last byte of the preceding `JMP` and leaving a Bad Instruction bookmark
+  where disassembly then started offcut.
+- **Workaround (clean, three calls):** `clear` the string, `create kind=instructions` to
+  re-disassemble the JMP, re-define the string at `152c`.
+- **Open question:** which analyzer scavenged the byte (core ASCII strings vs. something the
+  RTLink analyzers expose), and whether it can respect instruction boundaries / existing flow
+  when picking a string start. No tool change proposed — `disassemble`'s offcut announcement and
+  the ERROR-bookmark channel surfaced it exactly as designed.
+
 ## 2026-07-14 — `inspect` — assumed register context is invisible, so analyzer output can't be checked
 _Rewritten 2026-07-25. As first logged this entry asked for a read **and** a write path, on the
 grounds that analyzer-baked context was "invisible and unfixable". The unfixable half was wrong, and
