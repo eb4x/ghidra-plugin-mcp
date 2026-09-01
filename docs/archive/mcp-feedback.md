@@ -1567,3 +1567,33 @@ remains is the read path._
   Smoke also closes a coverage gap found while adding this: `set_comment` had never been in the
   smoke script; it now writes a plate comment that the listing must find by text and that range
   scoping must exclude.
+
+## 2026-09-01 — `list`/`decompile` — undeclared-input functions discoverable only one decompile at a time; header wording overstated the hazard — fixed (0.15.0)
+- **Task:** (viceroy/main session, VICEROY.EXE) find every hand-written register-argument helper —
+  the functions whose decompilation reads `in_AX`/`in_EDI` inputs their prototype omits.
+- **Friction:** the only discovery path was decompiling a function and reading the header warning;
+  nothing enumerated the offenders. Ownership was triangulated across sessions first:
+  ghidra-dailydriver confirmed it cannot be a core/cspec change ("inherently requires running the
+  decompiler per function… server-side it's a check of each HighFunction's in_* symbols against
+  the committed prototype").
+- **Also wrong: the warning's mechanism.** The header said "the stack args around them may be
+  mis-ordered". rtlink and dailydriver both corrected it: the decompiler never reorders declared
+  parameters — each binds to storage computed from convention + declared types. A guessed
+  prototype merely omits the register args (their true positions among the declared args are
+  unknown); a WRONG committed prototype MIS-BINDS declared params to the wrong storage (verified
+  on 061_strcpy.obj: declared `__src` bound to the high word of the far `__dest`). The requester
+  had repeated our wording to their user as fact.
+- **Resolved (0.15.0):** `list kind=undeclared_inputs` — decompiles every non-thunk, non-husk
+  function in scope (8 concurrent over the shared pool; min_address/max_address scope it; cost is
+  stated in the description) and lists offenders as `address  name  [guessed|committed]
+  in_AX (AX:2), …`; a function that fails to decompile is listed as `<decompile failed>` rather
+  than silently passed, and filter=guessed / filter=committed splits "needs a signature written"
+  from "committed but provably incomplete". The decompile header and its docs now state the
+  guessed/omitted vs committed/mis-bound mechanism instead of the reordering claim. Smoke: commit
+  `int helper(void)` (parameterless but with a live return — a void return dead-code-eliminates
+  the whole body and the in_EDI with it, which is itself worth knowing) → sweep flags
+  `helper  [committed]  in_EDI (EDI:4)`; restore `int helper(int x)` → sweep is clean.
+- **Ride-along verification:** the 2026-07-08 RETF near/far hint caught a real mistake in the
+  wild — `__regcall` (near-only) proposed on a far hand-asm helper drew the "body contains a far
+  return (RETF) but the calling convention is near" warning, and the caller reverted to
+  `__cdecl16far` + custom storage. Logged by the requester unprompted.

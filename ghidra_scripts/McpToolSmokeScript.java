@@ -502,6 +502,30 @@ public class McpToolSmokeScript extends GhidraScript {
 					}
 				}
 			}
+			// list kind=undeclared_inputs: commit a WRONG (parameterless) prototype on helper —
+			// its body reads EDI (the real first arg) into a LIVE computation (the int return),
+			// so the decompiler materialises in_EDI and the sweep must list helper as an
+			// offender with the [committed] tag. (A void return would not do: the whole body is
+			// then dead code, and the EDI read is eliminated along with it.) This is the
+			// enumeration for what the decompile header warns about one function at a time.
+			prog("set_function_signature",
+				Map.of("function", "helper", "signature", "int helper(void)"), program);
+			prog("decompile", Map.of("function", "helper"), program);
+			McpSchema.CallToolResult offenders = prog("list",
+				Map.of("kind", "undeclared_inputs", "filter", "helper"), program);
+			if (!text(offenders).contains("in_EDI") || !text(offenders).contains("[committed]")) {
+				failures++;
+				println("!! undeclared_inputs sweep did not flag helper's in_EDI");
+			}
+			prog("set_function_signature",
+				Map.of("function", "helper", "signature", "int helper(int x)"), program);
+			McpSchema.CallToolResult clean = prog("list",
+				Map.of("kind", "undeclared_inputs", "filter", "helper"), program);
+			if (!text(clean).contains("No undeclared_inputs")) {
+				failures++;
+				println("!! helper still flagged after its prototype was fixed");
+			}
+
 			// set_comment (never previously smoke-covered) + list kind=comments: write a plate
 			// comment, then find it by TEXT without knowing the address — the query that used to
 			// require decompiling every candidate function.

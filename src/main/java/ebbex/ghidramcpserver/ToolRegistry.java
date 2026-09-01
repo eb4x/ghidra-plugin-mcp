@@ -75,7 +75,7 @@ public final class ToolRegistry {
 		tools.add(new AnalyzeTool());
 		// read
 		tools.add(new GetProgramInfoTool());
-		tools.add(new ListTool());
+		tools.add(new ListTool(decompilers));
 		tools.add(new InspectTool());
 		tools.add(new DecompileTool(decompilers));
 		tools.add(new DisassembleTool());

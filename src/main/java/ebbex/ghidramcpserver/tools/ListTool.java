@@ -6,12 +6,17 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import ebbex.ghidramcpserver.ProgramTool;
+import ebbex.ghidramcpserver.util.Decompilers;
 import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
+import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.address.AddressSet;
@@ -37,10 +42,22 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class ListTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("functions", "symbols", "strings",
-		"imports", "exports", "segments", "data", "namespaces", "bookmarks", "comments");
+		"imports", "exports", "segments", "data", "namespaces", "bookmarks", "comments",
+		"undeclared_inputs");
 
 	/** Longest comment text shown on a listing line; inspect the address for the full text. */
 	private static final int MAX_COMMENT_CHARS = 300;
+
+	/** Concurrent decompiles for the undeclared_inputs sweep (the pool backpressures anyway). */
+	private static final int SWEEP_THREADS = 8;
+
+	private static final int SWEEP_TIMEOUT_SECONDS = 30;
+
+	private final Decompilers decompilers;
+
+	public ListTool(Decompilers decompilers) {
+		this.decompilers = decompilers;
+	}
 
 	private static final List<String> SORTS = List.of("address", "name", "callers");
 
@@ -73,7 +90,13 @@ public class ListTool implements ProgramTool {
 			"inspect the address for the full text); the filter matches the whole line, so it can " +
 			"find comment text, a comment kind, or an address/overlay prefix, and " +
 			"min_address/max_address scope the walk — the way to find every comment containing a " +
-			"word without decompiling anything.";
+			"word without decompiling anything. kind=undeclared_inputs decompiles every function " +
+			"in scope (minutes on thousands of functions — scope with min_address/max_address) " +
+			"and lists those whose decompilation reads inputs the prototype omits (in_<REG>): " +
+			"'address  name  [guessed|committed]  in_AX (AX:2), ...' — the hand-written " +
+			"register-argument helpers that otherwise surface one decompile at a time; " +
+			"filter=guessed or filter=committed narrows to prototypes that need writing vs. " +
+			"committed ones that are provably incomplete.";
 	}
 
 	@Override
@@ -86,9 +109,9 @@ public class ListTool implements ProgramTool {
 					"Case-insensitive substring to match against names/values"),
 				"sort", Schemas.enumProp("Sort order for kind=functions (default address)", SORTS),
 				"min_address", Schemas.stringProp(
-					"kind=functions|comments: only entries at addresses >= this"),
+					"kind=functions|comments|undeclared_inputs: only entries at addresses >= this"),
 				"max_address", Schemas.stringProp(
-					"kind=functions|comments: only entries at addresses <= this"),
+					"kind=functions|comments|undeclared_inputs: only entries at addresses <= this"),
 				"user_only", Schemas.boolProp("kind=functions|symbols|data: keep only " +
 					"non-auto-generated names (default false)"),
 				"min_body", Schemas.intProp("kind=functions: only functions whose body is at " +
@@ -208,6 +231,7 @@ public class ListTool implements ProgramTool {
 				d -> !userOnly || isUserNamedData(program, d)), ListTool::dataLine);
 			case "namespaces" -> namespaces(program);
 			case "comments" -> comments(program, from, to);
+			case "undeclared_inputs" -> undeclaredInputs(program, from, to);
 			default -> throw new IllegalArgumentException(kind);
 		};
 	}
@@ -313,6 +337,74 @@ public class ListTool implements ProgramTool {
 				return pending.poll();
 			}
 		};
+	}
+
+	/**
+	 * Functions whose decompilation reads inputs the prototype omits (irregular
+	 * {@code in_<REG>} inputs) — enumerated instead of discovered one decompile at a time.
+	 * The check inherently needs the decompiler per function (core has no cheaper oracle),
+	 * so the sweep decompiles every non-thunk function in scope, {@value #SWEEP_THREADS}
+	 * at a time over the shared pool. A function that fails to decompile is listed with
+	 * {@code <decompile failed>} rather than silently passed — a failure cannot prove the
+	 * prototype complete.
+	 */
+	private Iterator<String> undeclaredInputs(Program program, Address from, Address to) {
+		List<Function> functions = new ArrayList<>();
+		Listing listing = program.getListing();
+		for (Function f : program.getFunctionManager().getFunctions(true)) {
+			Address entry = f.getEntryPoint();
+			if (from != null && entry.compareTo(from) < 0) {
+				continue;
+			}
+			if (to != null && entry.compareTo(to) > 0) {
+				continue;
+			}
+			// Thunks decompile as their target; husks have nothing to decompile.
+			if (f.isThunk() || listing.getInstructionAt(entry) == null) {
+				continue;
+			}
+			functions.add(f);
+		}
+
+		ExecutorService executor = Executors.newFixedThreadPool(SWEEP_THREADS);
+		List<Future<String>> futures = new ArrayList<>(functions.size());
+		try {
+			for (Function f : functions) {
+				futures.add(executor.submit(() -> {
+					DecompileResults results =
+						decompilers.decompile(program, f, SWEEP_TIMEOUT_SECONDS);
+					String state = DecompileTool.prototypeState(f);
+					if (results == null || !results.decompileCompleted()) {
+						return f.getEntryPoint() + "  " + f.getName() + "  [" + state +
+							"]  <decompile failed" +
+							(results != null && results.getErrorMessage() != null
+									? ": " + results.getErrorMessage().strip() : "") + ">";
+					}
+					String inputs = DecompileTool.undeclaredInputs(results);
+					if (inputs.isEmpty()) {
+						return null;
+					}
+					return f.getEntryPoint() + "  " + f.getName() + "  [" + state + "]  " + inputs;
+				}));
+			}
+		}
+		finally {
+			executor.shutdown();
+		}
+
+		List<String> lines = new ArrayList<>();
+		for (Future<String> future : futures) {
+			try {
+				String line = future.get();
+				if (line != null) {
+					lines.add(line);
+				}
+			}
+			catch (Exception e) {
+				throw new IllegalStateException("undeclared_inputs sweep failed: " + e, e);
+			}
+		}
+		return lines.iterator();
 	}
 
 	private static String truncate(String text) {

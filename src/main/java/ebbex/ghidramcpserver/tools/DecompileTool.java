@@ -68,9 +68,11 @@ public class DecompileTool implements ProgramTool {
 			"inside it. The header says whether the signature you are reading is the program's " +
 			"('prototype committed') or the decompiler's own invention ('prototype guessed'), and " +
 			"warns about UNDECLARED INPUTS — register or stack arguments the prototype omits, " +
-			"which the decompiler renders as in_<REG> locals while silently mis-ordering the " +
-			"stack arguments around them. That output reads plausibly and is wrong, so treat the " +
-			"warning as a signal to cross-check with disassemble.";
+			"rendered as in_<REG> locals. Declared params are never reordered: a guessed " +
+			"prototype just omits the register args (where they belong among the declared ones " +
+			"is unknown), while a WRONG committed prototype mis-binds declared params to the " +
+			"wrong storage — plausible values read from the wrong place. Either way, cross-check " +
+			"with disassemble. Sweep a whole program for these with list kind=undeclared_inputs.";
 	}
 
 	@Override
@@ -346,7 +348,7 @@ public class DecompileTool implements ProgramTool {
 	 * <p>Thunks need no special case: {@code FunctionDB.getSignatureSource} already delegates to
 	 * the thunked function, which is the prototype that governs the rendering.
 	 */
-	private static String prototypeState(Function function) {
+	static String prototypeState(Function function) {
 		return function.getSignatureSource() == SourceType.DEFAULT ? "guessed" : "committed";
 	}
 
@@ -357,11 +359,18 @@ public class DecompileTool implements ProgramTool {
 	 * <p>16-bit real-mode code passes arguments in AX/DX/BX as well as on the stack. When the
 	 * prototype doesn't declare them, the decompiler still sees the register being read before it
 	 * is written, so it materialises an "irregular input" — rendered {@code in_<REG>}, or
-	 * {@code in_<space>_<offset>} for one it can't name (an undeclared *stack* argument). It then
-	 * lays out whatever stack parameters it did recover around the gap, which is how a call comes
-	 * out with plausible arguments in the wrong order and none of them flagged. The motivating
-	 * case rendered {@code surface_fill_rect} as taking {@code (color, h, desc…)} with no x/y at
-	 * all, and read perfectly well.
+	 * {@code in_<space>_<offset>} for one it can't name (an undeclared *stack* argument). The
+	 * motivating case rendered {@code surface_fill_rect} as taking {@code (color, h, desc…)} with
+	 * no x/y at all, and read perfectly well.
+	 *
+	 * <p>The hazard differs by prototype state, and an earlier version of this warning got the
+	 * mechanism wrong ("the stack args around them may be mis-ordered"): the decompiler never
+	 * reorders declared parameters — each is bound to storage computed from the convention plus
+	 * declared types. A GUESSED prototype simply omits the register args (its declared-arg list is
+	 * the decompiler's own recovery, so where the omitted ones truly belong is unknown); a WRONG
+	 * COMMITTED prototype MIS-BINDS declared params to the wrong storage — plausible values read
+	 * from the wrong place (verified on 061_strcpy.obj: a near-pointer prototype bound declared
+	 * {@code __src} to the high word of the far {@code __dest}).
 	 *
 	 * <p>Detected by the {@code in_} name prefix, which is what Ghidra's own
 	 * {@code FindPotentialDecompilerProblems} and {@code DecompilerParameterIdCmd} match on; the
@@ -370,6 +379,33 @@ public class DecompileTool implements ProgramTool {
 	 * x86-64 thread-local artefact, not a missed argument.
 	 */
 	private static String undeclaredInputWarning(Function function, DecompileResults results) {
+		String inputs = undeclaredInputs(results);
+		if (inputs.isEmpty()) {
+			return "";
+		}
+		// Kept to two lines on purpose. On the program this was built for, 7 of a 12-function
+		// sample carried undeclared inputs — it is the normal state of an uncommitted 16-bit
+		// function, not an exception — so a longer block would cost more than it teaches on every
+		// batch decompile. The reasoning lives in this tool's description, paid for once.
+		//
+		// The remedy differs: a guessed prototype needs one written, whereas a committed one is
+		// incomplete and its author believed they were finished — the more alarming of the two.
+		boolean committed = "committed".equals(prototypeState(function));
+		return "//   ⚠ UNDECLARED INPUTS: " + inputs + (committed
+				? " — the committed prototype omits these (incomplete); a wrong\n" +
+					"//     committed prototype mis-binds declared params to the wrong storage " +
+					"(never reorders them). Re-derive from disassemble + set_function_signature.\n"
+				: " — omitted from the guessed prototype; their true positions among\n" +
+					"//     the declared args are unknown. Cross-check disassemble, then pin " +
+					"with set_function_signature.\n");
+	}
+
+	/**
+	 * The decompiler's irregular inputs as {@code "in_AX (AX:2), in_BX (BX:2)"}, or {@code ""}.
+	 * Shared with {@code list kind=undeclared_inputs}, which sweeps the whole program for
+	 * exactly this so the in_* functions can be enumerated instead of tripped over.
+	 */
+	static String undeclaredInputs(DecompileResults results) {
 		HighFunction high = results.getHighFunction();
 		if (high == null) {
 			return "";
@@ -387,21 +423,7 @@ public class DecompileTool implements ProgramTool {
 			}
 			inputs.append(name).append(" (").append(symbol.getStorage()).append(')');
 		}
-		if (inputs.isEmpty()) {
-			return "";
-		}
-		// Kept to two lines on purpose. On the program this was built for, 7 of a 12-function
-		// sample carried undeclared inputs — it is the normal state of an uncommitted 16-bit
-		// function, not an exception — so a longer block would cost more than it teaches on every
-		// batch decompile. The reasoning lives in this tool's description, paid for once.
-		//
-		// The remedy differs: a guessed prototype needs one written, whereas a committed one is
-		// incomplete and its author believed they were finished — the more alarming of the two.
-		boolean committed = "committed".equals(prototypeState(function));
-		return "//   ⚠ UNDECLARED INPUTS: " + inputs + " — args the " +
-			(committed ? "committed (so incomplete)" : "guessed") + " prototype omits; the stack " +
-			"args\n//     around them may be mis-ordered. Cross-check disassemble, then pin with " +
-			"set_function_signature.\n";
+		return inputs.toString();
 	}
 
 	/**
