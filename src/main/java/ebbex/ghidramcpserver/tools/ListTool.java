@@ -1,5 +1,6 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
@@ -12,7 +13,11 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressSet;
+import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.data.StringDataInstance;
+import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Listing;
@@ -32,7 +37,10 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class ListTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("functions", "symbols", "strings",
-		"imports", "exports", "segments", "data", "namespaces", "bookmarks");
+		"imports", "exports", "segments", "data", "namespaces", "bookmarks", "comments");
+
+	/** Longest comment text shown on a listing line; inspect the address for the full text. */
+	private static final int MAX_COMMENT_CHARS = 300;
 
 	private static final List<String> SORTS = List.of("address", "name", "callers");
 
@@ -60,7 +68,12 @@ public class ListTool implements ProgramTool {
 			"'husk' functions whose code was never disassembled. kind=bookmarks lists bookmarks " +
 			"(type/category/address/comment) — this is where the disassembler records its own " +
 			"failures as ERROR 'Bad Instruction' marks, so filter=error to see what it could not " +
-			"decode.";
+			"decode. kind=comments lists every plate/pre/eol/post/repeatable comment as 'address  " +
+			"[kind]  text' (newlines escaped, text truncated at " + MAX_COMMENT_CHARS + " chars — " +
+			"inspect the address for the full text); the filter matches the whole line, so it can " +
+			"find comment text, a comment kind, or an address/overlay prefix, and " +
+			"min_address/max_address scope the walk — the way to find every comment containing a " +
+			"word without decompiling anything.";
 	}
 
 	@Override
@@ -73,9 +86,9 @@ public class ListTool implements ProgramTool {
 					"Case-insensitive substring to match against names/values"),
 				"sort", Schemas.enumProp("Sort order for kind=functions (default address)", SORTS),
 				"min_address", Schemas.stringProp(
-					"kind=functions: only functions with entry >= this address"),
+					"kind=functions|comments: only entries at addresses >= this"),
 				"max_address", Schemas.stringProp(
-					"kind=functions: only functions with entry <= this address"),
+					"kind=functions|comments: only entries at addresses <= this"),
 				"user_only", Schemas.boolProp("kind=functions|symbols|data: keep only " +
 					"non-auto-generated names (default false)"),
 				"min_body", Schemas.intProp("kind=functions: only functions whose body is at " +
@@ -194,6 +207,7 @@ public class ListTool implements ProgramTool {
 			case "data" -> map(filter(program.getListing().getDefinedData(true).iterator(),
 				d -> !userOnly || isUserNamedData(program, d)), ListTool::dataLine);
 			case "namespaces" -> namespaces(program);
+			case "comments" -> comments(program, from, to);
 			default -> throw new IllegalArgumentException(kind);
 		};
 	}
@@ -257,6 +271,54 @@ public class ListTool implements ProgramTool {
 		return map(program.getBookmarkManager().getBookmarksIterator(),
 			b -> b.getAddress() + "  [" + b.getTypeString() +
 				(b.getCategory().isEmpty() ? "" : "/" + b.getCategory()) + "]  " + b.getComment());
+	}
+
+	/**
+	 * Every comment in the program (or the min/max_address range), one line per
+	 * (address, comment kind) pair. This is the read path {@code set_comment} never had:
+	 * before it, "which comments contain X" meant decompiling every candidate function or
+	 * grepping stale on-disk buffer files. The listing walks only addresses that carry a
+	 * comment ({@code getCommentAddressIterator}), so it is cheap even on a large program.
+	 */
+	private static Iterator<String> comments(Program program, Address from, Address to) {
+		Listing listing = program.getListing();
+		AddressSetView scope = (from == null && to == null)
+				? program.getMemory()
+				: new AddressSet(
+					from != null ? from : program.getMinAddress(),
+					to != null ? to : program.getMaxAddress());
+		AddressIterator addresses = listing.getCommentAddressIterator(scope, true);
+		ArrayDeque<String> pending = new ArrayDeque<>();
+		return new Iterator<>() {
+			@Override
+			public boolean hasNext() {
+				while (pending.isEmpty() && addresses.hasNext()) {
+					Address address = addresses.next();
+					for (CommentType type : CommentType.values()) {
+						String comment = listing.getComment(type, address);
+						if (comment != null && !comment.isEmpty()) {
+							pending.add(address + "  [" + type.name().toLowerCase() + "]  " +
+								truncate(escape(comment)));
+						}
+					}
+				}
+				return !pending.isEmpty();
+			}
+
+			@Override
+			public String next() {
+				if (!hasNext()) {
+					throw new java.util.NoSuchElementException();
+				}
+				return pending.poll();
+			}
+		};
+	}
+
+	private static String truncate(String text) {
+		return text.length() <= MAX_COMMENT_CHARS
+				? text
+				: text.substring(0, MAX_COMMENT_CHARS) + "… [truncated — inspect for full text]";
 	}
 
 	private static String signatureOf(Function f) {
