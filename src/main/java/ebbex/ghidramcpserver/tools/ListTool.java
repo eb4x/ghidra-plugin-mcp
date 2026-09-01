@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -87,7 +88,8 @@ public class ListTool implements ProgramTool {
 			"failures as ERROR 'Bad Instruction' marks, so filter=error to see what it could not " +
 			"decode. kind=comments lists every plate/pre/eol/post/repeatable comment as 'address  " +
 			"[kind]  text' (newlines escaped, text truncated at " + MAX_COMMENT_CHARS + " chars — " +
-			"inspect the address for the full text); the filter matches the whole line, so it can " +
+			"pass full=true to skip truncation when you are about to rewrite the texts); the " +
+			"filter matches the whole line, so it can " +
 			"find comment text, a comment kind, or an address/overlay prefix, and " +
 			"min_address/max_address scope the walk — the way to find every comment containing a " +
 			"word without decompiling anything. kind=undeclared_inputs decompiles every function " +
@@ -96,32 +98,41 @@ public class ListTool implements ProgramTool {
 			"'address  name  [guessed|committed]  in_AX (AX:2), ...' — the hand-written " +
 			"register-argument helpers that otherwise surface one decompile at a time; " +
 			"filter=guessed or filter=committed narrows to prototypes that need writing vs. " +
-			"committed ones that are provably incomplete.";
+			"committed ones that are provably incomplete. CAVEAT: a function mis-declared as " +
+			"returning void can sweep CLEAN — its body is dead code, and the in_* reads are " +
+			"eliminated with it — so a clean sweep does not prove prototypes complete; " +
+			"suspiciously empty decompilations still need a look.";
 	}
 
 	@Override
 	public Map<String, Object> inputSchema() {
+		// LinkedHashMap rather than Map.of: eleven properties (Map.of caps at ten pairs),
+		// and a stable declaration order in the schema besides.
+		Map<String, Object> properties = new LinkedHashMap<>();
+		properties.put("kind", Schemas.enumProp("What to list", KINDS));
+		properties.put("filter", Schemas.stringProp(
+			"Case-insensitive substring to match against names/values"));
+		properties.put("sort",
+			Schemas.enumProp("Sort order for kind=functions (default address)", SORTS));
+		properties.put("min_address", Schemas.stringProp(
+			"kind=functions|comments|undeclared_inputs: only entries at addresses >= this"));
+		properties.put("max_address", Schemas.stringProp(
+			"kind=functions|comments|undeclared_inputs: only entries at addresses <= this"));
+		properties.put("user_only", Schemas.boolProp("kind=functions|symbols|data: keep only " +
+			"non-auto-generated names (default false)"));
+		properties.put("full", Schemas.boolProp("kind=comments: return full comment texts " +
+			"instead of truncating at " + MAX_COMMENT_CHARS + " chars (default false)"));
+		properties.put("min_body", Schemas.intProp("kind=functions: only functions whose body " +
+			"is at least this many bytes"));
+		properties.put("max_body", Schemas.intProp("kind=functions: only functions whose body " +
+			"is at most this many bytes (max_body=1 finds husks — a function object over " +
+			"undefined bytes, holding no code)"));
+		properties.put("offset", Schemas.intProp("Skip this many matches (default 0)"));
+		properties.put("limit", Schemas.intProp("Maximum matches to return (default " +
+			DEFAULT_LIMIT + ")"));
 		return Map.of(
 			"type", "object",
-			"properties", Map.of(
-				"kind", Schemas.enumProp("What to list", KINDS),
-				"filter", Schemas.stringProp(
-					"Case-insensitive substring to match against names/values"),
-				"sort", Schemas.enumProp("Sort order for kind=functions (default address)", SORTS),
-				"min_address", Schemas.stringProp(
-					"kind=functions|comments|undeclared_inputs: only entries at addresses >= this"),
-				"max_address", Schemas.stringProp(
-					"kind=functions|comments|undeclared_inputs: only entries at addresses <= this"),
-				"user_only", Schemas.boolProp("kind=functions|symbols|data: keep only " +
-					"non-auto-generated names (default false)"),
-				"min_body", Schemas.intProp("kind=functions: only functions whose body is at " +
-					"least this many bytes"),
-				"max_body", Schemas.intProp("kind=functions: only functions whose body is at most " +
-					"this many bytes (max_body=1 finds husks — a function object over undefined " +
-					"bytes, holding no code)"),
-				"offset", Schemas.intProp("Skip this many matches (default 0)"),
-				"limit", Schemas.intProp("Maximum matches to return (default " +
-					DEFAULT_LIMIT + ")")),
+			"properties", properties,
 			"required", List.of("kind"));
 	}
 
@@ -142,6 +153,10 @@ public class ListTool implements ProgramTool {
 		}
 		String filter = Args.stringArg(args, "filter", "").toLowerCase();
 		boolean userOnly = Args.boolArg(args, "user_only", false);
+		boolean full = Args.boolArg(args, "full", false);
+		if (full && !kind.equals("comments")) {
+			return Results.error("full applies to kind=comments");
+		}
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 
@@ -172,7 +187,7 @@ public class ListTool implements ProgramTool {
 		}
 
 		Iterator<String> lines =
-			lines(kind, program, sort, from, to, userOnly, minBody, maxBody);
+			lines(kind, program, sort, from, to, userOnly, full, minBody, maxBody);
 
 		List<String> window = new ArrayList<>();
 		int total = 0;
@@ -206,7 +221,7 @@ public class ListTool implements ProgramTool {
 	}
 
 	private Iterator<String> lines(String kind, Program program, String sort, Address from,
-			Address to, boolean userOnly, long minBody, long maxBody) {
+			Address to, boolean userOnly, boolean full, long minBody, long maxBody) {
 		return switch (kind) {
 			case "functions" -> functionLines(program, sort, from, to, userOnly, minBody, maxBody)
 					.iterator();
@@ -230,7 +245,7 @@ public class ListTool implements ProgramTool {
 			case "data" -> map(filter(program.getListing().getDefinedData(true).iterator(),
 				d -> !userOnly || isUserNamedData(program, d)), ListTool::dataLine);
 			case "namespaces" -> namespaces(program);
-			case "comments" -> comments(program, from, to);
+			case "comments" -> comments(program, from, to, full);
 			case "undeclared_inputs" -> undeclaredInputs(program, from, to);
 			default -> throw new IllegalArgumentException(kind);
 		};
@@ -304,7 +319,8 @@ public class ListTool implements ProgramTool {
 	 * grepping stale on-disk buffer files. The listing walks only addresses that carry a
 	 * comment ({@code getCommentAddressIterator}), so it is cheap even on a large program.
 	 */
-	private static Iterator<String> comments(Program program, Address from, Address to) {
+	private static Iterator<String> comments(Program program, Address from, Address to,
+			boolean full) {
 		Listing listing = program.getListing();
 		AddressSetView scope = (from == null && to == null)
 				? program.getMemory()
@@ -321,8 +337,9 @@ public class ListTool implements ProgramTool {
 					for (CommentType type : CommentType.values()) {
 						String comment = listing.getComment(type, address);
 						if (comment != null && !comment.isEmpty()) {
+							String text = escape(comment);
 							pending.add(address + "  [" + type.name().toLowerCase() + "]  " +
-								truncate(escape(comment)));
+								(full ? text : truncate(text)));
 						}
 					}
 				}

@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (62 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (62 entries, several since verified live): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -129,7 +129,9 @@ min_address/max_address scoping — no more decompiling functions to grep their 
 one-at-a-time in_* discovery (0.15.0: `list kind=undeclared_inputs` sweeps the decompiler over
 every function in scope and lists the offenders with their prototype state, and the decompile
 header now states the real hazard — a guessed prototype omits register args, a wrong committed
-one mis-binds declared params to the wrong storage; it never reorders them)._
+one mis-binds declared params to the wrong storage; it never reorders them), and the
+comment-rename verdict's one residual cost (0.16.0: `full=true` on `list kind=comments` returns
+untruncated texts, so a bulk rewrite needs no per-address inspect calls)._
 
 
 ## 2026-08-31 — analyzer-side — an auto-created string swallowed the last byte of a JMP
