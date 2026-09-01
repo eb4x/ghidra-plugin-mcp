@@ -1544,3 +1544,26 @@ remains is the read path._
   assumption). There is still deliberately no MCP write path — the durable place to change an
   assumption remains the analyzer that owns it, exactly as this entry concluded. Smoke: sets GS
   at a function entry via the API and asserts the line + range appear.
+
+## 2026-09-01 — `list` — no way to find a comment without already knowing its address — fixed (0.14.0)
+- **Task:** (viceroy/main session, VICEROY.EXE in `mads`) update every plate/pre/eol comment
+  containing a renamed term.
+- **Friction:** `set_comment` writes at a known address and `inspect` reads at a known address,
+  but nothing enumerates or searches comments — no path from "comments containing X" to the
+  addresses that carry them. The workarounds were decompiling every candidate function (floods
+  the context window) or grepping the on-disk `db.*.gbf` buffers (stale while the project is
+  open, and text↔address adjacency is not reliable — the user rightly stopped that).
+- **Expected:** `list kind=comments` with the standard filter/offset/limit (the requester's own
+  first preference — it fits the tool shape exactly), or a search_comments action; optionally a
+  replace mode.
+- **Resolved (0.14.0):** `list kind=comments` — one line per (address, comment kind) pair as
+  `address  [plate|pre|eol|post|repeatable]  text` (newlines escaped, text truncated at 300
+  chars; `inspect` the address for the full text), walking only addresses that carry a comment
+  (`Listing.getCommentAddressIterator`). The existing whole-line filter gives text, kind, AND
+  overlay/segment scoping in one parameter (filter="OVERLAY_24:" works on this binary), and
+  `min_address`/`max_address` — previously kind=functions only — now scope the walk too. The
+  replace mode was deliberately NOT added: with the listing, a rename is `list kind=comments
+  filter=X` + `batch` of `set_comment`, which stays inside the one-tool-per-intention rule.
+  Smoke also closes a coverage gap found while adding this: `set_comment` had never been in the
+  smoke script; it now writes a plate comment that the listing must find by text and that range
+  scoping must exclude.

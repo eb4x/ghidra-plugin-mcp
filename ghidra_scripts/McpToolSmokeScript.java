@@ -502,6 +502,29 @@ public class McpToolSmokeScript extends GhidraScript {
 					}
 				}
 			}
+			// set_comment (never previously smoke-covered) + list kind=comments: write a plate
+			// comment, then find it by TEXT without knowing the address — the query that used to
+			// require decompiling every candidate function.
+			prog("set_comment", Map.of("function", "helper", "kind", "plate",
+				"comment", "mcp smoke needle:\nsecond line"), program);
+			McpSchema.CallToolResult comments = prog("list",
+				Map.of("kind", "comments", "filter", "smoke needle"), program);
+			if (!text(comments).contains("[plate]") ||
+				!text(comments).contains("mcp smoke needle:\\nsecond line")) {
+				failures++;
+				println("!! list kind=comments did not find the plate comment by text");
+			}
+			// The min/max_address scoping: a range that excludes helper must not find it.
+			McpSchema.CallToolResult scoped = prog("list",
+				Map.of("kind", "comments", "filter", "smoke needle",
+					"min_address", program.getMaxAddress().toString()), program);
+			if (!text(scoped).contains("No comments")) {
+				failures++;
+				println("!! list kind=comments range scoping did not exclude the comment");
+			}
+			prog("set_comment", Map.of("function", "helper", "kind", "plate", "comment", ""),
+				program);
+
 			// rename kind=function must absorb a same-named SECONDARY label at the entry (what a
 			// FID pass leaves behind) instead of failing "already exists at this address".
 			if (helperFn != null) {

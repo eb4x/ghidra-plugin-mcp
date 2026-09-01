@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (60 entries): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (61 entries): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -123,7 +123,9 @@ function Ghidra created beside it, and `search_memory` frames segmented hits on 
 block's segment, not the image base), and the last open tool gap — the invisible register context (0.13.0:
 `inspect` reports every explicitly-asserted register value at the address with the range it
 covers, so a DS assumption can be checked instead of inferred from a decompilation; writing
-context stays analyzer-territory by design)._
+context stays analyzer-territory by design), and the unfindable comment (0.14.0: `list
+kind=comments` lists/filters every comment by text, kind, or address prefix, with
+min_address/max_address scoping — no more decompiling functions to grep their comments)._
 
 
 ## 2026-08-31 — analyzer-side — an auto-created string swallowed the last byte of a JMP
