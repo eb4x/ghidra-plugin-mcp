@@ -1567,6 +1567,11 @@ remains is the read path._
   Smoke also closes a coverage gap found while adding this: `set_comment` had never been in the
   smoke script; it now writes a plate comment that the listing must find by text and that range
   scoping must exclude.
+- **Verified live + verdict (0.14.0→0.16.0):** the requester ran the real rename (24 "dwelling"
+  hits → "settlement") and reported the composition held — 1 list + 1 batch (24 ok), replace mode
+  confirmed unnecessary ("the write side was never the problem — the read side was"). The one
+  real cost: 20 of 24 comments exceeded the 300-char truncation, needing a noisy `inspect` each.
+  Closed in 0.16.0 by `full=true` on kind=comments (skip truncation; gated to that kind).
 
 ## 2026-09-01 — `list`/`decompile` — undeclared-input functions discoverable only one decompile at a time; header wording overstated the hazard — fixed (0.15.0)
 - **Task:** (viceroy/main session, VICEROY.EXE) find every hand-written register-argument helper —

@@ -546,6 +546,23 @@ public class McpToolSmokeScript extends GhidraScript {
 				failures++;
 				println("!! list kind=comments range scoping did not exclude the comment");
 			}
+			// full=true must return an over-300-char comment untruncated (the 20-of-24 cost in
+			// the dwelling->settlement rename: every long comment needed a separate inspect).
+			String longText = "mcp long needle " + "x".repeat(400);
+			prog("set_comment", Map.of("function", "helper", "kind", "pre",
+				"comment", longText), program);
+			McpSchema.CallToolResult truncated = prog("list",
+				Map.of("kind", "comments", "filter", "long needle"), program);
+			McpSchema.CallToolResult full = prog("list",
+				Map.of("kind", "comments", "filter", "long needle", "full", true), program);
+			if (!text(truncated).contains("[truncated") || !text(full).contains(longText) ||
+				text(full).contains("[truncated")) {
+				failures++;
+				println("!! list kind=comments full=true did not skip truncation");
+			}
+			prog("list", Map.of("kind", "functions", "full", true), program); // gated: comments only
+			prog("set_comment", Map.of("function", "helper", "kind", "pre", "comment", ""),
+				program);
 			prog("set_comment", Map.of("function", "helper", "kind", "plate", "comment", ""),
 				program);
 
