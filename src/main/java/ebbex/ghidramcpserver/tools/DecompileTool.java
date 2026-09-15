@@ -1,6 +1,7 @@
 package ebbex.ghidramcpserver.tools;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -379,9 +380,16 @@ public class DecompileTool implements ProgramTool {
 	 * x86-64 thread-local artefact, not a missed argument.
 	 */
 	private static String undeclaredInputWarning(Function function, DecompileResults results) {
-		String inputs = undeclaredInputs(results);
+		IrregularInputs inputs = irregularInputs(results);
 		if (inputs.isEmpty()) {
 			return "";
+		}
+		// A flags-only read is an INT/flag-boundary artifact (a handler saving CF across a DOS
+		// call), not a missing argument — informational, never the ⚠ treatment, which on
+		// VICEROY buried 2 real registers under 8 fake ones and minted flags-only offenders.
+		if (inputs.args().isEmpty()) {
+			return "//   ℹ FLAG-BIT READS: " + String.join(", ", inputs.flags()) +
+				" — INT/flag-boundary artifacts, not missing arguments.\n";
 		}
 		// Kept to two lines on purpose. On the program this was built for, 7 of a 12-function
 		// sample carried undeclared inputs — it is the normal state of an uncommitted 16-bit
@@ -391,7 +399,7 @@ public class DecompileTool implements ProgramTool {
 		// The remedy differs: a guessed prototype needs one written, whereas a committed one is
 		// incomplete and its author believed they were finished — the more alarming of the two.
 		boolean committed = "committed".equals(prototypeState(function));
-		return "//   ⚠ UNDECLARED INPUTS: " + inputs + (committed
+		return "//   ⚠ UNDECLARED INPUTS: " + inputs.describe() + (committed
 				? " — the committed prototype omits these (incomplete); a wrong\n" +
 					"//     committed prototype mis-binds declared params to the wrong storage " +
 					"(never reorders them). Re-derive from disassemble + set_function_signature.\n"
@@ -401,16 +409,45 @@ public class DecompileTool implements ProgramTool {
 	}
 
 	/**
-	 * The decompiler's irregular inputs as {@code "in_AX (AX:2), in_BX (BX:2)"}, or {@code ""}.
-	 * Shared with {@code list kind=undeclared_inputs}, which sweeps the whole program for
-	 * exactly this so the in_* functions can be enumerated instead of tripped over.
+	 * Status/flag bits x86 code reads across INT and call boundaries. The decompiler reports
+	 * an unaffiliated read of one exactly like a missed register argument ({@code in_CF}),
+	 * but it is never one — a handler propagating CF is an artifact of the flag ABI, not of
+	 * the prototype. Partitioned out so they can be reported as what they are.
 	 */
-	static String undeclaredInputs(DecompileResults results) {
+	private static final Set<String> FLAG_BITS = Set.of("CF", "PF", "AF", "ZF", "SF", "TF",
+		"IF", "DF", "OF", "NT", "RF", "VM", "AC", "VIF", "VIP", "ID");
+
+	/**
+	 * The decompiler's irregular {@code in_*} inputs, argument-like registers apart from
+	 * flag bits. Both lists are sorted alphabetically — the decompiler's enumeration order
+	 * carries no information about argument position, and printing it unsorted invited
+	 * exactly that inference (a caller nearly derived a calling convention from it).
+	 */
+	record IrregularInputs(List<String> args, List<String> flags) {
+
+		boolean isEmpty() {
+			return args.isEmpty() && flags.isEmpty();
+		}
+
+		/** "in_AX (AX:2), in_BX (BX:2); flag bits CF, ZF (not arguments)" — or flags-only. */
+		String describe() {
+			if (args.isEmpty()) {
+				return "flag bits only: " + String.join(", ", flags) +
+					" — INT/flag-boundary artifacts, not missing arguments";
+			}
+			return String.join(", ", args) + (flags.isEmpty() ? ""
+					: "; flag bits " + String.join(", ", flags) + " (not arguments)");
+		}
+	}
+
+	/** Shared with {@code list kind=undeclared_inputs}, which sweeps a program for this. */
+	static IrregularInputs irregularInputs(DecompileResults results) {
+		List<String> args = new ArrayList<>();
+		List<String> flags = new ArrayList<>();
 		HighFunction high = results.getHighFunction();
 		if (high == null) {
-			return "";
+			return new IrregularInputs(args, flags);
 		}
-		StringBuilder inputs = new StringBuilder();
 		Iterator<HighSymbol> symbols = high.getLocalSymbolMap().getSymbols();
 		while (symbols.hasNext()) {
 			HighSymbol symbol = symbols.next();
@@ -418,12 +455,16 @@ public class DecompileTool implements ProgramTool {
 			if (name == null || !name.startsWith("in_") || name.equals("in_FS_OFFSET")) {
 				continue;
 			}
-			if (!inputs.isEmpty()) {
-				inputs.append(", ");
+			if (FLAG_BITS.contains(name.substring("in_".length()))) {
+				flags.add(name.substring("in_".length()));
 			}
-			inputs.append(name).append(" (").append(symbol.getStorage()).append(')');
+			else {
+				args.add(name + " (" + symbol.getStorage() + ')');
+			}
 		}
-		return inputs.toString();
+		args.sort(null);
+		flags.sort(null);
+		return new IrregularInputs(args, flags);
 	}
 
 	/**

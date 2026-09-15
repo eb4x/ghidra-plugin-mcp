@@ -1598,6 +1598,23 @@ remains is the read path._
   `int helper(void)` (parameterless but with a live return — a void return dead-code-eliminates
   the whole body and the in_EDI with it, which is itself worth knowing) → sweep flags
   `helper  [committed]  in_EDI (EDI:4)`; restore `int helper(int x)` → sweep is clean.
+- **Dogfood findings on VICEROY (193 hits) — fixed (0.16.1):** two reporting issues, both about
+  reading the output rather than the sweep being wrong. (1) Flag registers reported as inputs:
+  `rtlink_int21_hook` listed in_NT/ZF/AF/PF/CF/OF/IF/TF beside the genuine in_AX/in_BX, and
+  ~15-20 of 193 entries were wholly or partly flags — INT-boundary artifacts, not arguments.
+  Now partitioned: argument registers first, then `flag bits CF, ZF (not arguments)`; a
+  flags-only function stays listed but tagged `flag bits only: … — INT/flag-boundary artifacts,
+  not missing arguments` (kept visible because a CF read across a DOS call is sometimes the
+  point; filter='flag bits only' buckets them), and the decompile header gives flags-only
+  functions an ℹ line instead of the ⚠. (2) The printed order implied argument order (same set,
+  different sequence on 1bbc:000c vs 1c11:000c — decompiler enumeration order); the requester
+  nearly inferred a calling convention from it. Registers now sort alphabetically and the
+  description says the order carries no positional information.
+- **Cross-verification:** dailydriver's `__regcall16far` cspec applied to both savegame helpers
+  took them off the sweep — the sweep and the cspec change verified each other. The remaining
+  population stays custom-storage by choice: one near-conversion (`file_read_far`, register args
+  + four stack words with `RETF 0x8`) cannot be a named convention at all, since extrapop is a
+  per-convention constant.
 - **Ride-along verification:** the 2026-07-08 RETF near/far hint caught a real mistake in the
   wild — `__regcall` (near-only) proposed on a far hand-asm helper drew the "body contains a far
   return (RETF) but the calling convention is near" warning, and the caller reverted to

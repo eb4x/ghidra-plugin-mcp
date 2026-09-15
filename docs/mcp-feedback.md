@@ -131,7 +131,10 @@ every function in scope and lists the offenders with their prototype state, and 
 header now states the real hazard — a guessed prototype omits register args, a wrong committed
 one mis-binds declared params to the wrong storage; it never reorders them), and the
 comment-rename verdict's one residual cost (0.16.0: `full=true` on `list kind=comments` returns
-untruncated texts, so a bulk rewrite needs no per-address inspect calls)._
+untruncated texts, so a bulk rewrite needs no per-address inspect calls), and the sweep's two
+reporting hazards (0.16.1: flag-bit reads are partitioned out and named as artifacts — flags-only
+functions tagged, not dropped — and registers sort alphabetically so nobody infers argument order
+from enumeration order again)._
 
 
 ## 2026-08-31 — analyzer-side — an auto-created string swallowed the last byte of a JMP
