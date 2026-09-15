@@ -96,7 +96,12 @@ public class ListTool implements ProgramTool {
 			"in scope (minutes on thousands of functions — scope with min_address/max_address) " +
 			"and lists those whose decompilation reads inputs the prototype omits (in_<REG>): " +
 			"'address  name  [guessed|committed]  in_AX (AX:2), ...' — the hand-written " +
-			"register-argument helpers that otherwise surface one decompile at a time; " +
+			"register-argument helpers that otherwise surface one decompile at a time. Registers " +
+			"are listed ALPHABETICALLY — the order carries no information about argument " +
+			"position. Flag-bit reads (in_CF, in_ZF, ...) are INT/flag-boundary artifacts, not " +
+			"arguments: they print separated ('flag bits CF, ZF (not arguments)'), and a " +
+			"flags-only function stays listed but tagged as such (filter='flag bits only' " +
+			"buckets them); " +
 			"filter=guessed or filter=committed narrows to prototypes that need writing vs. " +
 			"committed ones that are provably incomplete. CAVEAT: a function mis-declared as " +
 			"returning void can sweep CLEAN — its body is dead code, and the in_* reads are " +
@@ -397,11 +402,12 @@ public class ListTool implements ProgramTool {
 							(results != null && results.getErrorMessage() != null
 									? ": " + results.getErrorMessage().strip() : "") + ">";
 					}
-					String inputs = DecompileTool.undeclaredInputs(results);
+					DecompileTool.IrregularInputs inputs = DecompileTool.irregularInputs(results);
 					if (inputs.isEmpty()) {
 						return null;
 					}
-					return f.getEntryPoint() + "  " + f.getName() + "  [" + state + "]  " + inputs;
+					return f.getEntryPoint() + "  " + f.getName() + "  [" + state + "]  " +
+						inputs.describe();
 				}));
 			}
 		}
