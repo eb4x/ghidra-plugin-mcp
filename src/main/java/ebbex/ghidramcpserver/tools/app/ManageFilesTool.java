@@ -7,13 +7,18 @@ import java.util.stream.Collectors;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.Edt;
 import ebbex.ghidramcpserver.util.ProjectContext;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
+import ghidra.app.services.ProgramManager;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectData;
+import ghidra.framework.model.ToolManager;
+import ghidra.framework.plugintool.PluginTool;
+import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -21,6 +26,10 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class ManageFilesTool implements ApplicationLevelTool {
 
 	private static final List<String> OPS = List.of("delete", "rename", "move", "copy");
+	private static final List<String> ON_DIRTY = List.of("refuse", "discard");
+
+	/** Closing a program in a tool repaints that tool's windows; bounded like manage_project's. */
+	private static final long CLOSE_TIMEOUT_MS = 30_000;
 
 	private final ProjectContext context;
 
@@ -41,8 +50,11 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			"it into 'dest_folder' (optionally under 'new_name'). op=copy is how you take a BACKUP " +
 			"before a risky bulk edit — Ghidra discards its undo history on every save, and this " +
 			"server auto-saves after each tool call, so a snapshot is the only way back. To restore " +
-			"one: delete the damaged file, then copy the backup to its folder and rename it. A file " +
-			"open in a CodeBrowser can't be deleted — close it there first.";
+			"one: delete the damaged file, then copy the backup to its folder and rename it. " +
+			"op=delete first closes the file in any running tool showing it (e.g. a CodeBrowser " +
+			"tab); if it has unsaved changes there, the delete refuses unless on_dirty=discard " +
+			"(there is no 'save' — deleting destroys the file either way). rename/move/copy work " +
+			"on open files as-is.";
 	}
 
 	@Override
@@ -55,7 +67,10 @@ public class ManageFilesTool implements ApplicationLevelTool {
 				"new_name", Schemas.stringProp("New leaf name (for op=rename, or optionally op=copy)"),
 				"dest_folder", Schemas.stringProp("Destination folder path (for op=move|copy)"),
 				"recursive", Schemas.boolProp("For op=delete on a folder: also delete everything " +
-					"inside it (default false, which fails on a non-empty folder)")),
+					"inside it (default false, which fails on a non-empty folder)"),
+				"on_dirty", Schemas.enumProp("For op=delete on a file open in a tool with unsaved " +
+					"changes: refuse (default) or discard (close it losing the changes, then " +
+					"delete). A clean open file is closed and deleted without this.", ON_DIRTY)),
 			"required", List.of("op", "path"));
 	}
 
@@ -86,10 +101,14 @@ public class ManageFilesTool implements ApplicationLevelTool {
 				return Results.error("'" + path + "' is busy — a background task (e.g. analysis) " +
 					"is still running on it; wait for it to finish and retry.");
 			}
+			String onDirty = Args.stringArg(args, "on_dirty", "refuse");
+			if (!ON_DIRTY.contains(onDirty)) {
+				return Results.error("on_dirty must be one of " + ON_DIRTY);
+			}
 			// Drop our own cached handle so the operation isn't blocked by us.
 			context.release(path);
 			return switch (op) {
-				case "delete" -> deleteFile(file, path);
+				case "delete" -> deleteFile(project, file, path, onDirty);
 				case "rename" -> rename(file, Args.stringArg(args, "new_name", null));
 				case "move" -> move(data, file, Args.stringArg(args, "dest_folder", null));
 				case "copy" -> copy(data, file, Args.stringArg(args, "dest_folder", null),
@@ -124,14 +143,76 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		}
 	}
 
-	private static McpSchema.CallToolResult deleteFile(DomainFile file, String path)
-			throws Exception {
+	private static McpSchema.CallToolResult deleteFile(Project project, DomainFile file,
+			String path, String onDirty) throws Exception {
+		String closedNote = "";
 		if (file.isOpen()) {
-			return Results.error("'" + path + "' is held open by: " + describeConsumers(file) +
-				" — close it there first (e.g. the CodeBrowser tab showing it).");
+			List<OpenIn> holders = openInTools(project, file);
+			if (!holders.isEmpty()) {
+				String toolNames = holders.stream()
+						.map(h -> h.tool().getName())
+						.distinct()
+						.collect(Collectors.joining(", "));
+				if (file.isChanged() && !"discard".equals(onDirty)) {
+					return Results.error("'" + path + "' is open in " + toolNames + " with UNSAVED " +
+						"changes. Deleting destroys them either way, so this needs an explicit " +
+						"on_dirty=discard (there is no 'save' option — the file is being deleted).");
+				}
+				closeInTools(holders);
+				closedNote = " (closed it in " + toolNames + " first)";
+			}
+		}
+		// A consumer this server cannot reach — a dialog, a background service. The GUI is the
+		// only place left to close it, so say so instead of letting delete() throw.
+		if (file.isOpen()) {
+			return Results.error("'" + path + "' is still held open by: " + describeConsumers(file) +
+				" — a consumer this server cannot close; close it in the Ghidra GUI first.");
 		}
 		file.delete();
-		return Results.ok("Deleted " + path);
+		return Results.ok("Deleted " + path + closedNote);
+	}
+
+	/** A program open in a running tool, with the service that can close it there. */
+	private record OpenIn(PluginTool tool, ProgramManager manager, Program program) {
+	}
+
+	/**
+	 * Every running tool showing {@code file} — the CodeBrowser tab that used to make delete
+	 * refuse with "close it there first", which no MCP call could do. Headless has no tool
+	 * manager, so that (and a GUI with no running tools) yields an empty list.
+	 */
+	private static List<OpenIn> openInTools(Project project, DomainFile file) {
+		ToolManager toolManager = project.getToolManager();
+		if (toolManager == null) {
+			return List.of();
+		}
+		List<OpenIn> holders = new ArrayList<>();
+		for (PluginTool tool : toolManager.getRunningTools()) {
+			ProgramManager manager = tool.getService(ProgramManager.class);
+			if (manager == null) {
+				continue;
+			}
+			for (Program open : manager.getAllOpenPrograms()) {
+				if (file.equals(open.getDomainFile())) {
+					holders.add(new OpenIn(tool, manager, open));
+				}
+			}
+		}
+		return holders;
+	}
+
+	/**
+	 * Close the program in each holding tool, dirty or not — the caller has already applied the
+	 * on_dirty policy. {@code ignoreChanges=true} is what suppresses the save dialog this server
+	 * could never answer. One EDT hop for all of them, bounded like manage_project's close.
+	 */
+	private static void closeInTools(List<OpenIn> holders) throws Exception {
+		Edt.runNow(() -> {
+			for (OpenIn holder : holders) {
+				holder.manager().closeProgram(holder.program(), true);
+			}
+			return null;
+		}, CLOSE_TIMEOUT_MS);
 	}
 
 	/** Names of whoever holds the file open, so 'held open' errors say who to close. */

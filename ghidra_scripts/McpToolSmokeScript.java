@@ -244,20 +244,34 @@ public class McpToolSmokeScript extends GhidraScript {
 
 			// migrate: /ls -> itself is refused; a dry run against the same binary imported
 			// twice is the honest exercise (everything already equal, nothing to write).
-			prog("migrate", Map.of("source", "/ls"), program);
+			prog("migrate", Map.of("source", "/ls.bin"), program);
 			prog("migrate", Map.of("source", "/__no_such_program__", "dry_run", true), program);
 
 			// manage_files op=copy: the snapshot primitive (there is no undo — Ghidra drops its
 			// undo history on every save, and every tool call here auto-saves).
-			app("manage_files", Map.of("op", "copy", "path", "/ls", "dest_folder", "/backups",
+			app("manage_files", Map.of("op", "copy", "path", "/ls.bin", "dest_folder", "/backups",
 				"new_name", "ls.snapshot"), project);
 			app("list_files", Map.of("folder", "/backups"), project);
 			app("manage_files", Map.of("op", "delete", "path", "/backups", "recursive", true),
 				project);
 
-			// manage_files delete on a file this script itself holds open: must refuse and
-			// name the consumer (McpToolSmokeScript), not just say "open elsewhere".
-			app("manage_files", Map.of("op", "delete", "path", "/ls"), project);
+			// manage_files delete on a file this script itself holds open: the script is not a
+			// running tool, so the close-in-tools pass can't reach it — must refuse via the
+			// cannot-close branch and name the consumer (McpToolSmokeScript).
+			McpSchema.CallToolResult heldOpen =
+				app("manage_files", Map.of("op", "delete", "path", "/ls.bin"), project);
+			if (!text(heldOpen).contains("cannot close") ||
+				!text(heldOpen).contains("McpToolSmokeScript")) {
+				failures++;
+				println("!! held-open delete refusal is missing the cannot-close consumer wording");
+			}
+			// and the on_dirty enum must validate before anything is touched.
+			McpSchema.CallToolResult badOnDirty = app("manage_files",
+				Map.of("op", "delete", "path", "/ls.bin", "on_dirty", "save"), project);
+			if (!text(badOnDirty).contains("on_dirty must be one of")) {
+				failures++;
+				println("!! bad on_dirty was not refused");
+			}
 			// clear kind=local_variable: exercise the delete branch (not-found path is deterministic).
 			prog("clear", Map.of("kind", "local_variable", "function", "main",
 				"variable_name", "__mcp_no_such_local__"), program);
