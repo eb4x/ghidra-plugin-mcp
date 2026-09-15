@@ -153,3 +153,21 @@ works this area)._
   RTLink analyzers expose), and whether it can respect instruction boundaries / existing flow
   when picking a string start. No tool change proposed — `disassemble`'s offcut announcement and
   the ERROR-bookmark channel surfaced it exactly as designed.
+
+## 2026-09-15 — manage_files — a program open in a CodeBrowser is undeletable over MCP
+_Reported by the `dumps` session (u-boot RE), the first project outside the mads chain to dogfood
+the server. Implemented as 0.17.0, pending deploy — move to the archive when it is serving._
+
+- **Task:** delete a mis-imported program (`/u-boot.bin`, wrong base address) and re-import it.
+- **Friction:** `manage_files op=delete` refused with "'/u-boot.bin' is held open by: GhidraTool —
+  close it there first", and no MCP tool can close a program in a CodeBrowser — so a bad import
+  can only be removed by a human clicking in the GUI.
+- **Expected:** the delete to close the program in whatever tool holds it (with an `on_dirty`
+  policy like `manage_project op=close`) and proceed.
+- **Resolution (0.17.0):** `op=delete` now walks the running tools' `ProgramManager` services and
+  closes the file wherever it is open before deleting — automatically when it is clean, and only
+  with `on_dirty=discard` when it has unsaved changes there (`save` is deliberately not offered:
+  the file is being destroyed either way, so a save option would be a lie). A consumer that is
+  not a running tool (a dialog, a script) still refuses, now saying it is one the server cannot
+  close. `rename`/`move`/`copy` never had the refusal and are unchanged; a *recursive folder*
+  delete still refuses on open files (extend the same close-first pass there if someone hits it).
