@@ -42,9 +42,14 @@ import io.modelcontextprotocol.spec.McpSchema;
  * Set a function's prototype. With a 'signature' this applies a full C prototype
  * (return type, name, parameters) in one call — renaming the function to match if
  * it still has a default name, and keeping its calling convention. Without a
- * 'signature' it commits the decompiler's inferred prototype instead.
+ * 'signature' it commits the decompiler's inferred prototype instead. 'noreturn' sets or
+ * clears the no-return flag, alongside any of those modes or on its own.
  */
 public class SetFunctionSignatureTool implements ProgramTool {
+
+	/** noreturn, __noreturn, _Noreturn: attributes the signature parser can't read. */
+	private static final java.util.regex.Pattern NO_RETURN_KEYWORD =
+		java.util.regex.Pattern.compile("\\b_*no_?return\\b", java.util.regex.Pattern.CASE_INSENSITIVE);
 
 	private final Decompilers decompilers;
 
@@ -68,7 +73,9 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			"'storage' — a register (AX), a register pair (DX:AX, high:low), or a stack slot " +
 			"(Stack[0x4]) — and/or a 'return' {type, storage} (e.g. a far pointer in DX:AX, which can " +
 			"be set on its own); this pins custom storage exactly (a C signature can't). Referenced " +
-			"types must already exist — define them first with define_types.";
+			"types must already exist — define them first with define_types. 'noreturn' (true/false) " +
+			"sets or clears the no-return flag, alongside any mode above; given with nothing else it " +
+			"changes only the flag and leaves the prototype alone.";
 	}
 
 	@Override
@@ -101,7 +108,10 @@ public class SetFunctionSignatureTool implements ProgramTool {
 					"properties", Map.of(
 						"type", Schemas.stringProp("Return data type"),
 						"storage", Schemas.stringProp(
-							"Register (AX), pair (DX:AX), or stack slot")))),
+							"Register (AX), pair (DX:AX), or stack slot"))),
+				"noreturn", Schemas.boolProp(
+					"Set (true) or clear (false) the no-return flag; the decompiler then treats " +
+					"calls to the function as not returning. Alone, it changes only the flag")),
 			"required", List.of("function"));
 	}
 
@@ -120,6 +130,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 		Function function = Locations.findFunction(program, functionRef);
 		String signature = Args.stringArg(args, "signature", null);
 		String callingConvention = Args.stringArg(args, "calling_convention", null);
+		Boolean noReturn = args.get("noreturn") == null ? null : Args.boolArg(args, "noreturn", false);
 
 		Object parametersObj = args.get("parameters");
 		Object returnObj = args.get("return");
@@ -131,12 +142,30 @@ public class SetFunctionSignatureTool implements ProgramTool {
 				"provide either a C 'signature' or structured 'parameters'/'return', not both");
 		}
 		if (hasParameters || hasReturn) {
-			return applyCustomStorage(program, function, parametersObj, returnObj, callingConvention);
+			return applyCustomStorage(program, function, parametersObj, returnObj, callingConvention,
+				noReturn);
 		}
-		if (!hasSignature) {
-			return commitInferred(program, function, callingConvention);
+		if (hasSignature) {
+			return applyPrototype(program, function, signature, callingConvention, noReturn);
 		}
-		return applyPrototype(program, function, signature, callingConvention);
+		if (noReturn != null && callingConvention == null) {
+			return Transactions.modify(program, "Set no-return",
+				() -> function.getName() + applyNoReturn(function, noReturn));
+		}
+		return commitInferred(program, function, callingConvention, noReturn);
+	}
+
+	/**
+	 * Set or clear the no-return flag when one was given, returning the text appended to the
+	 * result. Applied last: {@link ApplyFunctionSignatureCmd} only ever sets the flag, never
+	 * clears it, so an explicit false must win after it.
+	 */
+	private static String applyNoReturn(Function function, Boolean noReturn) {
+		if (noReturn == null) {
+			return "";
+		}
+		function.setNoReturn(noReturn);
+		return noReturn ? " [noreturn set]" : " [noreturn cleared]";
 	}
 
 	/** name/type/storage for one parameter or the return (parsed before the write). */
@@ -144,7 +173,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	}
 
 	private McpSchema.CallToolResult applyCustomStorage(Program program, Function function,
-			Object rawParamsObj, Object returnObj, String callingConvention) {
+			Object rawParamsObj, Object returnObj, String callingConvention, Boolean noReturn) {
 		List<StorageSpec> specs = new ArrayList<>();
 		if (rawParamsObj instanceof List<?> rawParams) {
 			for (int i = 0; i < rawParams.size(); i++) {
@@ -212,7 +241,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			function.updateFunction(callingConvention, returnVar, params,
 				Function.FunctionUpdateType.CUSTOM_STORAGE, true, SourceType.USER_DEFINED);
 			return "Set custom storage on " + function.getName() + ": " +
-				String.join(", ", echo) + retEcho;
+				String.join(", ", echo) + retEcho + applyNoReturn(function, noReturn);
 		});
 	}
 
@@ -272,7 +301,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	}
 
 	private McpSchema.CallToolResult applyPrototype(Program program, Function function,
-			String signature, String callingConvention) {
+			String signature, String callingConvention, Boolean noReturn) {
 		FunctionDefinitionDataType definition;
 		try {
 			definition = new FunctionSignatureParser(program.getDataTypeManager(), null)
@@ -296,8 +325,10 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			if (!cmd.applyTo(program, TaskMonitor.DUMMY)) {
 				throw new IllegalStateException(cmd.getStatusMsg());
 			}
+			String noReturnNote = applyNoReturn(function, noReturn);
 			return "Applied signature to " + function.getName() + ": " +
-				function.getSignature().getPrototypeString() + farReturnWarning(program, function);
+				function.getSignature().getPrototypeString() + noReturnNote +
+				farReturnWarning(program, function);
 		});
 	}
 
@@ -315,6 +346,10 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	 */
 	private static String parseFailure(Program program, Function function, String signature,
 			Exception e) {
+		if (NO_RETURN_KEYWORD.matcher(signature).find()) {
+			return "Could not parse signature '" + signature + "': the C prototype parser has no " +
+				"no-return attribute — drop it from 'signature' and pass noreturn=true instead.";
+		}
 		List<String> unresolved = new ArrayList<>();
 		String working = normalizePrototype(signature);
 		String residual = e.getMessage();
@@ -381,7 +416,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	}
 
 	private McpSchema.CallToolResult commitInferred(Program program, Function function,
-			String callingConvention) {
+			String callingConvention, Boolean noReturn) {
 		DecompileResults results = decompilers.decompile(program, function, 30);
 		HighFunction high = results != null ? results.getHighFunction() : null;
 		if (high == null) {
@@ -393,8 +428,10 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			}
 			HighFunctionDBUtil.commitParamsToDatabase(high, true, ReturnCommitOption.COMMIT,
 				SourceType.USER_DEFINED);
+			String noReturnNote = applyNoReturn(function, noReturn);
 			return "Committed inferred prototype for " + function.getName() + ": " +
-				function.getSignature().getPrototypeString() + farReturnWarning(program, function);
+				function.getSignature().getPrototypeString() + noReturnNote +
+				farReturnWarning(program, function);
 		});
 	}
 

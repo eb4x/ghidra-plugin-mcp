@@ -665,6 +665,30 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("set_function_signature",
 				Map.of("function", "helper", "signature", "int helper(int x)"), program);
 
+			// noreturn: alone it flips only the flag (prototype untouched); a C 'noreturn' keyword
+			// is rejected with a pointer to the flag; applying a signature with noreturn=false
+			// clears it (ApplyFunctionSignatureCmd by itself never clears).
+			Function noReturnFn = Locations.findFunction(program, "helper");
+			String noReturnProto = noReturnFn.getSignature().getPrototypeString();
+			prog("set_function_signature", Map.of("function", "helper", "noreturn", true), program);
+			if (!noReturnFn.hasNoReturn() ||
+				!noReturnProto.equals(noReturnFn.getSignature().getPrototypeString())) {
+				failures++;
+				println("!! noreturn=true alone did not set only the flag");
+			}
+			McpSchema.CallToolResult keywordSig = prog("set_function_signature",
+				Map.of("function", "helper", "signature", "noreturn int helper(int x)"), program);
+			if (!text(keywordSig).contains("noreturn=true")) {
+				failures++;
+				println("!! a C noreturn keyword was not pointed at the noreturn flag");
+			}
+			prog("set_function_signature", Map.of("function", "helper",
+				"signature", "int helper(int x)", "noreturn", false), program);
+			if (noReturnFn.hasNoReturn()) {
+				failures++;
+				println("!! signature + noreturn=false did not clear the flag");
+			}
+
 			// set_comment (never previously smoke-covered) + list kind=comments: write a plate
 			// comment, then find it by TEXT without knowing the address — the query that used to
 			// require decompiling every candidate function.
