@@ -1619,3 +1619,31 @@ remains is the read path._
   wild — `__regcall` (near-only) proposed on a far hand-asm helper drew the "body contains a far
   return (RETF) but the calling convention is near" warning, and the caller reverted to
   `__cdecl16far` + custom storage. Logged by the requester unprompted.
+
+## 2026-09-15 — manage_files — a program open in a CodeBrowser is undeletable over MCP
+_Reported by the `dumps` session (u-boot RE), the first project outside the mads chain to dogfood
+the server. Resolved in 0.17.0 (3204fdc), verified live the same day._
+
+- **Task:** delete a mis-imported program (`/u-boot.bin`, wrong base address) and re-import it.
+- **Friction:** `manage_files op=delete` refused with "'/u-boot.bin' is held open by: GhidraTool —
+  close it there first", and no MCP tool can close a program in a CodeBrowser — so a bad import
+  can only be removed by a human clicking in the GUI.
+- **Expected:** the delete to close the program in whatever tool holds it (with an `on_dirty`
+  policy like `manage_project op=close`) and proceed.
+- **Resolution (0.17.0):** `op=delete` now walks the running tools' `ProgramManager` services and
+  closes the file wherever it is open before deleting — automatically when it is clean, and only
+  with `on_dirty=discard` when it has unsaved changes there (`save` is deliberately not offered:
+  the file is being destroyed either way, so a save option would be a lie). A consumer that is
+  not a running tool (a dialog, a script) still refuses, now saying it is one the server cannot
+  close. `rename`/`move`/`copy` never had the refusal and are unchanged; a *recursive folder*
+  delete still refuses on open files (extend the same close-first pass there if someone hits it).
+- **Live verification (2026-09-15, dumps project):** the deploying restart itself emptied the
+  CodeBrowser, so the close-first branch needed a staged test: a throwaway import opened in the
+  GUI, then deleted over MCP. Both branches fired: the dirty refusal first — *merely opening a
+  program in a CodeBrowser marks it changed*, so in practice a held-open file almost always
+  needs `on_dirty=discard` even when nobody edited it (the error text carries the flag, so the
+  second call is informed, not a guess) — then `on_dirty=discard` returned "Deleted … (closed it
+  in CodeBrowser first)" and the tab closed in the GUI. The plain path (no tab) was verified by
+  dumps on the original mis-import. Also fixed by the smoke additions: the script's held-open,
+  self-migrate, and copy-snapshot checks had pointed at `/ls` instead of `/ls.bin` and were
+  exercising the not-found path all along.

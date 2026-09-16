@@ -22,6 +22,7 @@ import ghidra.program.model.listing.BookmarkType;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.RefType;
@@ -38,10 +39,13 @@ public class CreateTool implements ProgramTool {
 
 	private static final List<String> KINDS =
 		List.of("function", "label", "bookmark", "instructions", "reference",
-			"functions_at_labels");
+			"functions_at_labels", "functions_from_table");
 
 	/** How many created/skipped names the functions_at_labels summary spells out. */
 	private static final int MAX_NAMED = 50;
+
+	/** Sanity cap for functions_from_table — a count above this is a wrong argument. */
+	private static final int MAX_TABLE_ENTRIES = 4096;
 
 	/** ref_type values accepted by kind=reference, mapped to Ghidra's RefType constants. */
 	private static final Map<String, RefType> REF_TYPES = new LinkedHashMap<>();
@@ -86,7 +90,17 @@ public class CreateTool implements ProgramTool {
 			"mnemonic). kind=functions_at_labels takes no address: it creates a function at every " +
 			"user/imported-named label that sits in executable memory on no defined data and " +
 			"starts no function yet (the OMF PUBDEF case — entry points that import as plain " +
-			"labels); the label becomes the function's name.";
+			"labels); the label becomes the function's name. kind=functions_from_table walks a " +
+			"pointer table at 'address': 'count' entries of 'entry_size' bytes (default: the " +
+			"program's pointer size), one every 'stride' bytes (default entry_size; set it to the " +
+			"record size for tables of <pointer, extra fields> records, with 'address' on the " +
+			"first pointer), endianness from the language unless 'big_endian' overrides. Each " +
+			"entry gets a reference ('ref_type', default computed_call) from its slot to the " +
+			"target plus a function created there — the USB-dispatch / handler-table case. " +
+			"Every target becomes a FUNCTION, so this is for handler tables; switch-case " +
+			"targets are blocks inside one function (Keil C51 ?C?xCASE tables are handled by the " +
+			"Keil8051 extension's analyzer instead). Entries resolving outside memory are listed, " +
+			"not fatal ('count' is never guessed from a terminator).";
 	}
 
 	@Override
@@ -108,9 +122,22 @@ public class CreateTool implements ProgramTool {
 		properties.put("to_address",
 			Schemas.stringProp("Reference target address (for kind=reference)"));
 		properties.put("ref_type", Schemas.enumProp(
-			"Reference type (for kind=reference)", List.copyOf(REF_TYPES.keySet())));
+			"Reference type (for kind=reference|functions_from_table; " +
+			"functions_from_table defaults to computed_call)", List.copyOf(REF_TYPES.keySet())));
 		properties.put("operand_index", Schemas.intProp(
 			"Operand the reference hangs off, 0-based (for kind=reference; default: mnemonic)"));
+		properties.put("count", Schemas.intProp(
+			"Number of table entries to walk (for kind=functions_from_table; required — never " +
+			"guessed from a terminator)"));
+		properties.put("entry_size", Schemas.intProp(
+			"Pointer width in bytes, 2-8 (for kind=functions_from_table; default: the program's " +
+			"pointer size)"));
+		properties.put("stride", Schemas.intProp(
+			"Bytes between consecutive pointers (for kind=functions_from_table; default: " +
+			"entry_size — set it to the record size when each pointer is followed by other fields)"));
+		properties.put("big_endian", Schemas.boolProp(
+			"Pointer byte order (for kind=functions_from_table; default: the language's " +
+			"endianness)"));
 		return Map.of(
 			"type", "object",
 			"properties", properties,
@@ -149,6 +176,7 @@ public class CreateTool implements ProgramTool {
 			case "reference" -> createReference(program, address,
 				Args.stringArg(args, "to_address", null), Args.stringArg(args, "ref_type", null),
 				Args.intArg(args, "operand_index", CodeUnit.MNEMONIC));
+			case "functions_from_table" -> createFunctionsFromTable(program, address, args);
 			default -> Results.error("unhandled kind " + kind);
 		};
 	}
@@ -246,6 +274,127 @@ public class CreateTool implements ProgramTool {
 		if (names.size() > MAX_NAMED) {
 			sb.append(", ... ").append(names.size() - MAX_NAMED).append(" more");
 		}
+	}
+
+	/**
+	 * Walk a table of code pointers, wiring a reference from each slot and creating a
+	 * function at each target — the repetitive by-hand part of resolving dispatch tables
+	 * (USB request handler tables, interrupt/command dispatch). The
+	 * count is always explicit: guessing a terminator would silently walk past a table
+	 * whose 0 entry is a valid address on some other target.
+	 */
+	private McpSchema.CallToolResult createFunctionsFromTable(Program program, Address table,
+			Map<String, Object> args) {
+		int count = Args.intArg(args, "count", 0);
+		if (count < 1 || count > MAX_TABLE_ENTRIES) {
+			return Results.error("count (1-" + MAX_TABLE_ENTRIES + ") is required for " +
+				"kind=functions_from_table — the number of table entries, never guessed");
+		}
+		int entrySize = Args.intArg(args, "entry_size", program.getDefaultPointerSize());
+		if (entrySize < 2 || entrySize > 8) {
+			return Results.error("entry_size must be 2-8 bytes");
+		}
+		int stride = Args.intArg(args, "stride", entrySize);
+		if (stride < entrySize) {
+			return Results.error("stride must be at least entry_size (" + entrySize + ")");
+		}
+		boolean bigEndian =
+			Args.boolArg(args, "big_endian", program.getLanguage().isBigEndian());
+		String refTypeArg = Args.stringArg(args, "ref_type", "computed_call");
+		RefType refType = REF_TYPES.get(refTypeArg);
+		if (refType == null) {
+			return Results.error("ref_type must be one of " + REF_TYPES.keySet());
+		}
+
+		return Transactions.modify(program, "Create functions from pointer table", () -> {
+			List<String> created = new ArrayList<>();
+			List<String> husks = new ArrayList<>();
+			List<String> invalid = new ArrayList<>();
+			List<String> failed = new ArrayList<>();
+			int existing = 0;
+			for (int i = 0; i < count; i++) {
+				Address slot = table.add((long) i * stride);
+				long value;
+				try {
+					value = readPointer(program, slot, entrySize, bigEndian);
+				}
+				catch (MemoryAccessException e) {
+					// A slot past the block's end; the rest of the table is out with it, but
+					// the entries already walked stand — report rather than abort.
+					invalid.add(slot + ": no bytes to read (" + e.getMessage() + ")");
+					continue;
+				}
+				Address target;
+				try {
+					target = slot.getNewAddress(value);
+				}
+				catch (RuntimeException e) {
+					// Beyond the address space itself (garbage read as a wide pointer).
+					invalid.add(slot + " -> 0x" + Long.toHexString(value) + " (outside memory)");
+					continue;
+				}
+				if (!program.getMemory().contains(target)) {
+					invalid.add(slot + " -> 0x" + Long.toHexString(value) + " (outside memory)");
+					continue;
+				}
+				program.getReferenceManager().addMemoryReference(slot, target, refType,
+					SourceType.USER_DEFINED, CodeUnit.MNEMONIC);
+				if (program.getFunctionManager().getFunctionAt(target) != null) {
+					existing++;
+					continue;
+				}
+				try {
+					ensureInstructionAt(program, target);
+				}
+				catch (IllegalArgumentException e) {
+					failed.add(slot + " -> " + target + ": " + e.getMessage());
+					continue;
+				}
+				CreateFunctionCmd cmd =
+					new CreateFunctionCmd(null, target, null, SourceType.USER_DEFINED);
+				if (!cmd.applyTo(program, TaskMonitor.DUMMY)) {
+					failed.add(slot + " -> " + target + ": " + cmd.getStatusMsg());
+					continue;
+				}
+				Function function = program.getFunctionManager().getFunctionAt(target);
+				String note = function != null ? function.getName() + " @ " + target
+						: "@ " + target;
+				if (function != null && !huskNote(program, function).isEmpty()) {
+					husks.add(note);
+				}
+				else {
+					created.add(note);
+				}
+			}
+			StringBuilder sb = new StringBuilder();
+			sb.append("Walked ").append(count).append(" table entr").append(count == 1 ? "y" : "ies")
+					.append(" @ ").append(table).append(" (").append(entrySize)
+					.append("-byte pointers every ").append(stride).append(" bytes, ")
+					.append(bigEndian ? "big" : "little").append("-endian, ").append(refType)
+					.append(" refs): ").append(created.size()).append(" function(s) created, ")
+					.append(existing).append(" already existed")
+					.append(husks.isEmpty() ? "" : ", " + husks.size() + " came out as 1-byte husks")
+					.append(invalid.isEmpty() ? "" : ", " + invalid.size() + " outside memory")
+					.append(failed.isEmpty() ? "." : ", " + failed.size() + " failed.");
+			appendNames(sb, "Created", created);
+			appendNames(sb, "HUSKS (1-byte body, bytes did not disassemble)", husks);
+			appendNames(sb, "Outside memory (no reference made)", invalid);
+			appendNames(sb, "Failed", failed);
+			return sb.toString();
+		});
+	}
+
+	/** Assemble an unsigned pointer from raw table bytes; width and byte order are the caller's. */
+	private static long readPointer(Program program, Address slot, int entrySize,
+			boolean bigEndian) throws MemoryAccessException {
+		byte[] raw = new byte[entrySize];
+		program.getMemory().getBytes(slot, raw);
+		long value = 0;
+		for (int i = 0; i < entrySize; i++) {
+			int b = raw[bigEndian ? i : entrySize - 1 - i] & 0xff;
+			value = (value << 8) | b;
+		}
+		return value;
 	}
 
 	private McpSchema.CallToolResult createReference(Program program, Address from, String toArg,

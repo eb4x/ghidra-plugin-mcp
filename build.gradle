@@ -263,6 +263,8 @@ tasks.register('smokeTest', Exec) {
 		targetSrc.text = '#include <stdio.h>\n' +
 			'static int helper(int x) { return x * 3 + 1; }\n' +
 			'static int mix(int a, int b) { int r = 0; for (int i = 0; i < a; i++) r += b ^ i; return r; }\n' +
+			// A function-pointer dispatch table, for create kind=functions_from_table.
+			'void *mcp_table[2] = { (void *) helper, (void *) mix };\n' +
 			'int main(int argc, char **argv) {\n' +
 			'  int total = 0;\n' +
 			'  for (int i = 0; i < argc; i++) total += mix(helper(i), argc) + (argv[i] ? 1 : 0);\n' +

@@ -20,6 +20,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.data.StringDataInstance;
@@ -28,6 +29,7 @@ import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Listing;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.SourceType;
@@ -63,6 +65,12 @@ public class ListTool implements ProgramTool {
 	private static final List<String> SORTS = List.of("address", "name", "callers");
 
 	/** Kinds whose items carry a symbol, so 'is this name auto-generated?' is answerable. */
+	/** Bodies smaller than this are never tagged TEXT: short code is printable by chance. */
+	private static final long TEXT_BODY_MIN_BYTES = 16;
+	/** How much of a body the TEXT check reads. */
+	private static final int TEXT_BODY_SAMPLE = 4096;
+	private static final double TEXT_BODY_RATIO = 0.85;
+
 	private static final List<String> USER_ONLY_KINDS = List.of("functions", "symbols", "data");
 
 	private static final int DEFAULT_LIMIT = 100;
@@ -83,7 +91,9 @@ public class ListTool implements ProgramTool {
 			"gave, dropping Ghidra's auto-generated ones (FUN_*, LAB_*, DAT_*, …) — the way to " +
 			"export the curated symbol map without a script. kind=functions also shows each " +
 			"function's body size and takes min_body/max_body (bytes): max_body=1 enumerates " +
-			"'husk' functions whose code was never disassembled. kind=bookmarks lists bookmarks " +
+			"'husk' functions whose code was never disassembled, and a line ending '<-- TEXT: N% …' " +
+			"marks a body that is mostly character data — a string table auto-analysis turned " +
+			"into a bogus function (filter='TEXT:' lists them). kind=bookmarks lists bookmarks " +
 			"(type/category/address/comment) — this is where the disassembler records its own " +
 			"failures as ERROR 'Bad Instruction' marks, so filter=error to see what it could not " +
 			"decode. kind=comments lists every plate/pre/eol/post/repeatable comment as 'address  " +
@@ -299,10 +309,62 @@ public class ListTool implements ProgramTool {
 			// A function object whose entry holds no instruction has no code at all — it looks
 			// resolved to every consumer while being empty. Say so on the line itself.
 			boolean husk = !f.isThunk() && listing.getInstructionAt(f.getEntryPoint()) == null;
+			String tag = husk ? "  <-- HUSK: no code at entry" : textBodyTag(program, f);
 			lines.add(f.getEntryPoint() + "  [" + callers + " callers, " + body + "B]  " +
-				signatureOf(f) + (husk ? "  <-- HUSK: no code at entry" : ""));
+				signatureOf(f) + tag);
 		}
 		return lines;
+	}
+
+	/**
+	 * "  <-- TEXT: …" when a function's body is mostly character data — auto-analysis happily
+	 * disassembles a NUL-separated string table and makes functions of it, and those then read
+	 * as real handlers. Printable ASCII plus the NUL/tab/newline that separate strings must
+	 * make up {@link #TEXT_BODY_RATIO} of the sampled body; tiny bodies are skipped, since a
+	 * handful of instruction bytes can be printable by chance.
+	 */
+	private static String textBodyTag(Program program, Function f) {
+		if (f.isThunk()) {
+			return "";
+		}
+		long size = f.getBody().getNumAddresses();
+		if (size < TEXT_BODY_MIN_BYTES) {
+			return "";
+		}
+		int sampled = 0;
+		int texty = 0;
+		int printable = 0;
+		for (AddressRange range : f.getBody()) {
+			int want = (int) Math.min(range.getLength(), TEXT_BODY_SAMPLE - sampled);
+			byte[] bytes = new byte[want];
+			int got;
+			try {
+				got = program.getMemory().getBytes(range.getMinAddress(), bytes);
+			}
+			catch (MemoryAccessException e) {
+				continue;
+			}
+			for (int i = 0; i < got; i++) {
+				int b = bytes[i] & 0xff;
+				if (b >= 0x20 && b < 0x7f) {
+					printable++;
+					texty++;
+				}
+				else if (b == 0 || b == '\t' || b == '\n' || b == '\r') {
+					texty++;
+				}
+			}
+			sampled += got;
+			if (sampled >= TEXT_BODY_SAMPLE) {
+				break;
+			}
+		}
+		// Printable must dominate too, or a zero-filled region would qualify.
+		if (sampled == 0 || texty < sampled * TEXT_BODY_RATIO || printable * 2 < sampled) {
+			return "";
+		}
+		return "  <-- TEXT: " + (100 * texty / sampled) + "% of the body is character data " +
+			"(likely a string table analysis disassembled, not code)";
 	}
 
 	/**

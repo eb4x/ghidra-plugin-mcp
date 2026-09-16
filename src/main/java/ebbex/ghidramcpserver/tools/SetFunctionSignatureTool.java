@@ -279,8 +279,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 					.parse(function.getSignature(), normalizePrototype(signature));
 		}
 		catch (Exception e) {
-			return Results.error("Could not parse signature '" + signature + "': " + e.getMessage() +
-				". If a type name is unknown, define it first with define_types.");
+			return Results.error(parseFailure(program, function, signature, e));
 		}
 		if (definition == null) {
 			return Results.error("Could not parse signature: " + signature);
@@ -308,6 +307,62 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	 * return type (it mis-reads {@code FILE *fopen} as a name of {@code *fopen}). So strip
 	 * qualifiers and move any star that sits against the function name onto the return type.
 	 */
+	/**
+	 * A parse failure, with every unresolved type named — not just the first. The parser
+	 * fails fast on one type per attempt, so a signature with several unknown types would
+	 * otherwise cost one round trip each; re-parsing with each failing type substituted by
+	 * {@code int} collects them all, and one define_types call can then create the lot.
+	 */
+	private static String parseFailure(Program program, Function function, String signature,
+			Exception e) {
+		List<String> unresolved = new ArrayList<>();
+		String working = normalizePrototype(signature);
+		String residual = e.getMessage();
+		for (int i = 0; i < 10; i++) {
+			String name = unresolvedTypeName(residual);
+			if (name == null || unresolved.contains(name)) {
+				break;
+			}
+			unresolved.add(name);
+			working = working.replaceAll(
+				"\\b" + java.util.regex.Pattern.quote(name) + "\\b", "int");
+			try {
+				new FunctionSignatureParser(program.getDataTypeManager(), null)
+						.parse(function.getSignature(), working);
+				residual = null;
+				break;
+			}
+			catch (Exception next) {
+				residual = next.getMessage();
+			}
+		}
+		if (unresolved.isEmpty()) {
+			return "Could not parse signature '" + signature + "': " + e.getMessage() +
+				". If a type name is unknown, define it first with define_types.";
+		}
+		return "Could not parse signature '" + signature + "': unresolved type(s): " +
+			String.join(", ", unresolved) + " — define them first with define_types (a " +
+			"forward declaration like 'struct " + unresolved.get(0) + ";' makes an empty " +
+			"struct that works as an opaque type behind a pointer)" +
+			(residual != null ? "; after that, also: " + residual : "") + ".";
+	}
+
+	/** The type name inside the parser's fail-fast resolve errors, pointer stars stripped. */
+	private static String unresolvedTypeName(String message) {
+		if (message == null) {
+			return null;
+		}
+		for (String prefix : List.of("Can't resolve datatype: ", "Can't resolve return type: ")) {
+			int at = message.indexOf(prefix);
+			if (at >= 0) {
+				String raw = message.substring(at + prefix.length());
+				String name = raw.replaceAll("[\\s*]+$", "").trim();
+				return name.isEmpty() ? null : name;
+			}
+		}
+		return null;
+	}
+
 	static String normalizePrototype(String signature) {
 		String s = signature.replaceAll("\\b(?:const|volatile)\\b", " ");
 		int paren = s.indexOf('(');

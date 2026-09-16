@@ -1,6 +1,9 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -22,7 +25,11 @@ import io.modelcontextprotocol.spec.McpSchema;
 public class SearchMemoryTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("bytes", "text", "instruction");
+	private static final List<String> SOURCES = List.of("memory", "file");
 	private static final int DEFAULT_LIMIT = 32;
+
+	/** source=file reads the whole file into memory; firmware and executables sit far below. */
+	private static final long MAX_FILE_BYTES = 512L * 1024 * 1024;
 
 	@Override
 	public String name() {
@@ -35,7 +42,11 @@ public class SearchMemoryTool implements ProgramTool {
 			"byte (e.g. '48 8b ?? c3'); kind=text matches an ASCII substring; kind=instruction " +
 			"matches disassembled instruction text case-insensitively (e.g. 'JMP word ptr CS:' " +
 			"or 'MOV AX' — a substring of mnemonic + operands as the listing prints them). " +
-			"Returns matching addresses (default limit " + DEFAULT_LIMIT + ").";
+			"Returns matching addresses (default limit " + DEFAULT_LIMIT + "). source=file scans " +
+			"the program's on-disk file instead (kind=bytes|text), returning FILE OFFSETS — " +
+			"pasteable into read_file — each with the address(es) it is loaded at in this program, " +
+			"or 'not loaded'; that covers images larger than the language's address space (a " +
+			"banked 8051 flash) and payloads no block maps, without a throwaway re-import.";
 	}
 
 	@Override
@@ -46,6 +57,8 @@ public class SearchMemoryTool implements ProgramTool {
 				"pattern", Schemas.stringProp(
 					"Hex bytes with optional '??' wildcards, text, or instruction-text substring"),
 				"kind", Schemas.enumProp("How to interpret 'pattern' (default 'bytes')", KINDS),
+				"source", Schemas.enumProp("What to scan: memory (default, the loaded address " +
+					"space) or file (the program's on-disk file, by offset)", SOURCES),
 				"offset", Schemas.intProp("Skip this many matches (for paging; default 0)"),
 				"limit", Schemas.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")")),
 			"required", List.of("pattern"));
@@ -65,6 +78,14 @@ public class SearchMemoryTool implements ProgramTool {
 		String kind = Args.stringArg(args, "kind", "bytes");
 		if (!KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
+		}
+		String source = Args.stringArg(args, "source", "memory");
+		if (!SOURCES.contains(source)) {
+			return Results.error("source must be one of " + SOURCES);
+		}
+		if (source.equals("file") && kind.equals("instruction")) {
+			return Results.error("source=file scans raw bytes, so it takes kind=bytes|text — " +
+				"instructions only exist in the loaded address space");
 		}
 		int limit = Math.max(1, Args.intArg(args, "limit", DEFAULT_LIMIT));
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
@@ -88,6 +109,10 @@ public class SearchMemoryTool implements ProgramTool {
 			catch (IllegalArgumentException e) {
 				return Results.error(e.getMessage());
 			}
+		}
+
+		if (source.equals("file")) {
+			return searchFile(program, kind, values, masks, offset, limit);
 		}
 
 		List<String> hits = new ArrayList<>();
@@ -123,6 +148,85 @@ public class SearchMemoryTool implements ProgramTool {
 					"; more available — raise 'limit' or page with 'offset')"
 				: "\n(" + hits.size() + " matches from offset " + offset + "; end of results)";
 		return Results.ok(String.join("\n", hits) + footer);
+	}
+
+	/**
+	 * Scan the program's on-disk file by offset. The file is what the program was imported
+	 * from ({@code getExecutablePath}), so it can hold far more than the program maps — the
+	 * case that used to force a second, meaningless raw import just to make every offset
+	 * searchable. Each hit says where (if anywhere) this program loaded those bytes.
+	 */
+	private static McpSchema.CallToolResult searchFile(Program program, String kind,
+			byte[] values, byte[] masks, int offset, int limit) {
+		String path = program.getExecutablePath();
+		File file = path == null ? null : new File(path);
+		if (file == null || !file.isFile()) {
+			return Results.error("The program's on-disk file is not available: " + path +
+				" (imported from elsewhere, or the file moved) — source=file needs it.");
+		}
+		if (file.length() > MAX_FILE_BYTES) {
+			return Results.error(path + " is " + file.length() + " bytes; source=file scans at " +
+				"most " + MAX_FILE_BYTES + ".");
+		}
+		byte[] data;
+		try {
+			data = Files.readAllBytes(file.toPath());
+		}
+		catch (IOException e) {
+			return Results.error("Could not read " + path + ": " + e.getMessage());
+		}
+
+		List<String> hits = new ArrayList<>();
+		int index = 0;
+		boolean more = false;
+		for (int at = 0; at + values.length <= data.length; at++) {
+			if (!matchesAt(data, at, values, masks)) {
+				continue;
+			}
+			if (index++ < offset) {
+				continue;
+			}
+			if (hits.size() == limit) {
+				more = true;
+				break;
+			}
+			hits.add(String.format("0x%x", at) + loadedAt(program, at));
+		}
+
+		String header = "file " + path + " (" + data.length + " bytes)\n";
+		if (hits.isEmpty()) {
+			return Results.ok(header + "No matches for " + kind + " pattern in the file" +
+				(offset > 0 ? " at offset " + offset : ""));
+		}
+		String footer = more
+				? "\n(" + hits.size() + " matches from offset " + offset +
+					"; more available — raise 'limit' or page with 'offset')"
+				: "\n(" + hits.size() + " matches from offset " + offset + "; end of results)";
+		return Results.ok(header + String.join("\n", hits) + footer);
+	}
+
+	private static boolean matchesAt(byte[] data, int at, byte[] values, byte[] masks) {
+		for (int i = 0; i < values.length; i++) {
+			int mask = masks == null ? 0xff : masks[i] & 0xff;
+			if ((data[at + i] & mask) != (values[i] & mask)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** "  -> addr" for each place this program loaded the offset, or "  (not loaded here)". */
+	private static String loadedAt(Program program, long fileOffset) {
+		List<Address> addresses = program.getMemory().locateAddressesForFileOffset(fileOffset);
+		if (addresses.isEmpty()) {
+			return "  (not loaded in this program)";
+		}
+		StringBuilder sb = new StringBuilder("  ->");
+		for (Address address : addresses) {
+			sb.append(' ').append(blockRelative(program, address))
+					.append(describeContainer(program, address));
+		}
+		return sb.toString();
 	}
 
 	/**

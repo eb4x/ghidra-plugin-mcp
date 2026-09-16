@@ -113,8 +113,9 @@ public final class Locations {
 	 * {@code 0x2f0b}, or an overlay/space-qualified {@code BLOCK::0000} form.
 	 * (A bare hex string like {@code 287c} is ambiguous — it could equally be a
 	 * symbol name — so it is tried as an address only after the symbol lookup.)
+	 * Public for batch's name pinning, which must leave such strings untouched.
 	 */
-	private static boolean isAddressSyntax(String s) {
+	public static boolean isAddressSyntax(String s) {
 		return s.matches("(?i)0x[0-9a-f]+") ||
 			s.matches("(?i)[0-9a-f]+:[0-9a-f]+") ||
 			s.contains("::");
