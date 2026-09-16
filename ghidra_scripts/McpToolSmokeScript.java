@@ -118,11 +118,54 @@ public class McpToolSmokeScript extends GhidraScript {
 					failures++;
 					println("!! base_address was not applied");
 				}
+				// This "binary" is C source text, so a function forced onto it is exactly the
+				// bogus string-table function list kind=functions must tag TEXT.
+				prog("create", Map.of("kind", "function", "address", "07c0:0000"), rawProg);
+				McpSchema.CallToolResult textFns =
+					prog("list", Map.of("kind", "functions"), rawProg);
+				if (!text(textFns).contains("<-- TEXT:")) {
+					failures++;
+					println("!! a function over ASCII text was not tagged TEXT");
+				}
 			}
 			finally {
 				rawProg.release(this);
 			}
 		}
+		// import options: a loader option set by its GUI name must land (BinaryLoader's
+		// 'Block Name'), and a name the loader doesn't offer must refuse with the real list
+		// rather than import with defaults.
+		app("import", Map.of("file", rawFile, "folder", "/raw-opts", "loader", "BinaryLoader",
+			"processor", "x86:LE:16:Real Mode", "options", Map.of("Block Name", "smokeblk")),
+			project);
+		DomainFile optsDf = project.getProjectData().getFile("/raw-opts/target.c");
+		if (optsDf == null) {
+			failures++;
+			println("!! import with options did not create /raw-opts/target.c");
+		}
+		else {
+			Program optsProg =
+				(Program) optsDf.getDomainObject(this, false, false, TaskMonitor.DUMMY);
+			try {
+				if (optsProg.getMemory().getBlock("smokeblk") == null) {
+					failures++;
+					println("!! loader option 'Block Name' was not applied");
+				}
+			}
+			finally {
+				optsProg.release(this);
+			}
+		}
+		McpSchema.CallToolResult badOption = app("import", Map.of("file", rawFile,
+			"folder", "/raw-opts", "loader", "BinaryLoader", "processor", "x86:LE:16:Real Mode",
+			"options", Map.of("__no_such_option__", "1")), project);
+		if (!text(badOption).contains("is not an option of this loader") ||
+			!text(badOption).contains("Block Name")) {
+			failures++;
+			println("!! unknown loader option was not refused with the option list");
+		}
+		app("manage_files", Map.of("op", "delete", "path", "/raw-opts", "recursive", true),
+			project);
 		// Refusals: the two dependency rules, then an unknown loader (lists the valid ones).
 		app("import", Map.of("file", rawFile, "cspec", "default"), project);
 		app("import", Map.of("file", rawFile, "base_address", "0x7c00"), project);
@@ -191,6 +234,21 @@ public class McpToolSmokeScript extends GhidraScript {
 				program); // now gone: exercises the no-such-reference error
 
 			// search_memory kind=instruction: substring of disassembled text.
+			// source=file: the ELF magic sits at file offset 0 and is loaded, so the hit must
+			// come back as a file offset WITH its load address; instructions can't be searched
+			// in a file and must refuse.
+			McpSchema.CallToolResult fileHit = prog("search_memory",
+				Map.of("pattern", "7f 45 4c 46", "source", "file", "limit", 3), program);
+			if (!text(fileHit).contains("\n0x0  ->")) {
+				failures++;
+				println("!! source=file did not report offset 0x0 with its load address");
+			}
+			McpSchema.CallToolResult fileInsn = prog("search_memory",
+				Map.of("pattern", "PUSH", "kind", "instruction", "source", "file"), program);
+			if (!Boolean.TRUE.equals(fileInsn.isError())) {
+				failures++;
+				println("!! source=file with kind=instruction was not refused");
+			}
 			prog("search_memory", Map.of("kind", "instruction", "pattern", "PUSH", "limit", 5),
 				program);
 
@@ -362,10 +420,51 @@ public class McpToolSmokeScript extends GhidraScript {
 
 			// manage_types: not-found path (deterministic; no custom types guaranteed here).
 			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);
-			// batch: exercises the settle-then-save path (ProjectContext.saveSettled).
-			prog("batch", Map.of("edits", List.of(
+			// batch: exercises the settle-then-save path (ProjectContext.saveSettled) and the
+			// pre-batch name snapshot — the set_comment addresses the function by the name the
+			// rename in the same batch just retired (the natural rename-then-annotate plan).
+			McpSchema.CallToolResult pinBatch = prog("batch", Map.of("edits", List.of(
 				Map.of("op", "rename", "kind", "function", "function", "mcp_renamed_init",
-					"new_name", "mcp_batch_renamed"))), program);
+					"new_name", "mcp_batch_renamed"),
+				Map.of("op", "set_comment", "function", "mcp_renamed_init", "kind", "plate",
+					"comment", "annotated via the pre-rename name"))), program);
+			if (!text(pinBatch).startsWith("2 ok, 0 failed")) {
+				failures++;
+				println("!! batch name snapshot: old-name edit after a rename did not succeed");
+			}
+
+			// create kind=functions_from_table: the target carries mcp_table, two pointers to
+			// helper and mix — both already functions here, so the walk must wire a reference
+			// from each slot and report both targets as existing (creation itself shares
+			// kind=function's disassemble-first machinery, covered above).
+			var tableSyms = program.getSymbolTable().getSymbols("mcp_table");
+			if (!tableSyms.hasNext()) {
+				failures++;
+				println("!! smoke target has no mcp_table symbol");
+			}
+			else {
+				String tableAddr = tableSyms.next().getAddress().toString();
+				McpSchema.CallToolResult walked = prog("create",
+					Map.of("kind", "functions_from_table", "address", tableAddr, "count", 2),
+					program);
+				if (!text(walked).contains("2 already existed")) {
+					failures++;
+					println("!! functions_from_table did not find both existing targets");
+				}
+				McpSchema.CallToolResult slotRefs = prog("xrefs",
+					Map.of("location", "helper", "direction", "to", "limit", 20), program);
+				if (!text(slotRefs).contains(tableAddr)) {
+					failures++;
+					println("!! no reference from the table slot to helper");
+				}
+				// count is never guessed from a terminator — omitting it must refuse.
+				McpSchema.CallToolResult noCount = prog("create",
+					Map.of("kind", "functions_from_table", "address", tableAddr), program);
+				if (!text(noCount).contains("count")) {
+					failures++;
+					println("!! functions_from_table without count was not refused");
+				}
+			}
 
 			// set_function_signature structured mode: a param pinned to a register (custom storage).
 			prog("set_function_signature", Map.of("function", "mcp_batch_renamed",
@@ -539,6 +638,32 @@ public class McpToolSmokeScript extends GhidraScript {
 				failures++;
 				println("!! helper still flagged after its prototype was fixed");
 			}
+
+			// A signature full of unknown types must name ALL of them in one error (the parser
+			// fails fast on the first; the tool re-parses with substitutions to collect the rest),
+			// so one define_types call can create the lot instead of one round trip per type.
+			McpSchema.CallToolResult unresolvedSig = prog("set_function_signature",
+				Map.of("function", "helper", "signature",
+					"mcp_undef_ret helper(mcp_undef_a * a, int b, mcp_undef_b c)"),
+				program);
+			String unresolvedText = text(unresolvedSig);
+			if (!unresolvedText.contains("mcp_undef_ret") || !unresolvedText.contains("mcp_undef_a") ||
+				!unresolvedText.contains("mcp_undef_b")) {
+				failures++;
+				println("!! unresolved-type error did not name all three unknown types");
+			}
+			// The advertised workaround must actually work: a forward declaration makes an
+			// empty struct usable behind a pointer.
+			prog("define_types", Map.of("source", "struct mcp_undef_a;"), program);
+			McpSchema.CallToolResult forwardSig = prog("set_function_signature",
+				Map.of("function", "helper", "signature", "int helper(mcp_undef_a * a)"),
+				program);
+			if (Boolean.TRUE.equals(forwardSig.isError())) {
+				failures++;
+				println("!! forward-declared struct was not usable behind a pointer");
+			}
+			prog("set_function_signature",
+				Map.of("function", "helper", "signature", "int helper(int x)"), program);
 
 			// set_comment (never previously smoke-covered) + list kind=comments: write a plate
 			// comment, then find it by TEXT without knowing the address — the query that used to

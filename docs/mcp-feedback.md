@@ -52,7 +52,7 @@ Append new entries at the bottom.
 <!-- entries below, newest last -->
 
 _Resolved friction is archived in
-[archive/mcp-feedback.md](archive/mcp-feedback.md) (62 entries, several since verified live): the `set_function_signature`
+[archive/mcp-feedback.md](archive/mcp-feedback.md) (63 entries, several since verified live): the `set_function_signature`
 custom per-param storage (register / register-pair / stack) + custom `return` storage,
 the `decompile` coverage header,
 `xrefs`/`calls` honest-zero caveats, the OVERLAY_24 analyzer root-cause, `read_log`, `xRam…` global
@@ -134,7 +134,10 @@ comment-rename verdict's one residual cost (0.16.0: `full=true` on `list kind=co
 untruncated texts, so a bulk rewrite needs no per-address inspect calls), and the sweep's two
 reporting hazards (0.16.1: flag-bit reads are partitioned out and named as artifacts — flags-only
 functions tagged, not dropped — and registers sort alphabetically so nobody infers argument order
-from enumeration order again)._
+from enumeration order again), and the first request from outside the mads chain — the
+undeletable CodeBrowser-held program (0.17.0: `manage_files op=delete` closes the file in every
+running tool first, automatically when clean, with `on_dirty=discard` when it holds unsaved
+changes — and note an open tab counts as changed even untouched)._
 
 
 ## 2026-08-31 — analyzer-side — an auto-created string swallowed the last byte of a JMP
@@ -154,20 +157,95 @@ works this area)._
   when picking a string start. No tool change proposed — `disassemble`'s offcut announcement and
   the ERROR-bookmark channel surfaced it exactly as designed.
 
-## 2026-09-15 — manage_files — a program open in a CodeBrowser is undeletable over MCP
-_Reported by the `dumps` session (u-boot RE), the first project outside the mads chain to dogfood
-the server. Implemented as 0.17.0, pending deploy — move to the archive when it is serving._
+## 2026-09-15 — batch — a mid-batch rename breaks later edits that use the old name
+_Reported by the `hp-z27k-g3` session (GLHub.dll RE). Implemented as 0.17.1, pending deploy._
 
-- **Task:** delete a mis-imported program (`/u-boot.bin`, wrong base address) and re-import it.
-- **Friction:** `manage_files op=delete` refused with "'/u-boot.bin' is held open by: GhidraTool —
-  close it there first", and no MCP tool can close a program in a CodeBrowser — so a bad import
-  can only be removed by a human clicking in the GUI.
-- **Expected:** the delete to close the program in whatever tool holds it (with an `on_dirty`
-  policy like `manage_project op=close`) and proceed.
-- **Resolution (0.17.0):** `op=delete` now walks the running tools' `ProgramManager` services and
-  closes the file wherever it is open before deleting — automatically when it is clean, and only
-  with `on_dirty=discard` when it has unsaved changes there (`save` is deliberately not offered:
-  the file is being destroyed either way, so a save option would be a lie). A consumer that is
-  not a running tool (a dialog, a script) still refuses, now saying it is one the server cannot
-  close. `rename`/`move`/`copy` never had the refusal and are unchanged; a *recursive folder*
-  delete still refuses on open files (extend the same close-first pass there if someone hits it).
+- **Task:** a natural rename-then-annotate plan: `{op:rename, function:"FUN_00464980",
+  new_name:"X"}` followed by `{op:set_comment, function:"FUN_00464980", …}` in one batch.
+- **Friction:** the later edits fail with "No function named or containing address
+  'FUN_00464980'" — the rename already happened, so the old name no longer resolves. Every
+  later edit had to use addresses.
+- **Resolution (0.17.1):** batch resolves every edit's `function`/`location` NAME to an address
+  against the pre-batch state, before any edit runs — the state the edit list was written from.
+  Strings already in address syntax are untouched, and a name that doesn't resolve yet is left
+  for its edit (it may reference something an earlier edit in the same batch creates). The same
+  hazard when chaining STANDALONE calls quickly is inherent (each call resolves against current
+  state) and is not changed — use the new name or the address there.
+
+## 2026-09-15 — set_function_signature — unresolved-type errors name only the first type
+_Reported by the `hp-z27k-g3` session. Error listing implemented as 0.17.1, pending deploy; the
+auto-create-opaque-struct part declined — the forward-declaration workaround covers it in one
+round trip._
+
+- **Task:** apply a C signature mentioning not-yet-defined types (e.g. `std_string *`).
+- **Friction:** "Can't resolve datatype" fails fast on the first unknown type, so a signature
+  with several costs one round trip each; also asked for auto-creating opaque structs.
+- **Resolution (0.17.1):** on a resolve failure the tool re-parses with each failing type
+  substituted, collecting ALL unresolved names into one error ("unresolved type(s): a, b, c"),
+  so a single define_types call can create the lot. The error also teaches the opaque-type
+  path — `define_types source='struct std_string;'` yields an empty struct usable behind a
+  pointer (smoke-verified) — which is why silent auto-creation was declined: an explicit empty
+  struct in the type manager beats one the tool invents as a side effect.
+
+## 2026-09-16 — create — dispatch/pointer tables resolved by hand, plus three 8051 notes
+_Reported by the `hp-z27k-g3` session from the GL3523 (Keil C51) dogfood — the first non-x86
+exercise of the server. Item 2 implemented as 0.18.0, pending deploy; 1, 3, 4 answered with
+today-paths._
+
+- **Task (2, the accepted one):** Keil `?C?CCASE` inline switch tables and 16-bit USB
+  request-dispatch pointer tables — each entry needed read_bytes, `create kind=function`, and
+  `create kind=reference` by hand.
+- **Resolution (0.18.0):** `create kind=functions_from_table` walks `count` entries at
+  `address` (`entry_size` defaulting to the program's pointer size, `stride` for
+  `<pointer, extra fields>` records, endianness from the language, `ref_type` default computed_call),
+  wiring a reference from every slot and creating a function at every target; out-of-memory
+  entries are listed, not fatal. `count` is deliberately explicit — a guessed terminator would
+  walk past tables whose 0 is a valid address elsewhere. The CCASE-aware *analyzer* half
+  belongs to the new `ghidra-plugin-keil8051` session (spun up 2026-09-16; spec handed over —
+  banked-code memory model first, then the CCASE analyzer and vector seeding).
+- **1 (8051 vector seeding): not added** — per-processor vector maps are analyzer/loader
+  knowledge, not MCP-surface; today's path is one `batch` of `create kind=function` edits at
+  base+0/0x3/0xB/… (four edits, one call). An analyzer for it is in the
+  `ghidra-plugin-keil8051` spec.
+- **3 (load-base scoring for raw images): not added** — a one-shot-per-image diagnostic, fine
+  out-of-band; will revisit if it becomes a recurring step.
+- **4 (Genesys SFR names): closed, existing tools cover it** — the reporter tested
+  `rename kind=label address=SFR:0xc8 new_name=T2CON_test_rename` on the GL3523 image: the
+  language-defined SFR symbol renamed (and renamed back) cleanly, and `inspect` shows the
+  primary label. No tool change needed.
+
+## 2026-09-16 — search_memory — no way to search a whole on-disk file
+_Reported by `hp-z27k-g3` (MStar scaler, 1.26 MB 8051 flash). Implemented in 0.19.0, pending
+deploy._
+
+- **Friction:** the 8051 language's 16-bit code space can't hold the image, so answering "does
+  `AA 55` occur anywhere in this file" meant importing the file a second time as raw
+  x86:LE:32 purely so `search_memory` could see every offset.
+- **Resolution (0.19.0):** `search_memory source=file` (kind=bytes|text) scans the program's
+  on-disk file and returns file offsets — pasteable into `read_file` — each with the address(es)
+  this program loaded it at, or "not loaded in this program". Multi-program/project-wide search
+  not added: the file scan covers the stated case, since every module program points back at
+  the same source file.
+
+## 2026-09-16 — list — bogus functions over string tables read as real handlers
+_Reported by `hp-z27k-g3` (PD/VDM command-name table at CODE:4c7f). Implemented in 0.19.0._
+
+- **Resolution:** `list kind=functions` ends a line with `<-- TEXT: N% of the body is character
+  data` when ≥85% of the (sampled) body is printable ASCII or NUL/tab/newline and printable
+  bytes are at least half — `filter='TEXT:'` lists them. Bodies under 16 bytes are never
+  tagged. A tag on the existing line, like HUSK, rather than a new parameter. The analyzer-side
+  cause (auto-analysis disassembling string tables) is not this server's to fix.
+
+## 2026-09-16 — import — loader-specific options can only be set in the GUI
+_Reported by `ghidra-plugin-keil8051` (its `MStarModuleLoader`'s `Module offsets` / `Module
+size`). Implemented in 0.19.0, pending deploy._
+
+- **Friction:** a loader's own options (`Loader.getDefaultOptions`) had no MCP path, so the
+  explicit-offsets import — needed for the USB-PD payload at 0x108000, which has no vector
+  table — was GUI-only.
+- **Resolution (0.19.0):** `import options={name-or-arg: value}`. Ghidra's `ProgramLoader`
+  applies options only by command-line arg and merely logs a warning for one it doesn't know,
+  so the tool resolves each key against the chosen load spec's default options first: a name
+  the loader doesn't offer is refused with the loader's full option list (name, arg, default),
+  and an option declared without an arg is refused with the reason (the loader must give it
+  one). Smoke-verified with BinaryLoader's `Block Name`.

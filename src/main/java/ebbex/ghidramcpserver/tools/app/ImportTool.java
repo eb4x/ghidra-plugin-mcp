@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -18,17 +19,26 @@ import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.ProjectContext;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
+import ghidra.app.util.Option;
+import ghidra.app.util.bin.ByteProvider;
+import ghidra.app.util.importer.LcsHintLoadSpecChooser;
+import ghidra.app.util.importer.LoadSpecChooser;
 import ghidra.app.util.importer.ProgramLoader;
 import ghidra.app.util.opinion.LoadException;
 import ghidra.app.util.opinion.LoadResults;
+import ghidra.app.util.opinion.LoadSpec;
 import ghidra.app.util.opinion.Loaded;
 import ghidra.app.util.opinion.Loader;
+import ghidra.app.util.opinion.LoaderMap;
+import ghidra.app.util.opinion.LoaderService;
 import ghidra.formats.gfilesystem.FSRL;
 import ghidra.formats.gfilesystem.FileSystemRef;
 import ghidra.formats.gfilesystem.FileSystemService;
 import ghidra.formats.gfilesystem.GFile;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
+import ghidra.program.model.lang.CompilerSpecID;
+import ghidra.program.model.lang.LanguageID;
 import ghidra.program.model.lang.LanguageNotFoundException;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
@@ -70,7 +80,10 @@ public class ImportTool implements ApplicationLevelTool {
 			"the created project file path(s), which you then pass as 'program' to program tools. " +
 			"Pass analyze=true to queue auto-analysis of everything imported (poll " +
 			"get_program_info), or run 'analyze' yourself. For a headerless/raw binary that " +
-			"auto-detect rejects, pass 'loader' plus 'processor' (and usually 'base_address').";
+			"auto-detect rejects, pass 'loader' plus 'processor' (and usually 'base_address'). " +
+			"'options' sets any loader's own import options by name (as the GUI's Options… " +
+			"dialog shows them) or by command-line arg, e.g. {\"Module offsets\": \"0x0,0x108000\"}; " +
+			"a name the loader doesn't offer is refused with the list of options it does.";
 	}
 
 	@Override
@@ -92,7 +105,12 @@ public class ImportTool implements ApplicationLevelTool {
 				"cspec", Schemas.stringProp("Compiler spec ID, e.g. 'default' or 'gcc' (default: " +
 					"the language's default; requires 'processor')"),
 				"base_address", Schemas.stringProp("Load address for the image, e.g. '0x7c00' or " +
-					"segmented '07c0:0000' (default 0; requires 'processor')")),
+					"segmented '07c0:0000' (default 0; requires 'processor')"),
+				"options", Map.of(
+					"type", "object",
+					"description", "Loader-specific import options, {option name or arg: value}, " +
+						"merged over the loader's defaults; values are parsed by the option's own " +
+						"type")),
 			"required", List.of("file"));
 	}
 
@@ -103,7 +121,8 @@ public class ImportTool implements ApplicationLevelTool {
 
 	/** The loader settings shared by every file of one call. */
 	private record Settings(Project project, String folder, Class<? extends Loader> loaderClass,
-			String loaderName, String processor, String cspec, String baseAddress) {
+			String loaderName, String processor, String cspec, String baseAddress,
+			Map<String, String> options) {
 
 		ProgramLoader.Builder builder() {
 			ProgramLoader.Builder builder = ProgramLoader.builder()
@@ -123,6 +142,84 @@ public class ImportTool implements ApplicationLevelTool {
 			}
 			return builder;
 		}
+
+		/**
+		 * The builder for one source, with {@code options} translated into loader args.
+		 * ProgramLoader applies options only by their command-line arg ({@code Option.getArg()})
+		 * and merely logs a warning for an arg it doesn't recognise, so a misspelt option would
+		 * import with defaults and look like success. Resolving against the loader's own
+		 * default options first — the same load spec ProgramLoader will choose — turns that
+		 * into a refusal that lists what the loader actually offers.
+		 */
+		ProgramLoader.Builder builder(FSRL source) throws Exception {
+			ProgramLoader.Builder builder = builder().source(source);
+			if (options.isEmpty()) {
+				return builder;
+			}
+			for (Map.Entry<String, String> arg : resolveOptions(source).entrySet()) {
+				builder.addLoaderArg(arg.getKey(), arg.getValue());
+			}
+			return builder;
+		}
+
+		private Map<String, String> resolveOptions(FSRL source) throws Exception {
+			FileSystemService fss = FileSystemService.getInstance();
+			try (ByteProvider provider = fss.getByteProvider(source, true, TaskMonitor.DUMMY)) {
+				LoaderMap specs = LoaderService.getSupportedLoadSpecs(provider,
+					loaderClass != null ? l -> l.getClass().equals(loaderClass)
+							: LoaderService.ACCEPT_ALL);
+				LoadSpecChooser chooser = processor != null
+						? new LcsHintLoadSpecChooser(new LanguageID(processor),
+							cspec != null ? new CompilerSpecID(cspec) : null)
+						: LoadSpecChooser.CHOOSE_THE_FIRST_PREFERRED;
+				LoadSpec spec = chooser.choose(specs);
+				if (spec == null) {
+					// Let the load itself report "no load spec" through the usual path.
+					return Map.of();
+				}
+				Loader loader = spec.getLoader();
+				List<Option> defaults =
+					loader.getDefaultOptions(provider, spec, null, false, false);
+				Map<String, String> args = new LinkedHashMap<>();
+				List<String> problems = new ArrayList<>();
+				for (Map.Entry<String, String> wanted : options.entrySet()) {
+					Option match = defaults == null ? null : defaults.stream()
+							.filter(o -> wanted.getKey().equalsIgnoreCase(o.getName()) ||
+								wanted.getKey().equalsIgnoreCase(o.getArg()))
+							.findFirst()
+							.orElse(null);
+					if (match == null) {
+						problems.add("'" + wanted.getKey() + "' is not an option of this loader");
+					}
+					else if (match.getArg() == null) {
+						problems.add("'" + match.getName() + "' declares no command-line arg, so " +
+							"Ghidra's importer cannot set it outside the GUI (the loader must " +
+							"construct that Option with an arg)");
+					}
+					else {
+						args.put(match.getArg(), wanted.getValue());
+					}
+				}
+				if (!problems.isEmpty()) {
+					throw new IllegalArgumentException(source.getName() + ": loader '" +
+						loader.getName() + "' — " + String.join("; ", problems) +
+						". Its options: " + describe(defaults));
+				}
+				return args;
+			}
+		}
+
+		private static String describe(List<Option> options) {
+			if (options == null || options.isEmpty()) {
+				return "(none)";
+			}
+			return options.stream()
+					.filter(o -> !o.isHidden())
+					.map(o -> "'" + o.getName() + "'" +
+						(o.getArg() != null ? " [" + o.getArg() + "]" : " [no arg]") +
+						" = " + o.getValue())
+					.collect(Collectors.joining(", "));
+		}
 	}
 
 	@Override
@@ -138,6 +235,14 @@ public class ImportTool implements ApplicationLevelTool {
 		String processor = Args.stringArg(args, "processor", null);
 		String cspec = Args.stringArg(args, "cspec", null);
 		String baseAddress = Args.stringArg(args, "base_address", null);
+		Map<String, String> options = new LinkedHashMap<>();
+		Object optionsArg = args.get("options");
+		if (optionsArg != null && !(optionsArg instanceof Map<?, ?>)) {
+			return Results.error("'options' must be an object of {option name: value}");
+		}
+		if (optionsArg instanceof Map<?, ?> map) {
+			map.forEach((k, v) -> options.put(String.valueOf(k), String.valueOf(v)));
+		}
 
 		if (cspec != null && processor == null) {
 			return Results.error(
@@ -156,7 +261,8 @@ public class ImportTool implements ApplicationLevelTool {
 			}
 		}
 		Settings settings =
-			new Settings(project, folder, loaderClass, loaderName, processor, cspec, baseAddress);
+			new Settings(project, folder, loaderClass, loaderName, processor, cspec, baseAddress,
+				options);
 
 		List<File> files = expand(source);
 		boolean single = !isGlob(source) && !new File(source).isDirectory();
@@ -241,7 +347,10 @@ public class ImportTool implements ApplicationLevelTool {
 	private static void importOne(File file, Settings settings, List<String> created,
 			List<String> failures) {
 		try {
-			load(settings.builder().source(file), created);
+			load(settings.builder(FileSystemService.getInstance().getLocalFSRL(file)), created);
+		}
+		catch (IllegalArgumentException e) {
+			failures.add(e.getMessage());
 		}
 		catch (LanguageNotFoundException e) {
 			failures.add("Unknown processor '" + settings.processor() + "': " + e.getMessage());
@@ -268,8 +377,12 @@ public class ImportTool implements ApplicationLevelTool {
 				return;
 			}
 			if (msg.contains("Cannot load with null options")) {
-				failures.add("The loader rejected an option value — check base_address '" +
-					settings.baseAddress() + "' (hex like '0x7c00', or segmented '07c0:0000').");
+				failures.add("The loader rejected an option value — check " +
+					(settings.baseAddress() != null ? "base_address '" + settings.baseAddress() +
+						"' (hex like '0x7c00', or segmented '07c0:0000')" : "") +
+					(settings.baseAddress() != null && !settings.options().isEmpty() ? " and " : "") +
+					(!settings.options().isEmpty() ? "the 'options' values " + settings.options() +
+						" against each option's type" : "") + ".");
 				return;
 			}
 			failures.add(file + ": " + msg);
@@ -299,7 +412,7 @@ public class ImportTool implements ApplicationLevelTool {
 			for (GFile member : ref.getFilesystem().files(f -> !f.isDirectory())) {
 				members++;
 				try {
-					load(settings.builder().source(member.getFSRL()), created);
+					load(settings.builder(member.getFSRL()), created);
 				}
 				catch (Exception e) {
 					failures.add(file.getName() + " member " + member.getName() + ": " +
