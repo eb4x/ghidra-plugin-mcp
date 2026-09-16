@@ -1778,3 +1778,24 @@ _Verification record for the five entries above._
   = offset − 0x20080. Both reporters also hit the stale-schema effect independently: clients
   keep pre-restart schemas, so new parameters (`source`, `options`) are invisible until a
   reconnect but are accepted — a discoverability lag, not a failure.
+
+## 2026-09-16 — RESOLVED (0.20.0) — set_function_signature can't mark a function no-return — ghidra-plugin-keil8051
+- **Friction:** testing a decompiler fix live (a Keil `?C?CCASE` helper treated as a
+  returning call, so its inline case table decompiled as code) needed the helper marked
+  no-return. `signature="noreturn void keil_ccase_switch(void)"` failed with
+  `unresolved type(s): noreturn void`, and no tool or `op` set the flag.
+- **Fix (b77b2bd):** `set_function_signature` takes `noreturn: true|false`. Alone it changes
+  only the flag; with a signature, custom storage or an inferred commit it is applied last,
+  so `false` clears (`ApplyFunctionSignatureCmd` only ever sets it). A `noreturn` /
+  `__noreturn` / `_Noreturn` keyword in `signature` fails with a pointer to the flag.
+  Smoke-covered.
+- **Verified live** on a scratch import of the smoke target: `noreturn=true` alone put
+  "Subroutine does not return" on both calls in `main`'s decompile; a re-applied signature
+  kept the flag; `noreturn=false` restored the `return;`s. keil8051 ended up solving its case
+  with a call-fixup plus call-site jump-table override (a real `switch`, where no-return
+  only gave "does not return"), keeping no-return as a fallback, so the flag's main use
+  is hand curation.
+- **Worked well (same report):** `decompile dump_jumptables=true` distinguished
+  `override at CODE:8811: CONSUMED` from `table at CODE:89b6: decompiler-discovered` in one
+  call, which confirmed that the extension correctly stood aside for the table the
+  decompiler had already found.
