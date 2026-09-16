@@ -1647,3 +1647,134 @@ the server. Resolved in 0.17.0 (3204fdc), verified live the same day._
   dumps on the original mis-import. Also fixed by the smoke additions: the script's held-open,
   self-migrate, and copy-snapshot checks had pointed at `/ls` instead of `/ls.bin` and were
   exercising the not-found path all along.
+
+## 2026-09-15 — batch — a mid-batch rename breaks later edits that use the old name
+_Reported by the `hp-z27k-g3` session (GLHub.dll RE). Resolved in 0.19.0 (shipped bundled; 5d0cd0f), verified live by the reporter._
+
+- **Task:** a natural rename-then-annotate plan: `{op:rename, function:"FUN_00464980",
+  new_name:"X"}` followed by `{op:set_comment, function:"FUN_00464980", …}` in one batch.
+- **Friction:** the later edits fail with "No function named or containing address
+  'FUN_00464980'" — the rename already happened, so the old name no longer resolves. Every
+  later edit had to use addresses.
+- **Resolution (0.17.1):** batch resolves every edit's `function`/`location` NAME to an address
+  against the pre-batch state, before any edit runs — the state the edit list was written from.
+  Strings already in address syntax are untouched, and a name that doesn't resolve yet is left
+  for its edit (it may reference something an earlier edit in the same batch creates). The same
+  hazard when chaining STANDALONE calls quickly is inherent (each call resolves against current
+  state) and is not changed — use the new name or the address there.
+
+## 2026-09-15 — set_function_signature — unresolved-type errors name only the first type
+_Reported by the `hp-z27k-g3` session. Error listing resolved in 0.19.0, verified live; the
+auto-create-opaque-struct part declined — the forward-declaration workaround covers it in one
+round trip._
+
+- **Task:** apply a C signature mentioning not-yet-defined types (e.g. `std_string *`).
+- **Friction:** "Can't resolve datatype" fails fast on the first unknown type, so a signature
+  with several costs one round trip each; also asked for auto-creating opaque structs.
+- **Resolution (0.17.1):** on a resolve failure the tool re-parses with each failing type
+  substituted, collecting ALL unresolved names into one error ("unresolved type(s): a, b, c"),
+  so a single define_types call can create the lot. The error also teaches the opaque-type
+  path — `define_types source='struct std_string;'` yields an empty struct usable behind a
+  pointer (smoke-verified) — which is why silent auto-creation was declined: an explicit empty
+  struct in the type manager beats one the tool invents as a side effect.
+
+## 2026-09-16 — create — dispatch/pointer tables resolved by hand, plus three 8051 notes
+_Reported by the `hp-z27k-g3` session from the GL3523 (Keil C51) dogfood — the first non-x86
+exercise of the server. Item 2 resolved in 0.19.0 (not yet exercised on a real handler table); 1, 3, 4 answered with
+today-paths._
+
+- **Task (2, the accepted one):** Keil `?C?CCASE` inline switch tables and 16-bit USB
+  request-dispatch pointer tables — each entry needed read_bytes, `create kind=function`, and
+  `create kind=reference` by hand.
+- **Resolution (0.18.0):** `create kind=functions_from_table` walks `count` entries at
+  `address` (`entry_size` defaulting to the program's pointer size, `stride` for
+  `<pointer, extra fields>` records, endianness from the language, `ref_type` default computed_call),
+  wiring a reference from every slot and creating a function at every target; out-of-memory
+  entries are listed, not fatal. `count` is deliberately explicit — a guessed terminator would
+  walk past tables whose 0 is a valid address elsewhere. The CCASE-aware *analyzer* half
+  belongs to the new `ghidra-plugin-keil8051` session (spun up 2026-09-16; spec handed over —
+  banked-code memory model first, then the CCASE analyzer and vector seeding).
+- **1 (8051 vector seeding): not added** — per-processor vector maps are analyzer/loader
+  knowledge, not MCP-surface; today's path is one `batch` of `create kind=function` edits at
+  base+0/0x3/0xB/… (four edits, one call). An analyzer for it is in the
+  `ghidra-plugin-keil8051` spec.
+- **3 (load-base scoring for raw images): not added** — a one-shot-per-image diagnostic, fine
+  out-of-band; will revisit if it becomes a recurring step.
+- **4 (Genesys SFR names): closed, existing tools cover it** — the reporter tested
+  `rename kind=label address=SFR:0xc8 new_name=T2CON_test_rename` on the GL3523 image: the
+  language-defined SFR symbol renamed (and renamed back) cleanly, and `inspect` shows the
+  primary label. No tool change needed.
+
+## 2026-09-16 — search_memory — no way to search a whole on-disk file
+_Reported by `hp-z27k-g3` (MStar scaler, 1.26 MB 8051 flash). Resolved in 0.19.0/0.19.1, verified live._
+
+- **Friction:** the 8051 language's 16-bit code space can't hold the image, so answering "does
+  `AA 55` occur anywhere in this file" meant importing the file a second time as raw
+  x86:LE:32 purely so `search_memory` could see every offset.
+- **Resolution (0.19.0):** `search_memory source=file` (kind=bytes|text) scans the program's
+  on-disk file and returns file offsets — pasteable into `read_file` — each with the address(es)
+  this program loaded it at, or "not loaded in this program". Multi-program/project-wide search
+  not added: the file scan covers the stated case, since every module program points back at
+  the same source file.
+
+## 2026-09-16 — list — bogus functions over string tables read as real handlers
+_Reported by `hp-z27k-g3` (PD/VDM command-name table at CODE:4c7f). Resolved in 0.19.0, verified live._
+
+- **Resolution:** `list kind=functions` ends a line with `<-- TEXT: N% of the body is character
+  data` when ≥85% of the (sampled) body is printable ASCII or NUL/tab/newline and printable
+  bytes are at least half — `filter='TEXT:'` lists them. Bodies under 16 bytes are never
+  tagged. A tag on the existing line, like HUSK, rather than a new parameter. The analyzer-side
+  cause (auto-analysis disassembling string tables) is not this server's to fix.
+
+## 2026-09-16 — import — loader-specific options can only be set in the GUI
+_Reported by `ghidra-plugin-keil8051` (its `MStarModuleLoader`'s `Module offsets` / `Module
+size`). Resolved in 0.19.0, verified live by the maintainer on the reporter's image._
+
+- **Friction:** a loader's own options (`Loader.getDefaultOptions`) had no MCP path, so the
+  explicit-offsets import — needed for the USB-PD payload at 0x108000, which has no vector
+  table — was GUI-only.
+- **Resolution (0.19.0):** `import options={name-or-arg: value}`. Ghidra's `ProgramLoader`
+  applies options only by command-line arg and merely logs a warning for one it doesn't know,
+  so the tool resolves each key against the chosen load spec's default options first: a name
+  the loader doesn't offer is refused with the loader's full option list (name, arg, default),
+  and an option declared without an arg is refused with the reason (the loader must give it
+  one). Smoke-verified with BinaryLoader's `Block Name`.
+
+## 2026-09-16 — 0.19.0 dog-food verdict (hp-z27k-g3) — batch snapshot, signature error, TEXT tag, file search
+_Verification record for the five entries above._
+
+- **batch old-name snapshot: works.** Rename + signature + plate comment all addressed by the
+  retired `FUN_` name, three functions in one call on GLHubUpdateToolCli.exe: 7 ok, 0 failed.
+- **Multi-type signature error: works** — both unknown types named in one error, no side
+  effect on the function.
+- **TEXT tag: works, and earns its place.** 22 hits on the USB-PD module, spot-checks genuine
+  text ("***UART MUX ERROR*****"). Both checked hits had non-zero caller counts (12
+  UNCONDITIONAL_CALL xrefs on one), so the callers column made them look like hot helpers;
+  the tag is what corrects that impression.
+- **search_memory source=file: works; a scope caveat.** It scans the file the program was
+  imported from, so a program imported from a pre-split 64 KB slice only sees that slice —
+  one line added to the description (0.19.1). It replaces the raw-x86 carrier import once the
+  modules come from keil8051's loader over the whole image.
+- **Not exercised:** `functions_from_table` — the remaining computed jumps were Keil AJMP
+  switch tables (keil8051's), and the reporter declined to guess a count for an unaligned
+  candidate. Correct restraint; waiting for a verifiable handler table.
+- **Client note:** clients keep pre-deploy schemas until they reconnect, but the server
+  accepts the new parameters anyway (schemas don't forbid extra fields) — discoverability
+  lags, nothing breaks.
+- **End-to-end on 0.19.1 + keil8051 0.3.3 (reporter):** full 1.26 MB image imported unsplit
+  through the MStar module loader; `search_memory source=file` from a module program placed a
+  known routine (`0x204e5 -> CODE:0465`, matching the hand-established address) and listed the
+  panel-2/other-module copies as not loaded; the "EIM" info block at 0x20078 correctly unloaded.
+  The raw x86 carrier import was deleted. Along the way the maintainer's live check caught that
+  the module loader kept no FileBytes (every hit read "not loaded"): keil8051 fixed its loader
+  (0.3.3), and 0.19.1 now says "placement unknown" for any loader that still keeps none.
+- **Import options, live (maintainer):** `options={"Module offsets":"0x108000","Module size":65536}`
+  on the same image gave exactly `module_108000`; a misspelt key was refused with the loader's
+  real option list. The requirement that options carry a command-line arg caught a real
+  keil8051 bug: its help text had been passed as the arg, leaving both options GUI-only.
+- **Boundary check (keil8051, 0.19.1 + 0.3.3):** in `module_108000`, `74 05 f0` at 0x107ffb (three
+  bytes before the module) and 0x1180bd (past its end) read not loaded, everything between maps
+  (`0x108000 -> CODE:0000`, `0x10e824 -> CODE:6824`); in `EIM152_020080`, `0x23919 -> CODE:3899`
+  = offset − 0x20080. Both reporters also hit the stale-schema effect independently: clients
+  keep pre-restart schemas, so new parameters (`source`, `options`) are invisible until a
+  reconnect but are accepted — a discoverability lag, not a failure.
