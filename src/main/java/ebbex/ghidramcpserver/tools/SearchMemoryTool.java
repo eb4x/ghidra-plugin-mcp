@@ -45,7 +45,9 @@ public class SearchMemoryTool implements ProgramTool {
 			"Returns matching addresses (default limit " + DEFAULT_LIMIT + "). source=file scans " +
 			"the program's on-disk file instead (kind=bytes|text), returning FILE OFFSETS — " +
 			"pasteable into read_file — each with the address(es) it is loaded at in this program, " +
-			"or 'not loaded'; that covers images larger than the language's address space (a " +
+			"or 'not loaded' (a header says instead when the program's loader kept no file-offset " +
+			"records, so placement is unknown). It scans the file THIS program was imported " +
+			"from: a program imported from a pre-split slice only sees that slice. That covers images larger than the language's address space (a " +
 			"banked 8051 flash) and payloads no block maps, without a throwaway re-import.";
 	}
 
@@ -176,6 +178,10 @@ public class SearchMemoryTool implements ProgramTool {
 			return Results.error("Could not read " + path + ": " + e.getMessage());
 		}
 
+		// Load addresses come from the program's FileBytes records. A loader that builds its
+		// blocks from plain byte arrays keeps none, and then every hit would read "not loaded"
+		// — including the very bytes the program holds. Say the mapping is unknown instead.
+		boolean mapped = !program.getMemory().getAllFileBytes().isEmpty();
 		List<String> hits = new ArrayList<>();
 		int index = 0;
 		boolean more = false;
@@ -190,10 +196,12 @@ public class SearchMemoryTool implements ProgramTool {
 				more = true;
 				break;
 			}
-			hits.add(String.format("0x%x", at) + loadedAt(program, at));
+			hits.add(String.format("0x%x", at) + (mapped ? loadedAt(program, at) : ""));
 		}
 
-		String header = "file " + path + " (" + data.length + " bytes)\n";
+		String header = "file " + path + " (" + data.length + " bytes)\n" + (mapped ? ""
+				: "(this program's loader kept no file-offset records, so where each hit is " +
+					"loaded is unknown — not the same as unloaded)\n");
 		if (hits.isEmpty()) {
 			return Results.ok(header + "No matches for " + kind + " pattern in the file" +
 				(offset > 0 ? " at offset " + offset : ""));
