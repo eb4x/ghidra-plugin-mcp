@@ -120,8 +120,12 @@ dependencies {
  * - `gradlew buildExtension` creates the extension zip in `dist/`
  * - `gradlew installExtension` unzips that extension into the Ghidra *user* Extensions folder
  *   (~/.config/ghidra/ghidra_<version>/Extensions on Linux), mirroring the Ghidra UI
- *   "Install Extensions" flow, and copies the zip into <GHIDRA_INSTALL_DIR>/Extensions/Ghidra.
- * - `gradlew uninstallExtension` removes both again.
+ *   "Install Extensions" flow.
+ * - `gradlew uninstallExtension` removes it again.
+ *
+ * Nothing here writes under GHIDRA_INSTALL_DIR: the SDK is shared between the plugin repos and
+ * read-only (extracted by the dailydriver session). The stock template's zip copy into
+ * <install>/Extensions/Ghidra is dropped for that reason — the running Ghidra never read it.
  */
 def extensionName = project.name
 
@@ -154,33 +158,12 @@ def ghidraUserExtensionsDir = {
 	return file("${linuxConfigDir}/ghidra/${ghidraUserProfileDirName}/Extensions")
 }.call()
 
-def ghidraInstallExtensionsZipDir = file("${ghidraInstallDir}/Extensions/Ghidra")
-
 def buildZipProvider = tasks.named('buildExtension', Zip).flatMap { it.archiveFile }
-
-def extensionZipGlob = "*_${extensionName}.zip"
-def installZipDropFileTree = fileTree(ghidraInstallExtensionsZipDir) { include extensionZipGlob }
 
 tasks.register('cleanExtractedExtension', Delete) {
 	group = "Ghidra"
 	description = "Delete the extracted extension from Ghidra's user Extensions folder"
 	delete new File(ghidraUserExtensionsDir, extensionName)
-}
-
-tasks.register('cleanCopiedExtensionZips', Delete) {
-	group = "Ghidra"
-	description = "Delete copied extension zip(s) from the Ghidra install Extensions/Ghidra folder"
-	delete installZipDropFileTree
-}
-
-tasks.register('copyExtensionZip', Copy) {
-	group = "Ghidra"
-	description = "Copy the built extension zip into the Ghidra install Extensions/Ghidra folder"
-
-	dependsOn tasks.named('buildExtension'), tasks.named('cleanCopiedExtensionZips')
-
-	from(buildZipProvider)
-	into ghidraInstallExtensionsZipDir
 }
 
 tasks.register('extractExtension', Copy) {
@@ -197,54 +180,36 @@ tasks.register('extractExtension', Copy) {
 
 tasks.register('installExtension') {
 	group = "Ghidra"
-	description = "Copy the zip to the Ghidra install and extract into the user Extensions folder"
-	dependsOn tasks.named('copyExtensionZip'), tasks.named('extractExtension')
+	description = "Extract the built extension into the user Extensions folder"
+	dependsOn tasks.named('extractExtension')
 }
 
 tasks.register('uninstallExtension') {
 	group = "Ghidra"
-	description = "Delete the extracted extension and remove copied extension zip(s)"
-	dependsOn tasks.named('cleanExtractedExtension'), tasks.named('cleanCopiedExtensionZips')
+	description = "Delete the extracted extension from the user Extensions folder"
+	dependsOn tasks.named('cleanExtractedExtension')
 }
 
 /**
  * Headless smoke test (`gradlew smokeTest`), hermetic by construction.
  *
  * Two things make a headless run test something other than what you just built, and both have
- * bitten us: Ghidra also loads extensions extracted under <install>/Ghidra/Extensions (a copy
- * `installExtension` never refreshes — it went stale at 0.4.0 and every smoke run silently
- * exercised that), and a headless run launched outside the flatpak resolves its settings dir to
- * the native ~/.config/ghidra rather than the flatpak tree the IDE uses. So this task re-extracts
- * the freshly built zip into the install on every run, and pins the settings dir into build/ via
- * -Dapplication.settingsdir (GHIDRA_JAVA_OPTIONS is analyzeHeadless's VM-arg passthrough), leaving
- * ~/.config/ghidra out of it entirely.
+ * bitten us: a stale extension copy that headless loads instead (one under
+ * <install>/Ghidra/Extensions went stale at 0.4.0 and every smoke run silently exercised it), and
+ * a headless run launched outside the flatpak resolving its settings dir to the native
+ * ~/.config/ghidra rather than the flatpak tree the IDE uses. So the settings dir is pinned into
+ * build/ via -Dapplication.settingsdir (GHIDRA_JAVA_OPTIONS is analyzeHeadless's VM-arg
+ * passthrough), and the freshly built zip is extracted into THAT settings dir's Extensions folder,
+ * which headless searches too — never into the install, which is a shared read-only SDK and
+ * would otherwise hand every plugin's smoke run every other plugin's extension.
  */
-def ghidraInstallExtensionsDir = file("${ghidraInstallDir}/Ghidra/Extensions")
 def smokeDir = file("${layout.buildDirectory.get().asFile}/smoke")
-
-tasks.register('cleanInstalledExtension', Delete) {
-	group = "Ghidra"
-	description = "Delete the extension extracted inside the Ghidra install (headless loads it)"
-	delete new File(ghidraInstallExtensionsDir, extensionName)
-}
-
-tasks.register('extractExtensionToInstall', Copy) {
-	group = "Ghidra"
-	description = "Extract the built extension into the Ghidra install, where headless finds it"
-
-	dependsOn tasks.named('buildExtension'), tasks.named('cleanInstalledExtension')
-
-	from {
-		zipTree(buildZipProvider.get().asFile)
-	}
-	into ghidraInstallExtensionsDir
-}
 
 tasks.register('smokeTest', Exec) {
 	group = "verification"
 	description = "Run McpToolSmokeScript headless against a fresh import of the freshly built extension"
 
-	dependsOn tasks.named('extractExtensionToInstall')
+	dependsOn tasks.named('buildExtension')
 
 	def projectDir = new File(smokeDir, "project")
 	def settingsDir = new File(smokeDir, "settings")
@@ -255,6 +220,10 @@ tasks.register('smokeTest', Exec) {
 		delete smokeDir
 		projectDir.mkdirs()
 		settingsDir.mkdirs()
+		copy {
+			from zipTree(buildZipProvider.get().asFile)
+			into new File(settingsDir, "ghidra/${DISTRO_PREFIX}_${RELEASE_NAME}/Extensions")
+		}
 		// Compile a fixed target instead of borrowing the host's /bin/ls: the script's
 		// rename chain needs the _init symbol, which a distro binary only carries when
 		// the distro ships symbols (Fedora's MiniDebugInfo has it, Ubuntu's stripped
