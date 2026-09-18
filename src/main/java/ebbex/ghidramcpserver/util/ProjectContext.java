@@ -14,6 +14,7 @@ import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectLocator;
 import ghidra.program.model.listing.Program;
 import ghidra.util.SystemUtilities;
+import ghidra.util.exception.VersionException;
 import ghidra.util.task.TaskMonitor;
 
 /**
@@ -130,10 +131,50 @@ public class ProjectContext {
 			throw new IllegalArgumentException("'" + path + "' is not a program (" +
 				file.getContentType() + ")");
 		}
-		Program program =
-			(Program) file.getDomainObject(consumer, false, false, TaskMonitor.DUMMY);
+		Program program = open(file, path);
 		openByPath.put(path, program);
 		return program;
+	}
+
+	/**
+	 * Open the file without upgrading it. {@code okToUpgrade} stays false deliberately: an
+	 * upgrade rewrites the program irreversibly, and this server auto-saves, so a tool call
+	 * must never quietly migrate a hand-curated program on the caller's behalf.
+	 *
+	 * <p>The cost of that is a {@link VersionException}, which usually carries <em>no</em>
+	 * message &mdash; {@code new VersionException(boolean)} leaves it null and puts the real
+	 * text ("Minor language change 4.7 -&gt; 4.8") in {@code getDetailMessage}. Reported raw it
+	 * reaches the caller as a bare exception name, on a program that opens fine in the GUI. So
+	 * say what happened and who can fix it.
+	 */
+	private Program open(DomainFile file, String path) throws Exception {
+		try {
+			return (Program) file.getDomainObject(consumer, false, false, TaskMonitor.DUMMY);
+		}
+		catch (VersionException e) {
+			throw new IllegalArgumentException(versionAdvice(e, path), e);
+		}
+	}
+
+	private static String versionAdvice(VersionException e, String path) {
+		String detail = e.getDetailMessage() != null ? e.getDetailMessage()
+				: e.getMessage() != null ? e.getMessage() : "no detail given";
+		if (e.getVersionIndicator() == VersionException.NEWER_VERSION) {
+			return "'" + path + "' was saved by a NEWER Ghidra than the one running (" + detail +
+				"), so it cannot be opened here at all. Nothing in this server can read it; the " +
+				"instance has to be brought up to that version first.";
+		}
+		if (!e.isUpgradable()) {
+			return "'" + path + "' was saved under an older version that cannot be upgraded (" +
+				detail + "), so no tool here can read it.";
+		}
+		return "'" + path + "' needs a one-way upgrade before any tool can read it (" + detail +
+			"). The language or data schema moved under the saved program — every program saved " +
+			"under the older one is in the same state, and nothing reports it until something " +
+			"tries to open it. This server will not upgrade it for you: the rewrite is " +
+			"irreversible and auto-saved, so it is the program owner's call. Open it in the " +
+			"Ghidra window and accept the upgrade prompt, or verify on a fresh import and leave " +
+			"the curated program alone.";
 	}
 
 	/** Short default bound for the auto-save the endpoint runs after each edit. */

@@ -216,3 +216,32 @@ adopt path is observed. Archive it then._
   `get_program_info`); it appears to need a GUI action that opens a CodeBrowser tool. **What
   confirms the fix:** the `MCP server already running on ...; <tool> shares it` INFO appearing
   once a program is opened in the Ghidra window.
+
+
+## 2026-09-18 — every program tool — a program needing a language upgrade failed with a bare exception name — ghidra-plugin-rtlink
+_Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serves 0.20.2
+(f2b74c0). Deploy on the next restart, then confirm the wording against a real stale program._
+
+- **Friction:** the curated `/COLONIZE/VICEROY.EXE` in `mads` will not open in the current
+  build — `Minor language change 4.7 -> 4.8`, the x86 SLEIGH spec having moved under the saved
+  program. rtlink hit it while verifying something unrelated and imported a scratch copy
+  instead. The wider problem it named: **every program saved under the older spec is in this
+  state, and nothing reports it until something tries to open it.** hp-z27k-g3 has older
+  8051/AEON-spec programs in `amplifi` in the same position.
+- **Our part of it:** `ProjectContext.openProgram` called `getDomainObject(consumer, false,
+  false, DUMMY)` and let the failure propagate. `VersionException` built by
+  `VersionException(boolean)` has a **null message** — the real text lives in
+  `getDetailMessage()` — so the caller got a bare exception name for a program that opens fine
+  in the GUI, with nothing saying what was wrong or what to do.
+- **Fix:** `openProgram` catches `VersionException` and reports what happened and who can act:
+  upgradable (the common case) says the language or schema moved, that this server will not
+  upgrade it because the rewrite is irreversible and auto-saved so it is the owner's call, and
+  points at the GUI prompt or a fresh import; `NEWER_VERSION` says the instance itself is too
+  old; non-upgradable says so plainly. `okToUpgrade` stays **false** deliberately.
+- **Deliberately not built: an upgrade op.** Upgrading is exactly the irreversible,
+  auto-saved, whole-program rewrite the no-undo rule exists for, and the programs that need it
+  are hand-curated ones belonging to other sessions. A clear error that names the owner's
+  choice beats a tool that makes it for them. Revisit only if a session asks for it explicitly.
+- **Still open:** there is no way to find out *before* opening. `DomainFile` exposes no cheap
+  "needs upgrade" flag, so `list_files` cannot flag stale programs. If a pre-flight check turns
+  out to be possible, that is the real fix and this entry should be reopened for it.
