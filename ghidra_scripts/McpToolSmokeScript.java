@@ -22,6 +22,7 @@ import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.Project;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.pcode.HighFunction;
@@ -299,6 +300,13 @@ public class McpToolSmokeScript extends GhidraScript {
 			// silently listing from the next instruction (which reads as "looked, found nothing").
 			prog("disassemble", Map.of("address", program.getMaxAddress().toString(), "count", 2),
 				program);
+
+			// Every separator the language defines must reach the caller. SLEIGH holds the ")"
+			// of a disp(reg) operand as the separator AFTER the last operand, and a renderer
+			// that only joins operands drops it (reported by ghidra-plugin-aeon: b.lbz
+			// r5,0x4a(r6 ). x86-64 may define no trailing separator at all, so this reports
+			// how many instructions it actually exercised rather than passing silently.
+			checkTrailingSeparators(program);
 
 			// migrate: /ls -> itself is refused; a dry run against the same binary imported
 			// twice is the honest exercise (everything already equal, nothing to write).
@@ -838,6 +846,37 @@ public class McpToolSmokeScript extends GhidraScript {
 		McpSchema.CallToolResult result = call(() -> tool.execute(args, project), name);
 		print(result);
 		return result;
+	}
+
+	/**
+	 * Disassemble {@code main} and confirm that every instruction whose language defines a
+	 * trailing separator has it in the listing. Vacuous on a language that defines none — it
+	 * says so rather than reporting a pass it did not earn.
+	 */
+	private void checkTrailingSeparators(Program program) {
+		Function main = Locations.findFunction(program, "main");
+		String[] lines = text(prog("disassemble", Map.of("function", "main"), program)).split("\n");
+		int exercised = 0;
+		for (Instruction instruction : program.getListing().getInstructions(main.getBody(), true)) {
+			String tail = instruction.getSeparator(instruction.getNumOperands());
+			if (tail == null || tail.isBlank()) {
+				continue;
+			}
+			exercised++;
+			String address = instruction.getAddress().toString();
+			boolean intact = false;
+			for (String line : lines) {
+				if (line.startsWith(address) && line.stripTrailing().endsWith(tail)) {
+					intact = true;
+					break;
+				}
+			}
+			if (!intact) {
+				failures++;
+				println("!! disassemble dropped the trailing separator '" + tail + "' at " + address);
+			}
+		}
+		println("trailing-separator check: " + exercised + " instruction(s) in main define one");
 	}
 
 	private McpSchema.CallToolResult prog(String name, Map<String, Object> args, Program program) {

@@ -138,8 +138,46 @@ public class DisassembleTool implements ProgramTool {
 		while (it.hasNext() && n < max) {
 			Instruction instruction = it.next();
 			sb.append(instruction.getAddress()).append("  ")
-					.append(format.getRepresentationString(instruction)).append('\n');
+					.append(representation(format, instruction)).append('\n');
 			n++;
+		}
+	}
+
+	/**
+	 * Mnemonic and operands, with every separator the language defines.
+	 *
+	 * <p>Not {@code CodeUnitFormat.getRepresentationString}: that walks operands {@code 0..n-1}
+	 * and emits only the separator <em>before</em> each one past the first, so it drops both the
+	 * leading separator and the trailing one at index {@code n} &mdash; the {@code )} of a
+	 * {@code disp(reg)} operand, for instance, which SLEIGH holds as the separator after the last
+	 * operand. The loop below is {@code Instruction.toString}'s, which gets this right, but it
+	 * keeps the format's operand rendering so symbols still resolve to their names.
+	 *
+	 * <p><b>Do not "simplify" this back to {@code getRepresentationString}.</b> It is a core
+	 * defect, not a quirk of one language: stock RISC-V renders every {@code amo*} in the A
+	 * extension as {@code amoadd.w a0,a1,(a2}, and m68k's {@code cas2} has the same shape
+	 * (confirmed in the 12.1.3 source by {@code dailydriver}, which is preparing a core fix).
+	 * This stays even once that lands &mdash; the extension also runs against stock Ghidra,
+	 * where it will not be fixed.
+	 */
+	private static String representation(CodeUnitFormat format, Instruction instruction) {
+		StringBuilder text = new StringBuilder(format.getMnemonicRepresentation(instruction));
+		int operands = instruction.getNumOperands();
+		String separator = instruction.getSeparator(0);
+		if (separator != null || operands != 0) {
+			text.append(' ');
+		}
+		appendSeparator(text, separator);
+		for (int i = 0; i < operands; i++) {
+			text.append(format.getOperandRepresentationString(instruction, i));
+			appendSeparator(text, instruction.getSeparator(i + 1));
+		}
+		return text.toString();
+	}
+
+	private static void appendSeparator(StringBuilder text, String separator) {
+		if (separator != null) {
+			text.append(separator);
 		}
 	}
 
@@ -159,7 +197,7 @@ public class DisassembleTool implements ProgramTool {
 				break;
 			}
 			sb.append(instruction.getAddress()).append("  ")
-					.append(format.getRepresentationString(instruction)).append('\n');
+					.append(representation(format, instruction)).append('\n');
 			emitted++;
 		}
 		return emitted;
