@@ -174,7 +174,12 @@ because the design answer is fresh and the next processor module will want the s
   `disassemble` — `linear=true`, start + end address, a paging cursor — emitting one row per
   address visited: `address, length, mnemonic, operands`. On a decode failure, a one-byte
   undecodable row, then resync. **The resync is the part with no substitute:** two independent
-  sweeps only stay comparable if both advance the same way past a bad byte.
+  sweeps only stay comparable if both advance the same way past a bad byte. The rule, verbatim
+  from aeon: *advance one byte and try again, and the row emitted for that byte reports length 1
+  — the byte is consumed, not skipped.* Anything else (skipping to the next valid decode,
+  advancing by a guessed length) desynchronises the two sweeps silently. aeon's
+  `ghidra_scripts/AeonDumpDisasm.java` is the reference for the row format and carries a note
+  saying so, so a change there comes to us as a message.
 - **Explicitly NOT wanted: server-side comparison.** The oracle listing lives outside Ghidra and
   its shape varies per architecture (objdump here, IDA or a vendor tool next), so parsing
   arbitrary listings inside the server is a parser bug farm. More importantly the comparison
