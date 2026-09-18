@@ -261,7 +261,35 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   e.g. `x86:LE:16:Real Mode (4.7)`. **The stored version is right there**, so comparing it with
   what `LanguageService` reports for that language ID today answers "is this stale" for every
   file in a listing, without opening anything.
-  **Unverified**: read from 12.1.3 source, not run. Whether the map is populated for a file
-  this session has never opened is the thing to measure first — the whole idea rests on it. If
-  it holds, `list_files` (and `get_program_info`) should mark stale programs, and *that* is the
-  real fix; this entry stays open until then.
+- **Built (0.21.0, f66a957), then corrected (0.21.1, 4ea96b8).** `list_files` marks each file in
+  the page it returns: `**` for a program whose language has moved on, `??` for one whose stored
+  version cannot be read. `LanguageStatus` reads `DomainFile.getMetadata()` — which reaches
+  `GenericDomainObjectDB` and the file's metadata table without ever constructing a `Program` or
+  resolving a language, so it works on a file nothing has opened and on one too stale to open —
+  and takes its verdict from `LanguageVersionException.check`, the same call the open path
+  makes, so the listing reports what opening *would* do rather than a second opinion that can
+  drift. Checked only for the returned page, so a large listing does not pay for unseen rows.
+- **The `??` marker exists because 0.21.0 was wrong for twenty minutes.** No `"Language ID"` fell
+  through to no mark, and `GhidraFileData.getMetadata` returns an empty map for a non-database
+  item, a deleted file **and** a file written by a newer Ghidra (it catches
+  `Field.UnsupportedFieldException`). So the one file nobody should trust looked exactly like a
+  healthy one — worse than not having the feature. Caught by rtlink, whose own test case
+  (stale-but-readable) could not have exercised it.
+- **Verification status, by direction:**
+  - *False positives* — covered. Smoke asserts zero `**` and zero `??` across freshly imported
+    programs. This is the direction that matters most: acting on a false mark means a one-way
+    upgrade of someone's curated program.
+  - *The load-bearing assumption* (metadata readable without opening) — **pending**, and the
+    amplifi listing tests it the moment 0.21.1 deploys: most of those programs have never been
+    opened by the running server, so no `??` among them proves it. Under 0.21.0 that listing
+    proved nothing, since "clean" and "unreadable" were then indistinguishable.
+  - *True positives* — **pending**: rtlink runs `list_files` against `/COLONIZE/VICEROY.EXE` in
+    `mads` (known stale, 4.7 → 4.8) and sends the row verbatim. Proves the branch is not dead
+    code; nothing more.
+  - *Newer-Ghidra files* — **unexercised, and no honest way to cover it here.** Nothing in either
+    project was written by a newer build than the one reading it (rtlink's point). It stays a
+    read-from-source claim until a genuinely newer program turns up.
+- **Zero AEON marks is not evidence.** Every AeonR2 ldefs still declares `version="1.0"`; today's
+  language changes did not bump it and R2-harvard is a new id, so `check` has nothing to flag
+  there (`ghidra-plugin-aeon`). Recorded so a future reader does not mistake it for a pass.
+- This entry stays open until the two pending directions land.
