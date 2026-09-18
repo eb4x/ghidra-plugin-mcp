@@ -141,11 +141,12 @@ public class ProjectContext {
 	 * upgrade rewrites the program irreversibly, and this server auto-saves, so a tool call
 	 * must never quietly migrate a hand-curated program on the caller's behalf.
 	 *
-	 * <p>The cost of that is a {@link VersionException}, which usually carries <em>no</em>
-	 * message &mdash; {@code new VersionException(boolean)} leaves it null and puts the real
-	 * text ("Minor language change 4.7 -&gt; 4.8") in {@code getDetailMessage}. Reported raw it
-	 * reaches the caller as a bare exception name, on a program that opens fine in the GUI. So
-	 * say what happened and who can fix it.
+	 * <p>The cost of that is a {@link VersionException}. The language cases carry a usable
+	 * message already ({@code LanguageVersionException("Minor language change 4.7 -> 4.8",
+	 * true)}), so the caller was never left with a bare exception name for those &mdash; but
+	 * knowing the version moved is not knowing what to do about it, and
+	 * {@code VersionException}'s other constructors do leave the message null and put their text
+	 * in {@code getDetailMessage} instead. So: read both, and say who can act.
 	 */
 	private Program open(DomainFile file, String path) throws Exception {
 		try {

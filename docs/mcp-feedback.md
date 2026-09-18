@@ -228,11 +228,22 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   instead. The wider problem it named: **every program saved under the older spec is in this
   state, and nothing reports it until something tries to open it.** hp-z27k-g3 has older
   8051/AEON-spec programs in `amplifi` in the same position.
-- **Our part of it:** `ProjectContext.openProgram` called `getDomainObject(consumer, false,
-  false, DUMMY)` and let the failure propagate. `VersionException` built by
-  `VersionException(boolean)` has a **null message** — the real text lives in
-  `getDetailMessage()` — so the caller got a bare exception name for a program that opens fine
-  in the GUI, with nothing saying what was wrong or what to do.
+- **Correction — my first account of this was wrong.** I wrote (and committed, f4de5fe) that
+  the caller got a bare `ghidra.util.exception.VersionException` with no text. rtlink checked
+  that against what it actually saw on 0.20.2 and it is false: both `disassemble` and `list`
+  returned `Could not open program '/COLONIZE/VICEROY.EXE': Minor language change 4.7 -> 4.8`.
+  Source confirms rtlink, not me — `LanguageVersionException.java:121` constructs
+  `new LanguageVersionException("Minor language change " + fromVer + " -> " + toVer, true)`,
+  the `String msg` constructor, so `getMessage()` is populated for every language-version case.
+  I inferred the null-message path from `VersionException(boolean)` existing, without
+  reproducing it. The lesson is the cheap one: rtlink's report said what it *did* (imported a
+  scratch copy) and I filled in why from the API rather than asking what it saw.
+- **What was actually wrong:** not the text, the advice. `Minor language change 4.7 -> 4.8` says
+  the version moved; it does not say that an upgrade is one-way, that this server will not do
+  it, or that the choice belongs to the program's owner. That is what 0.20.3 adds, and it is a
+  smaller fix than the one I claimed to be making. `VersionException`'s other constructors do
+  leave the message null, so reading `getDetailMessage()` as well is still right — just not the
+  bug that was hit here.
 - **Fix:** `openProgram` catches `VersionException` and reports what happened and who can act:
   upgradable (the common case) says the language or schema moved, that this server will not
   upgrade it because the rewrite is irreversible and auto-saved so it is the owner's call, and
@@ -242,6 +253,15 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   auto-saved, whole-program rewrite the no-undo rule exists for, and the programs that need it
   are hand-curated ones belonging to other sessions. A clear error that names the owner's
   choice beats a tool that makes it for them. Revisit only if a session asks for it explicitly.
-- **Still open:** there is no way to find out *before* opening. `DomainFile` exposes no cheap
-  "needs upgrade" flag, so `list_files` cannot flag stale programs. If a pre-flight check turns
-  out to be possible, that is the real fix and this entry should be reopened for it.
+- **Still open, but no longer hopeless — the pre-flight looks buildable.** I said `DomainFile`
+  exposes no cheap staleness flag. It has no flag, but it does have the raw material, on
+  rtlink's lead: `DomainFile.getMetadata()` returns the metadata persisted with the file, and
+  `ProgramDB.getMetadata` (`ProgramDB.java:2413`) stores
+  `"Language ID" -> languageID + " (" + languageVersion + "." + languageMinorVersion + ")"` —
+  e.g. `x86:LE:16:Real Mode (4.7)`. **The stored version is right there**, so comparing it with
+  what `LanguageService` reports for that language ID today answers "is this stale" for every
+  file in a listing, without opening anything.
+  **Unverified**: read from 12.1.3 source, not run. Whether the map is populated for a file
+  this session has never opened is the thing to measure first — the whole idea rests on it. If
+  it holds, `list_files` (and `get_program_info`) should mark stale programs, and *that* is the
+  real fix; this entry stays open until then.
