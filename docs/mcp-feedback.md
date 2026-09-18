@@ -279,10 +279,12 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   - *False positives* — covered. Smoke asserts zero `**` and zero `??` across freshly imported
     programs. This is the direction that matters most: acting on a false mark means a one-way
     upgrade of someone's curated program.
-  - *The load-bearing assumption* (metadata readable without opening) — **pending**, and the
-    amplifi listing tests it the moment 0.21.1 deploys: most of those programs have never been
-    opened by the running server, so no `??` among them proves it. Under 0.21.0 that listing
-    proved nothing, since "clean" and "unreadable" were then indistinguishable.
+  - *The load-bearing assumption* (metadata readable without opening) — **confirmed, measured**.
+    On 0.22.0 (a7a94b9), two minutes after a restart, `list_files` over amplifi returned all 19
+    programs with no `??` — and that server process had opened none of them. So the stored
+    metadata is genuinely readable without constructing a `Program`, which until then was only
+    a claim read out of `GhidraFileData`. Under 0.21.0 the same listing proved nothing, since
+    "clean" and "unreadable" were indistinguishable before the `??` marker existed.
   - *True positives* — **pending**: rtlink runs `list_files` against `/COLONIZE/VICEROY.EXE` in
     `mads` (known stale, 4.7 → 4.8) and sends the row verbatim. Proves the branch is not dead
     code; nothing more.
