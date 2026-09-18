@@ -156,3 +156,33 @@ works this area)._
   RTLink analyzers expose), and whether it can respect instruction boundaries / existing flow
   when picking a string start. No tool change proposed — `disassemble`'s offcut announcement and
   the ERROR-bookmark channel surfaced it exactly as designed.
+
+
+## 2026-09-18 — disassemble — no linear sweep, so a whole-program listing can't be pulled for an external diff
+_Not yet a feature request: `ghidra-plugin-aeon` says it will send one if it builds a second
+processor module, and would rather the effort go to something the whole team hits. Logged now
+because the design answer is fresh and the next processor module will want the same thing._
+
+- **Task:** accept a new SLEIGH module (MStar AEON R2) by diffing Ghidra's disassembly of four
+  firmware fixtures, ~1.16M instructions, against the vendor `aeon-elf-objdump` — the standard
+  `dailydriver` set. Permitted by the vendor-oracle carve-out in CLAUDE.md.
+- **Friction:** `disassemble` takes `function`, or `address` + `count` capped at 4096, and
+  follows flow. A linear sweep visits bytes flow never reaches, so neither form produces the
+  listing, and paging 1.16M instructions by address is not a real option. aeon wrote
+  `ghidra_scripts/AeonDumpDisasm.java` instead (committed, re-runnable, in its repo).
+- **Wanted (aeon's design, which I'd build as specified):** a linear-sweep mode on
+  `disassemble` — `linear=true`, start + end address, a paging cursor — emitting one row per
+  address visited: `address, length, mnemonic, operands`. On a decode failure, a one-byte
+  undecodable row, then resync. **The resync is the part with no substitute:** two independent
+  sweeps only stay comparable if both advance the same way past a bad byte.
+- **Explicitly NOT wanted: server-side comparison.** The oracle listing lives outside Ghidra and
+  its shape varies per architecture (objdump here, IDA or a vendor tool next), so parsing
+  arbitrary listings inside the server is a parser bug farm. More importantly the comparison
+  carries the judgement — which `.word` rows are expected non-differences, that Ghidra zero-pads
+  addresses (`0x00000927` vs `0x927`), that one length mismatch desynchronises everything after
+  it so only the first difference is real — and that belongs in a committed script a reviewer
+  can read, not in a shared server. Raw text out; the differ stays in the plugin repo.
+- **Unit of difference:** length, mnemonic and operands classified separately, plus
+  match/undecodable, reporting the first N of each class. **Length matters most:** a wrong length
+  desynchronises the sweep, so a count of differing rows says nothing while the first differing
+  address says everything.
