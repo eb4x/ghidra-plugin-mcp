@@ -125,7 +125,15 @@ public class ProjectContext {
 		}
 		DomainFile file = project.getProjectData().getFile(path);
 		if (file == null) {
-			throw new IllegalArgumentException("No file at project path '" + path + "'");
+			// Name the project. The instance is shared and any session can switch it with
+			// manage_project, so a path that worked a minute ago can vanish mid-task through no
+			// fault of the caller's: the program is still there, in a project that is no longer
+			// active. Without the name this reads as "my program is gone" and costs a round of
+			// guessing (reported by ghidra-plugin-aeon, which lost a scratch program this way).
+			throw new IllegalArgumentException("No file at project path '" + path +
+				"' in project '" + project.getName() + "', the one currently open. If you did " +
+				"not expect that project, another session switched it: manage_project op=open " +
+				"reopens yours, and get_application_info always names the active one.");
 		}
 		if (!Program.class.isAssignableFrom(file.getDomainObjectClass())) {
 			throw new IllegalArgumentException("'" + path + "' is not a program (" +

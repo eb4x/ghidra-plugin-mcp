@@ -154,9 +154,9 @@ public class CreateTool implements ProgramTool {
 		properties.put("big_endian", Schemas.boolProp(
 			"Pointer byte order (for kind=functions_from_table; default: the language's " +
 			"endianness)"));
-		properties.put("length", Schemas.intProp(
+		properties.put("length", Schemas.sizeProp(
 			"Block length in bytes (for kind=memory_block; required)"));
-		properties.put("file_offset", Schemas.intProp(
+		properties.put("file_offset", Schemas.sizeProp(
 			"Offset into the program's imported file where the block's bytes start (for " +
 			"kind=memory_block; required). The block is backed by the stored file bytes, not a " +
 			"copy, so read_bytes/search_memory/decompile all see the real contents"));
