@@ -279,12 +279,32 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   - *False positives* — covered. Smoke asserts zero `**` and zero `??` across freshly imported
     programs. This is the direction that matters most: acting on a false mark means a one-way
     upgrade of someone's curated program.
-  - *The load-bearing assumption* (metadata readable without opening) — **confirmed, measured**.
-    On 0.22.0 (a7a94b9), two minutes after a restart, `list_files` over amplifi returned all 19
-    programs with no `??` — and that server process had opened none of them. So the stored
-    metadata is genuinely readable without constructing a `Program`, which until then was only
-    a claim read out of `GhidraFileData`. Under 0.21.0 the same listing proved nothing, since
-    "clean" and "unreadable" were indistinguishable before the `??` marker existed.
+  - *The load-bearing assumption* (metadata readable without opening) — **RETRACTED, and the
+    feature is not trustworthy on older projects.** I recorded this as "confirmed, measured" on
+    the strength of amplifi's 19 programs reading clean two minutes after a restart. That was
+    wrong reasoning about a real observation: it shows the metadata is readable for *those*
+    files, and I generalised it to "readable cold". rtlink then ran the same call in `mads` and
+    got `??` for **672 of 672** files, `/COLONIZE/VICEROY.EXE` among them. Those are equally
+    real programs whose metadata is not being read, so whatever the 19 shared, it was not
+    "being read without opening". Caught by rtlink, who noticed my own measurement was
+    consistent with the opposite conclusion.
+  - *Why*, so far: **not an IO failure** — `GhidraFileData.getMetadata` logs "Read meta-data
+    error" on `IOException` and the instance's log has no such line in 5344 lines; those files
+    opened and yielded nothing. The metadata is a table named "Metadata" inside the program's
+    own database (`MetadataManager.loadData` returns empty when `getTable` is null;
+    `saveData` creates it on save), so the leading hypothesis is that mads's programs, last
+    saved years ago, simply have no such table. The rival is `Field.UnsupportedFieldException`,
+    which `getMetadata` catches **silently** — the one candidate a log cannot exclude.
+    `VICEROY.EXE` constrains any answer: the open path reads a legible 4.7 from it
+    ("Minor language change 4.7 -> 4.8"), so the version exists somewhere the metadata path
+    cannot see. Asked `dailydriver` (DB side is core, not ours) when that table is written, and
+    whether a stored language version is reachable at all without constructing a `Program`.
+  - *The discriminating measurement*, batched into rtlink's next mads window: one mads program
+    that **opens successfully**, reported both ways — did `get_program_info` work, and is its
+    `list_files` row `??` or clean. If a program that opens is still `??`, staleness is
+    irrelevant and the table is absent project-wide, which kills this approach for old projects
+    — the very ones most likely to be stale — and the feature should be retired rather than
+    left looking informative.
   - *True positives* — **pending**: rtlink runs `list_files` against `/COLONIZE/VICEROY.EXE` in
     `mads` (known stale, 4.7 → 4.8) and sends the row verbatim. Proves the branch is not dead
     code; nothing more.
