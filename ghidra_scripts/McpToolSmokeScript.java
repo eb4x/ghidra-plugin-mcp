@@ -86,7 +86,18 @@ public class McpToolSmokeScript extends GhidraScript {
 		app("manage_files", Map.of("op", "delete", "path", "/smoke-scratch"), project);
 		app("manage_files", Map.of("op", "delete", "path", "/smoke-scratch", "recursive", true),
 			project);
-		app("list_files", Map.of(), project);
+		McpSchema.CallToolResult listing = app("list_files", Map.of(), project);
+
+		// list_files marks programs whose processor language has moved on since they were
+		// saved. Every program here was imported minutes ago by this very Ghidra, so the
+		// count of marks must be zero: this cannot prove the check FINDS a stale program
+		// (nothing hermetic is stale), but it does prove it does not invent one, which is
+		// the failure that would matter — a false mark sends a caller off upgrading a
+		// perfectly good program, and the upgrade is one-way.
+		if (text(listing).contains("**")) {
+			failures++;
+			println("!! list_files marked a freshly imported program as needing a language upgrade");
+		}
 
 		// ---- raw-binary import: target.c is claimed by no loader, so the bare call must
 		// fail WITH the raw-binary hint, and the loader/processor/base_address form must

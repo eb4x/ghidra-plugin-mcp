@@ -6,6 +6,7 @@ import java.util.Map;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.LanguageStatus;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.framework.model.DomainFile;
@@ -28,7 +29,10 @@ public class ListFilesTool implements ApplicationLevelTool {
 	public String description() {
 		return "List files in the project. Each file's path (usable as the 'program' argument of " +
 			"program tools) and content type are shown. Defaults to a recursive listing from the " +
-			"root; pass 'folder' to scope it and 'recursive'=false for a single level.";
+			"root; pass 'folder' to scope it and 'recursive'=false for a single level. A program " +
+			"whose processor language has moved on since it was saved is marked '**': it cannot " +
+			"be opened by any tool until it is upgraded, which is checked here so it is found by " +
+			"listing rather than by a call failing.";
 	}
 
 	@Override
@@ -62,26 +66,46 @@ public class ListFilesTool implements ApplicationLevelTool {
 			return Results.error("No project folder '" + folderPath + "'");
 		}
 
-		List<String> matches = new ArrayList<>();
+		List<DomainFile> matches = new ArrayList<>();
 		collect(folder, recursive, filter, matches);
 
 		if (matches.isEmpty()) {
 			return Results.ok("No files" + (filter.isEmpty() ? "" : " matching '" + filter + "'") +
 				" under " + folderPath);
 		}
-		List<String> window = matches.stream().skip(offset).limit(limit).toList();
-		return Results.ok(String.join("\n", window) + (window.isEmpty() ? "" : "\n") +
-			Results.paginationFooter(window.size(), offset, matches.size()));
+		// Staleness is read from each file's database, so it is checked for the page being
+		// returned and not for every match: a listing of thousands must not pay for rows the
+		// caller never sees.
+		List<DomainFile> window = matches.stream().skip(offset).limit(limit).toList();
+		StringBuilder sb = new StringBuilder();
+		int stale = 0;
+		for (DomainFile file : window) {
+			sb.append(file.getPathname()).append("  [").append(file.getContentType()).append(']');
+			String staleness = LanguageStatus.staleness(file);
+			if (staleness != null) {
+				stale++;
+				sb.append("  ** ").append(staleness);
+			}
+			sb.append('\n');
+		}
+		if (stale > 0) {
+			sb.append("\n** ").append(stale).append(" of these cannot be opened as they stand. ")
+					.append("The processor language moved under them; upgrading rewrites the ")
+					.append("program one way and is the owner's call, so no tool here does it. ")
+					.append("Open one in the Ghidra window and accept the upgrade prompt, or ")
+					.append("re-import.\n");
+		}
+		sb.append(Results.paginationFooter(window.size(), offset, matches.size()));
+		return Results.ok(sb.toString());
 	}
 
 	private static void collect(DomainFolder folder, boolean recursive, String filter,
-			List<String> out) {
+			List<DomainFile> out) {
 		for (DomainFile file : folder.getFiles()) {
-			String path = file.getPathname();
-			if (!filter.isEmpty() && !path.toLowerCase().contains(filter)) {
+			if (!filter.isEmpty() && !file.getPathname().toLowerCase().contains(filter)) {
 				continue;
 			}
-			out.add(path + "  [" + file.getContentType() + "]");
+			out.add(file);
 		}
 		if (recursive) {
 			for (DomainFolder sub : folder.getFolders()) {
