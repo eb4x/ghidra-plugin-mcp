@@ -1799,3 +1799,48 @@ _Verification record for the five entries above._
   `override at CODE:8811: CONSUMED` from `table at CODE:89b6: decompiler-discovered` in one
   call, which confirmed that the extension correctly stood aside for the table the
   decompiler had already found.
+
+
+## 2026-09-18 — RESOLVED (0.20.2) — disassemble dropped the separator after the last operand — ghidra-plugin-aeon
+- **Friction:** `disassemble address=0x30e7fa count=4` on an AEON R2 import printed
+  `ram:0030e802  b.lbz r5,0x4a(r6` — no closing paren. `Instruction.toString()` and MStar's
+  `aeon-elf-objdump` both give `b.lbz r5,0x4a(r6)`. Every `disp(rN)` operand lost its `)`.
+  Truncated operand text is worse than missing output: it reads as a finding about the spec.
+- **Cause:** not ours to begin with. SLEIGH numbers separators `0..n` for `n` operands — index
+  0 is the text before the first operand, index `n` the text after the last
+  (`Constructor.printSeparator`). `CodeUnitFormat.getRepresentationString`, which this tool
+  rendered through, walks operands `0..n-1` and emits only the separator *before* each one past
+  the first: it replaces `sep(0)` with a hardcoded space and never emits `sep(n)` at all. So any
+  language that puts text after its last operand loses it. `InstructionDB.toString()` on the
+  same instruction does it correctly, which is why the two disagreed.
+- **Fix (f2b74c0):** `DisassembleTool.representation` uses `toString()`'s loop — `sep(0)`, then
+  each operand followed by `sep(i+1)` — while keeping `CodeUnitFormat`'s per-operand rendering,
+  so symbols still resolve to names instead of raw addresses.
+- **Core defect, confirmed independently.** `dailydriver` reproduced it in the 12.1.3 source
+  rather than taking it on our reading (`CodeUnitFormat.java:112-129` vs
+  `InstructionDB.java:531-547`) and found **stock Ghidra reproduces it with no third-party
+  module**: `rs1` in `riscv.rv32a.sinc:4` is a subtable operand displaying only the register, so
+  the `(` is `sep(2)` and the `)` is `sep(3)` — every `amo*` in the A extension renders as
+  `amoadd.w a0,a1,(a2`, some forty constructors, and m68k's `cas2` has the same shape. The
+  browser's operand field takes a different path, so the GUI listing looks right and only the
+  API is wrong. `dailydriver` is preparing the core fix on a PR-ready branch (upstream
+  submission is its user's call) and cherry-picking it onto our fork. **Our fix stays
+  regardless** — the extension also runs against stock Ghidra, where the core fix will not be
+  present — and `representation` carries a comment saying so, so it is not "cleaned up" later
+  as redundant.
+- **Verified live** by `ghidra-plugin-aeon` on 0.20.2 (f2b74c0), fresh import
+  `/scratch-aeon-le/EIM152_stream0_00043880_decomp.bin` (AEON:LE:32:R2), verbatim:
+
+      ram:0030e7fa  b.movhi r7,0x3c
+      ram:0030e7fe  b.addi r6,r7,0x32c
+      ram:0030e802  b.lbz r5,0x4a(r6)
+      ram:0030e805  b.srli r7,r5,0x7
+
+  Paren present, and exactly one space after each mnemonic — the check on the other half of the
+  fix, since `sep(0)` is now emitted instead of a hardcoded space and a doubled space would have
+  been the regression.
+- **The smoke test could not prove this, and says so.** Its check walks `main` and asserts every
+  instruction whose language defines a trailing separator keeps it in the listing; on the
+  x86-64 smoke target it exercises **0 instructions** and prints that count rather than passing
+  silently. AEON was the first language here that defines one. Kept for the next language that
+  does — and as a reminder that a green smoke run is not evidence about this.
