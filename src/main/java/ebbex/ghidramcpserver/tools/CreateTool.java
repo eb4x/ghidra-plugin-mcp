@@ -14,6 +14,7 @@ import ebbex.ghidramcpserver.util.Transactions;
 import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.app.cmd.function.CreateFunctionCmd;
 import ghidra.app.util.NamespaceUtils;
+import ghidra.program.database.mem.FileBytes;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
@@ -22,6 +23,7 @@ import ghidra.program.model.listing.BookmarkType;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Namespace;
@@ -39,7 +41,10 @@ public class CreateTool implements ProgramTool {
 
 	private static final List<String> KINDS =
 		List.of("function", "label", "bookmark", "instructions", "reference",
-			"functions_at_labels", "functions_from_table");
+			"functions_at_labels", "functions_from_table", "memory_block");
+
+	/** What kind=memory_block may do to a block already covering the requested range. */
+	private static final List<String> OVERLAP_MODES = List.of("refuse", "split");
 
 	/** How many created/skipped names the functions_at_labels summary spells out. */
 	private static final int MAX_NAMED = 50;
@@ -100,7 +105,18 @@ public class CreateTool implements ProgramTool {
 			"Every target becomes a FUNCTION, so this is for handler tables; switch-case " +
 			"targets are blocks inside one function (Keil C51 ?C?xCASE tables are handled by the " +
 			"Keil8051 extension's analyzer instead). Entries resolving outside memory are listed, " +
-			"not fatal ('count' is never guessed from a terminator).";
+			"not fatal ('count' is never guessed from a terminator). kind=memory_block lays an " +
+			"INITIALIZED block at 'address' ('name', 'length' and 'file_offset' required, " +
+			"'mode' default 'rw'), its bytes taken from the program's own imported file — the " +
+			"Harvard case, where the data space loads as one huge uninitialized block and every " +
+			"string and table in it reads empty until real bytes are mapped over it. Give " +
+			"'address' in the target space ('data:0x2d4800'); 'length'/'file_offset' take hex or " +
+			"decimal. It refuses by default when a block already covers the range: pass " +
+			"overlap=split to carve it out of the single uninitialized block containing it, " +
+			"leaving remnants that keep that block's name, permissions and uninitialized state. " +
+			"An initialized block, a partial overlap, or a range spanning two blocks is always " +
+			"refused. The result names every block it created or left behind — the memory map is " +
+			"rewritten and auto-saved, with no undo.";
 	}
 
 	@Override
@@ -138,6 +154,21 @@ public class CreateTool implements ProgramTool {
 		properties.put("big_endian", Schemas.boolProp(
 			"Pointer byte order (for kind=functions_from_table; default: the language's " +
 			"endianness)"));
+		properties.put("length", Schemas.intProp(
+			"Block length in bytes (for kind=memory_block; required)"));
+		properties.put("file_offset", Schemas.intProp(
+			"Offset into the program's imported file where the block's bytes start (for " +
+			"kind=memory_block; required). The block is backed by the stored file bytes, not a " +
+			"copy, so read_bytes/search_memory/decompile all see the real contents"));
+		properties.put("mode", Schemas.stringProp(
+			"Permissions for the new block as a subset of 'rwx' (for kind=memory_block; " +
+			"default 'rw')"));
+		properties.put("overlap", Schemas.enumProp(
+			"What to do when an existing block already covers the range (for kind=memory_block): " +
+			"'refuse' (default) leaves the memory map alone; 'split' carves the range out of the " +
+			"one uninitialized block containing it, leaving the remnants with that block's name, " +
+			"permissions and uninitialized state. Anything else — an initialized block, or a " +
+			"range spanning more than one block — is refused either way", OVERLAP_MODES));
 		return Map.of(
 			"type", "object",
 			"properties", properties,
@@ -177,8 +208,163 @@ public class CreateTool implements ProgramTool {
 				Args.stringArg(args, "to_address", null), Args.stringArg(args, "ref_type", null),
 				Args.intArg(args, "operand_index", CodeUnit.MNEMONIC));
 			case "functions_from_table" -> createFunctionsFromTable(program, address, args);
+			case "memory_block" -> createMemoryBlock(program, address, label, args);
 			default -> Results.error("unhandled kind " + kind);
 		};
+	}
+
+	/**
+	 * Create an initialized memory block over bytes of the program's own imported file.
+	 *
+	 * <p>The case this exists for is a Harvard target whose data space Ghidra loads as one huge
+	 * uninitialized block: until a block with real bytes is laid over it, every string and table
+	 * in data space reads as empty, and an agent draws conclusions from absence that is an
+	 * artefact of the memory map. The bytes come from the program's stored {@code FileBytes}, so
+	 * the block is backed by the file itself rather than a copy.
+	 *
+	 * <p>This rewrites the memory map, which auto-saves with no undo, so the overlap rules are
+	 * deliberately narrow: exactly one existing block, uninitialized, wholly containing the new
+	 * range. An initialized block, a partial overlap, or a range crossing two blocks is refused
+	 * with what was found rather than resolved by guesswork.
+	 */
+	private McpSchema.CallToolResult createMemoryBlock(Program program, Address start, String name,
+			Map<String, Object> args) {
+		if (name == null || name.isBlank()) {
+			return Results.error("name is required for kind=memory_block");
+		}
+		long length = Args.longArg(args, "length", 0);
+		if (length <= 0) {
+			return Results.error("length must be a positive byte count for kind=memory_block");
+		}
+		long fileOffset = Args.longArg(args, "file_offset", -1);
+		if (fileOffset < 0) {
+			return Results.error("file_offset is required for kind=memory_block (the offset into " +
+				"the imported file where the block's bytes start)");
+		}
+		String mode = Args.stringArg(args, "mode", "rw").toLowerCase();
+		if (!mode.matches("r?w?x?") || mode.isEmpty()) {
+			return Results.error("mode must be a subset of 'rwx' in that order, e.g. 'r', 'rw', " +
+				"'rwx' (got '" + mode + "')");
+		}
+		String overlap = Args.stringArg(args, "overlap", "refuse");
+		if (!OVERLAP_MODES.contains(overlap)) {
+			return Results.error("overlap must be one of " + OVERLAP_MODES);
+		}
+
+		Memory memory = program.getMemory();
+		List<FileBytes> fileBytes = memory.getAllFileBytes();
+		if (fileBytes.isEmpty()) {
+			return Results.error("This program has no stored file bytes, so a block cannot be " +
+				"backed by the imported file. That happens when the program was created without " +
+				"an importer keeping the original bytes; re-import the file if you need this.");
+		}
+		Address end;
+		try {
+			end = start.addNoWrap(length - 1);
+		}
+		catch (Exception e) {
+			return Results.error("A block of " + length + " bytes at " + start +
+				" runs past the end of the " + start.getAddressSpace().getName() + " space");
+		}
+
+		MemoryBlock covering = null;
+		List<String> overlapping = new ArrayList<>();
+		for (MemoryBlock block : memory.getBlocks()) {
+			if (block.getStart().compareTo(end) > 0 || block.getEnd().compareTo(start) < 0) {
+				continue;
+			}
+			overlapping.add(describe(block));
+			covering = block;
+		}
+		if (overlapping.size() > 1) {
+			return Results.error("The range " + start + "-" + end + " crosses " +
+				overlapping.size() + " existing blocks: " + String.join(", ", overlapping) +
+				". Refused — carving across block boundaries is not something this tool guesses at.");
+		}
+		if (covering != null) {
+			if (covering.isInitialized()) {
+				return Results.error("The range " + start + "-" + end + " lies in " +
+					describe(covering) + ", which already has bytes. Refused: overwriting real " +
+					"contents is not what this tool is for.");
+			}
+			if (covering.getStart().compareTo(start) > 0 || covering.getEnd().compareTo(end) < 0) {
+				return Results.error("The range " + start + "-" + end + " only partly overlaps " +
+					describe(covering) + ". Refused — the new block must fit wholly inside the " +
+					"one it displaces.");
+			}
+			if (!overlap.equals("split")) {
+				return Results.error("The range " + start + "-" + end + " is inside " +
+					describe(covering) + ". Pass overlap=split to carve it out, leaving that " +
+					"block's remnants either side; the memory map is rewritten and auto-saved, " +
+					"so it is not done by default.");
+			}
+		}
+
+		MemoryBlock target = covering;
+		return Transactions.modify(program, "Create memory block", () -> {
+			List<String> changed = new ArrayList<>();
+			if (target != null) {
+				changed.addAll(carveOut(memory, target, start, end));
+			}
+			MemoryBlock created =
+				memory.createInitializedBlock(name, start, fileBytes.get(0), fileOffset, length,
+					false);
+			created.setRead(mode.contains("r"));
+			created.setWrite(mode.contains("w"));
+			created.setExecute(mode.contains("x"));
+			StringBuilder sb = new StringBuilder("Created " + describe(created) + " from file " +
+				"offset 0x" + Long.toHexString(fileOffset));
+			if (fileBytes.size() > 1) {
+				sb.append(" of ").append(fileBytes.get(0).getFilename());
+			}
+			if (!changed.isEmpty()) {
+				sb.append("\nRemnants of the block it displaced: ").append(String.join(", ",
+					changed));
+			}
+			return sb.toString();
+		});
+	}
+
+	/**
+	 * Split {@code block} so that {@code start}-{@code end} is free, and remove the piece that
+	 * covered it. The remnants keep the original block's name, permissions and uninitialized
+	 * state, because Ghidra's split copies the flags and leaves the head record in place; the
+	 * tail it names {@code <name>.split}, which is renamed here to {@code <name>.1} so a caller
+	 * reading the memory map sees a sibling rather than a description of how it was made.
+	 */
+	private static List<String> carveOut(Memory memory, MemoryBlock block, Address start,
+			Address end) throws Exception {
+		String original = block.getName();
+		List<String> remnants = new ArrayList<>();
+		if (block.getStart().compareTo(start) < 0) {
+			memory.split(block, start);
+			remnants.add(describe(memory.getBlock(block.getStart())));
+		}
+		MemoryBlock middle = memory.getBlock(start);
+		if (middle.getEnd().compareTo(end) > 0) {
+			memory.split(middle, end.next());
+			MemoryBlock tail = memory.getBlock(end.next());
+			tail.setName(siblingName(memory, original));
+			remnants.add(describe(tail));
+		}
+		memory.removeBlock(memory.getBlock(start), TaskMonitor.DUMMY);
+		return remnants;
+	}
+
+	/** {@code name.1}, or the next free {@code name.N} if that is taken. */
+	private static String siblingName(Memory memory, String name) {
+		for (int i = 1; i < 100; i++) {
+			String candidate = name + "." + i;
+			if (memory.getBlock(candidate) == null) {
+				return candidate;
+			}
+		}
+		return name + ".split";
+	}
+
+	private static String describe(MemoryBlock block) {
+		return block.getName() + " (" + block.getStart() + "-" + block.getEnd() +
+			(block.isInitialized() ? "" : ", uninitialized") + ")";
 	}
 
 	/**

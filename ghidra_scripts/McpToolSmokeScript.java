@@ -321,6 +321,10 @@ public class McpToolSmokeScript extends GhidraScript {
 			// how many instructions it actually exercised rather than passing silently.
 			checkTrailingSeparators(program);
 
+			// create kind=memory_block. Runs after the .bss read_bytes case above, because the
+			// split test carves .bss up and that case needs it whole.
+			checkMemoryBlocks(program);
+
 			// migrate: /ls -> itself is refused; a dry run against the same binary imported
 			// twice is the honest exercise (everything already equal, nothing to write).
 			prog("migrate", Map.of("source", "/ls.bin"), program);
@@ -859,6 +863,71 @@ public class McpToolSmokeScript extends GhidraScript {
 		McpSchema.CallToolResult result = call(() -> tool.execute(args, project), name);
 		print(result);
 		return result;
+	}
+
+	/**
+	 * create kind=memory_block: the block carries the file's real bytes, and every refusal the
+	 * overlap rules promise actually refuses. The memory map has no undo in the live server, so
+	 * the refusals matter as much as the creation — each one is a rewrite that did not happen.
+	 */
+	private void checkMemoryBlocks(Program program) {
+		// A free range well past the image: no overlap, so no split needed. file_offset 0 is the
+		// ELF header, whose first four bytes are known, which is what makes this a real check
+		// that the block is backed by the file rather than by zeroes.
+		String free = "0x50000000";
+		prog("create", Map.of("kind", "memory_block", "address", free, "name", "smoke_filebytes",
+			"length", "0x40", "file_offset", 0), program);
+		McpSchema.CallToolResult bytes =
+			prog("read_bytes", Map.of("address", free, "length", 4), program);
+		if (!text(bytes).toLowerCase().contains("7f 45 4c 46")) {
+			failures++;
+			println("!! memory_block did not expose the imported file's bytes (expected the ELF " +
+				"magic 7f 45 4c 46 at file offset 0)");
+		}
+
+		// Same range again: an initialized block is never overwritten, whatever overlap says.
+		McpSchema.CallToolResult onInitialized = prog("create", Map.of("kind", "memory_block",
+			"address", free, "name", "smoke_clobber", "length", "0x10", "file_offset", 0,
+			"overlap", "split"), program);
+		if (!text(onInitialized).contains("already has bytes")) {
+			failures++;
+			println("!! memory_block overwrote, or failed to explain, a range in an initialized block");
+		}
+
+		// An uninitialized block, no overlap= given: refused, and the refusal must name the way
+		// forward rather than just saying no.
+		MemoryBlock bss = program.getMemory().getBlock(".bss");
+		if (bss == null || bss.getEnd().subtract(bss.getStart()) < 3) {
+			println("(no .bss of usable size; skipping the split cases)");
+			return;
+		}
+		Address inside = bss.getStart().add(2);
+		McpSchema.CallToolResult refused = prog("create", Map.of("kind", "memory_block",
+			"address", inside.toString(), "name", "smoke_split", "length", 2, "file_offset", 0),
+			program);
+		if (!text(refused).contains("overlap=split")) {
+			failures++;
+			println("!! memory_block did not refuse an uninitialized overlap with a way forward");
+		}
+
+		// The carve itself: remnants either side, keeping .bss's name and uninitialized state.
+		prog("create", Map.of("kind", "memory_block", "address", inside.toString(),
+			"name", "smoke_split", "length", 2, "file_offset", 0, "overlap", "split"), program);
+		MemoryBlock head = program.getMemory().getBlock(".bss");
+		MemoryBlock carved = program.getMemory().getBlock(inside);
+		MemoryBlock tail = program.getMemory().getBlock(".bss.1");
+		if (carved == null || !"smoke_split".equals(carved.getName()) || !carved.isInitialized()) {
+			failures++;
+			println("!! the carved range did not become an initialized smoke_split block");
+		}
+		if (head == null || head.isInitialized() || head.getEnd().compareTo(inside) >= 0) {
+			failures++;
+			println("!! the head remnant lost its name, its bytes-free state, or its range");
+		}
+		if (tail == null || tail.isInitialized()) {
+			failures++;
+			println("!! the tail remnant is missing or is no longer uninitialized (expected .bss.1)");
+		}
 	}
 
 	/**
