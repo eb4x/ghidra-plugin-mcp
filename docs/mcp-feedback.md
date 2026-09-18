@@ -191,3 +191,28 @@ because the design answer is fresh and the next processor module will want the s
   match/undecodable, reporting the first N of each class. **Length matters most:** a wrong length
   desynchronises the sweep, so a count of differing rows says nothing while the first differing
   address says everything.
+
+
+## 2026-09-18 — MCPServerPlugin — a healthy instance logged "Failed to bind" as a WARN — eclipse-plugin-mcp
+_Fixed in 0.20.1 (e821d18) and deployed, but **not yet confirmed live**; stays open until the
+adopt path is observed. Archive it then._
+
+- **Friction:** ~10s after a clean start, `application.log` carried
+  `WARN (MCPServerPlugin) MCP server not started on 127.0.0.1:8765 (Failed to bind ...). Use
+  Tools → MCPServer → Restart Server after freeing the port` — on an instance that was serving
+  fine, with :8765 held by that very process (verified by pid). It is the line a session greps
+  when a restart looks wrong, so it sent the reporter chasing a phantom stale instance, and its
+  advice (free the port) was wrong: the holder was Ghidra itself.
+- **Cause:** Ghidra instantiates the plugin once per tool that has it (the Front End, plus a
+  restored CodeBrowser). `server` was an instance field, so the second instance always failed to
+  bind the port the first held, and reported it as a failure.
+- **Fix:** the server is process-wide (`SERVER_LOCK` / `sharedServer` / `owner`). A later
+  instance adopts the running one and logs INFO naming the sharing tool; only the instance that
+  bound the port stops it on `dispose`, so closing a tool no longer takes MCP down for the whole
+  process; the WARN is reserved for a port held outside this process and its text now says so.
+- **Verification status:** the 11:49 restart logged the listening line and no WARN — but no
+  second instance initialised in that run, so the WARN's absence proves only that nothing
+  regressed. MCP traffic alone does not create the second instance (eclipse-plugin-mcp tried via
+  `get_program_info`); it appears to need a GUI action that opens a CodeBrowser tool. **What
+  confirms the fix:** the `MCP server already running on ...; <tool> shares it` INFO appearing
+  once a program is opened in the Ghidra window.
