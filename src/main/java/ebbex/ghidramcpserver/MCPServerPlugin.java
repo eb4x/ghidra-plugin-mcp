@@ -54,7 +54,16 @@ public class MCPServerPlugin extends Plugin implements ApplicationLevelPlugin {
 		ToolRegistry.programTools(decompilers, projectContext));
 	private final int port = Integer.getInteger(PORT_PROPERTY, DEFAULT_PORT);
 
-	private McpHttpServer server;
+	/**
+	 * The server is process-wide, not per plugin instance: Ghidra instantiates this plugin
+	 * once per tool that has it (the Front End, plus any tool the user adds it to), and only
+	 * the first can bind the port. The others share the running one instead of reporting a
+	 * bind failure that means nothing. {@code OWNER} is the instance that bound it, and the
+	 * only one whose {@code dispose} stops it.
+	 */
+	private static final Object SERVER_LOCK = new Object();
+	private static McpHttpServer sharedServer;
+	private static MCPServerPlugin owner;
 
 	public MCPServerPlugin(PluginTool tool) {
 		super(tool);
@@ -67,34 +76,51 @@ public class MCPServerPlugin extends Plugin implements ApplicationLevelPlugin {
 		createMenuActions();
 	}
 
-	private synchronized boolean startServer() {
-		if (server != null && server.isRunning()) {
-			return true;
-		}
-		McpHttpServer candidate = new McpHttpServer(HOST, port, endpoints);
-		try {
-			candidate.start();
-			server = candidate;
-			return true;
-		}
-		catch (Exception e) {
-			server = null;
-			Msg.warn(this, "MCP server not started on " + HOST + ":" + port + " (" +
-				e.getMessage() + "). Use Tools → " + MENU_TITLE + " → Restart Server " +
-				"after freeing the port (or set -D" + PORT_PROPERTY + "=<port>).");
-			return false;
+	/**
+	 * Start the process-wide server, or adopt the one already running. A bind failure is only
+	 * a warning when the port is held by something outside this process: the advice it gives
+	 * (free the port, restart the server) is wrong, and alarming, when the holder is us.
+	 */
+	private boolean startServer() {
+		synchronized (SERVER_LOCK) {
+			if (isRunning()) {
+				if (owner != this) {
+					Msg.info(this, "MCP server already running on http://" + HOST + ":" + port +
+						McpHttpServer.BASE_PATH + "; " + tool.getName() + " shares it.");
+				}
+				return true;
+			}
+			McpHttpServer candidate = new McpHttpServer(HOST, port, endpoints);
+			try {
+				candidate.start();
+				sharedServer = candidate;
+				owner = this;
+				return true;
+			}
+			catch (Exception e) {
+				Msg.warn(this, "MCP server not started on " + HOST + ":" + port + " (" +
+					e.getMessage() + "). The port is held by another process — this Ghidra is " +
+					"not serving MCP. Use Tools → " + MENU_TITLE + " → Restart Server " +
+					"after freeing the port (or set -D" + PORT_PROPERTY + "=<port>).");
+				return false;
+			}
 		}
 	}
 
-	private synchronized void stopServer() {
-		if (server != null) {
-			server.stop();
-			server = null;
+	private void stopServer() {
+		synchronized (SERVER_LOCK) {
+			if (sharedServer != null) {
+				sharedServer.stop();
+				sharedServer = null;
+				owner = null;
+			}
 		}
 	}
 
-	private synchronized boolean isRunning() {
-		return server != null && server.isRunning();
+	private boolean isRunning() {
+		synchronized (SERVER_LOCK) {
+			return sharedServer != null && sharedServer.isRunning();
+		}
 	}
 
 	private void createMenuActions() {
@@ -141,7 +167,13 @@ public class MCPServerPlugin extends Plugin implements ApplicationLevelPlugin {
 
 	@Override
 	protected void dispose() {
-		stopServer();
+		// Only the instance that bound the port stops it; a sharing tool closing must not
+		// take the server down for the rest of the process.
+		synchronized (SERVER_LOCK) {
+			if (owner == this) {
+				stopServer();
+			}
+		}
 		projectContext.releaseAll();
 		decompilers.dispose();
 		super.dispose();
