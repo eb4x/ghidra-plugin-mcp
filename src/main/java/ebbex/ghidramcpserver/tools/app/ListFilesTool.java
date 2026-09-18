@@ -82,7 +82,7 @@ public class ListFilesTool implements ApplicationLevelTool {
 		int unreadable = 0;
 		for (DomainFile file : window) {
 			sb.append(file.getPathname()).append("  [").append(file.getContentType()).append(']');
-			String staleness = LanguageStatus.staleness(file);
+			String staleness = LanguageStatus.staleness(data, file);
 			if (LanguageStatus.isUnreadable(staleness)) {
 				unreadable++;
 				sb.append("  ?? ").append(staleness);
@@ -101,10 +101,10 @@ public class ListFilesTool implements ApplicationLevelTool {
 					.append("re-import.\n");
 		}
 		if (unreadable > 0) {
-			sb.append("\n?? ").append(unreadable).append(" could not be judged either way — an ")
-					.append("unreadable language version is not a clean one. Try opening one: if ")
-					.append("it was written by a newer Ghidra than this instance, nothing here ")
-					.append("can read it.\n");
+			sb.append("\n?? ").append(unreadable).append(" could not be judged either way, each ")
+					.append("row saying why. An unreadable language version is not a clean one: ")
+					.append("those programs may or may not open, and the only way to find out is ")
+					.append("to try one.\n");
 		}
 		sb.append(Results.paginationFooter(window.size(), offset, matches.size()));
 		return Results.ok(sb.toString());
