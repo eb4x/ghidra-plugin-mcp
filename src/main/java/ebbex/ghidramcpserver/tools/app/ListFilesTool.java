@@ -79,10 +79,15 @@ public class ListFilesTool implements ApplicationLevelTool {
 		List<DomainFile> window = matches.stream().skip(offset).limit(limit).toList();
 		StringBuilder sb = new StringBuilder();
 		int stale = 0;
+		int unreadable = 0;
 		for (DomainFile file : window) {
 			sb.append(file.getPathname()).append("  [").append(file.getContentType()).append(']');
 			String staleness = LanguageStatus.staleness(file);
-			if (staleness != null) {
+			if (LanguageStatus.isUnreadable(staleness)) {
+				unreadable++;
+				sb.append("  ?? ").append(staleness);
+			}
+			else if (staleness != null) {
 				stale++;
 				sb.append("  ** ").append(staleness);
 			}
@@ -94,6 +99,12 @@ public class ListFilesTool implements ApplicationLevelTool {
 					.append("program one way and is the owner's call, so no tool here does it. ")
 					.append("Open one in the Ghidra window and accept the upgrade prompt, or ")
 					.append("re-import.\n");
+		}
+		if (unreadable > 0) {
+			sb.append("\n?? ").append(unreadable).append(" could not be judged either way — an ")
+					.append("unreadable language version is not a clean one. Try opening one: if ")
+					.append("it was written by a newer Ghidra than this instance, nothing here ")
+					.append("can read it.\n");
 		}
 		sb.append(Results.paginationFooter(window.size(), offset, matches.size()));
 		return Results.ok(sb.toString());

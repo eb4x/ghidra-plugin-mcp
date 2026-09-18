@@ -94,9 +94,11 @@ public class McpToolSmokeScript extends GhidraScript {
 		// (nothing hermetic is stale), but it does prove it does not invent one, which is
 		// the failure that would matter — a false mark sends a caller off upgrading a
 		// perfectly good program, and the upgrade is one-way.
-		if (text(listing).contains("**")) {
+		if (text(listing).contains("**") || text(listing).contains("??")) {
 			failures++;
-			println("!! list_files marked a freshly imported program as needing a language upgrade");
+			println("!! list_files flagged a freshly imported program — '**' (needs a language " +
+				"upgrade) or '??' (language version unreadable). Both are wrong here: these " +
+				"programs were written minutes ago by this same Ghidra.");
 		}
 
 		// ---- raw-binary import: target.c is claimed by no loader, so the bare call must

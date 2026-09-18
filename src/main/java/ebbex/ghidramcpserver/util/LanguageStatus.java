@@ -38,7 +38,26 @@ public final class LanguageStatus {
 	private static final Pattern STORED_LANGUAGE =
 		Pattern.compile("^(\\S+)\\s+\\((\\d+)\\.(-?\\d+)\\)$");
 
+	/**
+	 * Returned when the stored language cannot be read at all. Deliberately not silence:
+	 * {@code GhidraFileData.getMetadata} hands back an empty map for a non-database item, for a
+	 * file that has been deleted, <em>and</em> for one written by a newer Ghidra than this one
+	 * (it catches {@code Field.UnsupportedFieldException} and returns the same empty map). An
+	 * empty map therefore means "no answer", never "clean" — and treating it as clean would let
+	 * the one file nobody should trust look exactly like a healthy one. Raised by
+	 * {@code ghidra-plugin-rtlink}, whose own test case could not have caught it.
+	 */
+	private static final String UNREADABLE =
+		"language version unreadable — no metadata in the file. It may have been written by a " +
+			"newer Ghidra than this one, in which case nothing here can open it; this is not a " +
+			"clean result";
+
 	private LanguageStatus() {
+	}
+
+	/** True when {@code staleness} could not judge the file, rather than judging it stale. */
+	public static boolean isUnreadable(String staleness) {
+		return UNREADABLE.equals(staleness);
 	}
 
 	/**
@@ -63,14 +82,11 @@ public final class LanguageStatus {
 		Map<String, String> metadata = file.getMetadata();
 		String stored = metadata == null ? null : metadata.get("Language ID");
 		if (stored == null) {
-			// An empty map also means "saved by a newer Ghidra than this one" — the metadata
-			// read itself failed on an unsupported field — but it means several other things
-			// too, so it is not evidence of staleness on its own.
-			return null;
+			return UNREADABLE;
 		}
 		Matcher matcher = STORED_LANGUAGE.matcher(stored.trim());
 		if (!matcher.matches()) {
-			return null;
+			return UNREADABLE;
 		}
 		LanguageID id = new LanguageID(matcher.group(1));
 		int major = Integer.parseInt(matcher.group(2));
