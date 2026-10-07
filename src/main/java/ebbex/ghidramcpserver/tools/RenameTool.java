@@ -19,6 +19,7 @@ import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
+import ghidra.program.model.symbol.SymbolType;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Rename any nameable thing: function, label, data, parameter, or local variable. */
@@ -43,7 +44,10 @@ public class RenameTool implements ProgramTool {
 		return "Rename something. kind=function renames the function given by 'function'; " +
 			"kind=label|data renames the symbol at 'address'. kind=parameter|local_variable " +
 			"renames a variable inside the function given by 'function', identified by its " +
-			"current 'variable_name'.";
+			"current 'variable_name'. reset=true (kind=function|label|data, no 'new_name') drops " +
+			"the user name and returns to Ghidra's default: a function becomes FUN_<addr> or, " +
+			"for a thunk, shows its target's name again; a label or data symbol is removed, and " +
+			"the dynamic DAT_ label shows while something references the address.";
 	}
 
 	@Override
@@ -52,13 +56,15 @@ public class RenameTool implements ProgramTool {
 			"type", "object",
 			"properties", Map.of(
 				"kind", Schemas.enumProp("What to rename", KINDS),
-				"new_name", Schemas.stringProp("The new name"),
+				"new_name", Schemas.stringProp("The new name (not needed with reset=true)"),
+				"reset", Schemas.boolProp("kind=function|label|data: return to Ghidra's default " +
+					"name instead of giving a new one (default false)"),
 				"function", Schemas.stringProp("Function name or an address inside it " +
 					"(for kind=function|parameter|local_variable)"),
 				"address", Schemas.stringProp("Address of the label/data (for kind=label|data)"),
 				"variable_name", Schemas.stringProp(
 					"Current variable name (for kind=parameter|local_variable)")),
-			"required", List.of("kind", "new_name"));
+			"required", List.of("kind"));
 	}
 
 	@Override
@@ -73,13 +79,20 @@ public class RenameTool implements ProgramTool {
 		if (kind == null || !KINDS.contains(kind)) {
 			return Results.error("kind must be one of " + KINDS);
 		}
-		if (newName == null || newName.isBlank()) {
-			return Results.error("new_name is required");
+		boolean reset = Args.boolArg(args, "reset", false);
+		if (reset && (kind.equals("parameter") || kind.equals("local_variable"))) {
+			return Results.error("reset=true applies to kind=function|label|data; a variable " +
+				"has no default name to return to");
+		}
+		if (!reset && (newName == null || newName.isBlank())) {
+			return Results.error("new_name is required (or reset=true to return to the default)");
 		}
 
 		return switch (kind) {
-			case "function" -> renameFunction(program, args, newName);
-			case "label", "data" -> renameSymbol(program, args, kind, newName);
+			case "function" -> reset ? resetFunction(program, args)
+					: renameFunction(program, args, newName);
+			case "label", "data" -> reset ? resetSymbol(program, args)
+					: renameSymbol(program, args, kind, newName);
 			case "parameter", "local_variable" -> renameVariable(program, args, newName);
 			default -> Results.error("unhandled kind " + kind);
 		};
@@ -110,6 +123,58 @@ public class RenameTool implements ProgramTool {
 			function.setName(newName, SourceType.USER_DEFINED);
 			return "Renamed function " + old + " -> " + newName + " @ " +
 				function.getEntryPoint() + absorbed;
+		});
+	}
+
+	/**
+	 * Back to the default name: Ghidra does this with a DEFAULT-source rename (the stored name
+	 * becomes empty and the symbol prints FUN_addr, or the target's name for a thunk), not by
+	 * deleting the symbol — deleting a function symbol removes the function.
+	 */
+	private McpSchema.CallToolResult resetFunction(Program program, Map<String, Object> args) {
+		String ref = Args.stringArg(args, "function", null);
+		if (ref == null) {
+			return Results.error("'function' (a name or an address inside it) is required");
+		}
+		Function function = Locations.findFunction(program, ref);
+		if (function.getSymbol().getSource() == SourceType.DEFAULT) {
+			return Results.ok(function.getName() + " @ " + function.getEntryPoint() +
+				" already has its default name");
+		}
+		return Transactions.modify(program, "Reset function name", () -> {
+			String old = function.getName();
+			function.getSymbol().setName(null, SourceType.DEFAULT);
+			return "Reset function " + old + " @ " + function.getEntryPoint() +
+				" to its default name " + function.getName() +
+				(function.isThunk() ? " (a default-named thunk follows its target's name)" : "");
+		});
+	}
+
+	/**
+	 * A label has no stored default: removing the user symbol is the reset, and the dynamic
+	 * DAT_/LAB_ name reappears on its own while something references the address.
+	 */
+	private McpSchema.CallToolResult resetSymbol(Program program, Map<String, Object> args) {
+		String addressArg = Args.stringArg(args, "address", null);
+		if (addressArg == null) {
+			return Results.error("'address' is required for kind=label|data");
+		}
+		Address address = Locations.parseAddress(program, addressArg);
+		Symbol symbol = program.getSymbolTable().getPrimarySymbol(address);
+		if (symbol == null || symbol.getSource() == SourceType.DEFAULT) {
+			return Results.ok("No user symbol at " + address + " to reset" +
+				(symbol == null ? "" : " (" + symbol.getName() + " is already the default)"));
+		}
+		if (symbol.getSymbolType() == SymbolType.FUNCTION) {
+			return resetFunction(program, Map.of("function", address.toString()));
+		}
+		return Transactions.modify(program, "Reset label", () -> {
+			String old = symbol.getName();
+			symbol.delete();
+			Symbol now = program.getSymbolTable().getPrimarySymbol(address);
+			return "Removed label " + old + " @ " + address + (now == null
+					? " (nothing references the address, so no default label shows)"
+					: "; it now shows as " + now.getName());
 		});
 	}
 

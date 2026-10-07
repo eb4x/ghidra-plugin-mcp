@@ -1975,3 +1975,16 @@ _Verification record for the five entries above._
 - **Still open** from the same log: split/alias control for merged register variables (7),
   `decompile` by range or as a diff (8), comments that name decompiler temporaries (10); see
   the open log.
+
+## 2026-10-07 — RESOLVED (0.26.0) — no way to return a renamed function (an RTLink gate) to its default name — madstools
+- **Friction:** six gates hand-renamed after their targets before RTLink 0.5.0 made default-named
+  thunks print the target; `rename kind=function new_name=""` was refused, so the thunks could
+  not go back to following their targets, and each name now resolved to two functions.
+- **Fix:** `rename reset=true` (kind=function|label|data, no `new_name`). A function is reset the
+  way Ghidra does it, a DEFAULT-source rename (`SymbolDB.doSetNameAndNamespace` stores an empty
+  name; `FunctionSymbol.doGetName` then yields FUN_addr, or the target's name for a thunk) —
+  not by deleting the symbol, which would delete the function. A label/data symbol is removed,
+  and the result says whether a dynamic DAT_ label shows again (only while referenced).
+- **Verified** by `RenameResetTest` (plain function, thunk following its target, label removal,
+  `new_name` no longer required with reset) and the smoke run; live on NEBULAR.EXE pending
+  madstools' use after the 0.26.0 restart.
