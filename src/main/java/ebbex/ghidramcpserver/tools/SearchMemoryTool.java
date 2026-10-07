@@ -317,7 +317,7 @@ public class SearchMemoryTool implements ProgramTool {
 		return address.toString();
 	}
 
-	private static String normalizeInstructionText(String text) {
+	static String normalizeInstructionText(String text) {
 		return text.trim().replaceAll("\\s+", " ").toUpperCase();
 	}
 
@@ -348,7 +348,7 @@ public class SearchMemoryTool implements ProgramTool {
 	}
 
 	/** Returns {values, masks}; a wildcard byte has value 0 and mask 0. */
-	private static byte[][] parseHexPattern(String pattern) {
+	static byte[][] parseHexPattern(String pattern) {
 		String[] tokens = pattern.trim().split("\\s+");
 		byte[] values = new byte[tokens.length];
 		byte[] masks = new byte[tokens.length];

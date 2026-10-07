@@ -412,7 +412,7 @@ public class ManageTypesTool implements ProgramTool {
 		return null;
 	}
 
-	private static Integer parseOffset(String s) {
+	static Integer parseOffset(String s) {
 		try {
 			String t = s.trim();
 			return t.regionMatches(true, 0, "0x", 0, 2) ? Integer.parseInt(t.substring(2), 16)

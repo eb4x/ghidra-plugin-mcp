@@ -49,7 +49,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			"  | AppInfo.getActiveProject() = " + AppInfo.getActiveProject() + " ===");
 
 		// The program everything below runs against is a fresh import of the same
-		// compiled-on-the-spot target analyzeHeadless brought us up on — never a host
+		// committed sample analyzeHeadless brought us up on — never a host
 		// binary like /bin/ls, whose symbols vary by distro (Fedora's MiniDebugInfo has
 		// main/_init, Ubuntu's stripped coreutils have neither).
 		String targetFile = currentProgram.getExecutablePath();
@@ -352,12 +352,12 @@ public class McpToolSmokeScript extends GhidraScript {
 
 			// migrate: /ls -> itself is refused; a dry run against the same binary imported
 			// twice is the honest exercise (everything already equal, nothing to write).
-			prog("migrate", Map.of("source", "/ls.bin"), program);
+			prog("migrate", Map.of("source", "/target.bin"), program);
 			prog("migrate", Map.of("source", "/__no_such_program__", "dry_run", true), program);
 
 			// manage_files op=copy: the snapshot primitive (there is no undo — Ghidra drops its
 			// undo history on every save, and every tool call here auto-saves).
-			app("manage_files", Map.of("op", "copy", "path", "/ls.bin", "dest_folder", "/backups",
+			app("manage_files", Map.of("op", "copy", "path", "/target.bin", "dest_folder", "/backups",
 				"new_name", "ls.snapshot"), project);
 			app("list_files", Map.of("folder", "/backups"), project);
 			app("manage_files", Map.of("op", "delete", "path", "/backups", "recursive", true),
@@ -367,7 +367,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			// running tool, so the close-in-tools pass can't reach it — must refuse via the
 			// cannot-close branch and name the consumer (McpToolSmokeScript).
 			McpSchema.CallToolResult heldOpen =
-				app("manage_files", Map.of("op", "delete", "path", "/ls.bin"), project);
+				app("manage_files", Map.of("op", "delete", "path", "/target.bin"), project);
 			if (!text(heldOpen).contains("cannot close") ||
 				!text(heldOpen).contains("McpToolSmokeScript")) {
 				failures++;
@@ -375,7 +375,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			}
 			// and the on_dirty enum must validate before anything is touched.
 			McpSchema.CallToolResult badOnDirty = app("manage_files",
-				Map.of("op", "delete", "path", "/ls.bin", "on_dirty", "save"), project);
+				Map.of("op", "delete", "path", "/target.bin", "on_dirty", "save"), project);
 			if (!text(badOnDirty).contains("on_dirty must be one of")) {
 				failures++;
 				println("!! bad on_dirty was not refused");
@@ -594,7 +594,9 @@ public class McpToolSmokeScript extends GhidraScript {
 			// on the stripped twin the smoke task compiled beside it, and the report has to say
 			// WHICH functions it named — the whole point of the per-function output.
 			String smokeDir = new java.io.File(targetFile).getParent();
-			String fidb = smokeDir + "/smoke.fidb";
+			// Outputs go next to the headless project, never into the sample's source directory.
+			String scratchDir = state.getProject().getProjectLocator().getLocation();
+			String fidb = scratchDir + "/smoke.fidb";
 			new java.io.File(fidb).delete();
 			McpSchema.CallToolResult built = app("fid_build",
 				Map.of("fidb", fidb, "programs", List.of("/" + targetName), "detail", true),
@@ -614,7 +616,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			}
 			// ar archive: no loader claims it, so it must be expanded member by member.
 			McpSchema.CallToolResult archive = app("import",
-				Map.of("file", smokeDir + "/smoke.a", "folder", "/bulk/archive"), project);
+				Map.of("file", smokeDir + "/target.a", "folder", "/bulk/archive"), project);
 			if (!text(archive).contains("/bulk/archive/target.o")) {
 				failures++;
 				println("!! ar-archive import did not expand into its member");
@@ -623,10 +625,10 @@ public class McpToolSmokeScript extends GhidraScript {
 				failures++;
 				println("!! queued bulk analysis did not finish in time");
 			}
-			DomainFile strippedDf = project.getProjectData().getFile("/bulk/ls-stripped.bin");
+			DomainFile strippedDf = project.getProjectData().getFile("/bulk/target-stripped.bin");
 			if (strippedDf == null) {
 				failures++;
-				println("!! bulk import did not create /bulk/ls-stripped.bin");
+				println("!! bulk import did not create /bulk/target-stripped.bin");
 			}
 			else {
 				Program stripped =
@@ -845,17 +847,17 @@ public class McpToolSmokeScript extends GhidraScript {
 			// SourceType.ANALYSIS and must be filtered by default (the ELF loader's own four —
 			// entry, _DT_INIT, _FINI_0, _DT_FINI — are IMPORTED and stay); with
 			// include_analysis_names=true nothing is filtered. 'exclude' must drop exactly 'mix'.
-			String fidb2 = smokeDir + "/smoke2.fidb";
+			String fidb2 = scratchDir + "/smoke2.fidb";
 			new java.io.File(fidb2).delete();
 			McpSchema.CallToolResult guesses = app("fid_build",
-				Map.of("fidb", fidb2, "programs", List.of("/bulk/ls-stripped.bin")), project);
+				Map.of("fidb", fidb2, "programs", List.of("/bulk/target-stripped.bin")), project);
 			if (!text(guesses).contains("5 analyzer-named or excluded")) {
 				failures++;
 				println("!! fid_build did not filter the five fid_apply-made names by default");
 			}
 			new java.io.File(fidb2).delete();
 			McpSchema.CallToolResult included = app("fid_build",
-				Map.of("fidb", fidb2, "programs", List.of("/bulk/ls-stripped.bin"),
+				Map.of("fidb", fidb2, "programs", List.of("/bulk/target-stripped.bin"),
 					"include_analysis_names", true), project);
 			if (!text(included).contains("0 excluded by name")) {
 				failures++;
@@ -867,7 +869,7 @@ public class McpToolSmokeScript extends GhidraScript {
 			McpSchema.CallToolResult excluded = app("fid_build",
 				Map.of("fidb", fidb2, "programs", List.of("/" + targetName), "exclude", "^mix$",
 					"detail", true), project);
-			if (!text(excluded).contains("Ingested 8 of") ||
+			if (!text(excluded).contains("Ingested 5 of 6") ||
 				!text(excluded).contains("1 analyzer-named or excluded")) {
 				failures++;
 				println("!! fid_build exclude='^mix$' did not drop exactly one function");
@@ -905,8 +907,8 @@ public class McpToolSmokeScript extends GhidraScript {
 		// Headless exits 0 even when a script aborts mid-run, so an aborted run reads as a pass
 		// unless you look for this line. Grep for it — its absence is the failure signal.
 		println(failures == 0
-				? "=== SMOKE COMPLETE: all tools exercised, 0 unexpected exceptions ==="
-				: "!! SMOKE COMPLETE WITH " + failures + " UNEXPECTED EXCEPTION(S)");
+				? "=== SMOKE OK: all tools exercised, 0 unexpected exceptions ==="
+				: "!! SMOKE FAILED WITH " + failures + " UNEXPECTED EXCEPTION(S)");
 	}
 
 	private void waitForAnalysis(Program program) throws Exception {

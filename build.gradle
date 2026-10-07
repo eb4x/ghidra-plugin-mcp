@@ -1,103 +1,5 @@
-// Builds a Ghidra Extension for a given Ghidra installation.
-//
-// An absolute path to the Ghidra installation directory must be supplied either by setting the
-// GHIDRA_INSTALL_DIR environment variable or Gradle project property:
-//
-//     > export GHIDRA_INSTALL_DIR=<Absolute path to Ghidra>
-//     > gradle
-//
-//         or
-//
-//     > gradle -PGHIDRA_INSTALL_DIR=<Absolute path to Ghidra>
-//
-// Gradle should be invoked from the directory of the project to build.  Please see the
-// application.gradle.version property in <GHIDRA_INSTALL_DIR>/Ghidra/application.properties
-// for the correction version of Gradle to use for the Ghidra installation you specify.
-
-//----------------------START "DO NOT MODIFY" SECTION------------------------------
-def ghidraInstallDir
-
-if (System.env.GHIDRA_INSTALL_DIR) {
-	ghidraInstallDir = System.env.GHIDRA_INSTALL_DIR
-}
-else if (project.hasProperty("GHIDRA_INSTALL_DIR")) {
-	ghidraInstallDir = project.getProperty("GHIDRA_INSTALL_DIR")
-}
-else {
-	ghidraInstallDir = "<REPLACE>"
-}
-
-task distributeExtension {
-	group = "Ghidra"
-
-	apply from: new File(ghidraInstallDir).getCanonicalPath() + "/support/buildExtension.gradle"
-	dependsOn ':buildExtension'
-}
-//----------------------END "DO NOT MODIFY" SECTION-------------------------------
-
-repositories {
-	mavenCentral()
-}
-
-// The smoke-test script is a development aid, not part of the shipped extension.
-// Excluding it also prevents an installed copy from shadowing the -scriptPath copy
-// used when running it headless.
-buildExtension.exclude 'ghidra_scripts/**'
-// Keep project/dev clutter out of the packaged extension.
-buildExtension.exclude '.github/**'
-buildExtension.exclude '.claude/**'
-buildExtension.exclude '.mcp.json'
-buildExtension.exclude 'gradle/**'
-buildExtension.exclude 'gradlew'
-buildExtension.exclude 'gradlew.bat'
-buildExtension.exclude '.gitignore'
-buildExtension.exclude '.settings/**'
-buildExtension.exclude '.project'
-buildExtension.exclude '.classpath'
-buildExtension.exclude 'docs/**'
-buildExtension.exclude 'CLAUDE.md'
-// Local, machine-specific: the extracted Ghidra install we compile against and
-// the gradle.properties pointing at it. Never ship these in the extension.
-buildExtension.exclude 'ghidra-sdk/**'
-buildExtension.exclude 'gradle.properties'
-
-// Stamp the git commit (+dirty) and build time into a resource the running server
-// reports (get_application_info, GET /version, the startup log line), so "which build
-// am I talking to?" is answerable over the wire instead of by guessing from restarts.
-def buildInfoDir = layout.buildDirectory.dir('generated/buildinfo')
-
-tasks.register('generateBuildInfo') {
-	group = "Ghidra"
-	description = "Write build/mcpserver-build.properties with the git commit and build time"
-	outputs.dir(buildInfoDir)
-	// Git state is not a tracked input; restamp on every build (the file is tiny).
-	outputs.upToDateWhen { false }
-	doLast {
-		def git = 'unknown'
-		try {
-			def hash = 'git rev-parse --short HEAD'.execute(null, projectDir).text.trim()
-			def dirty = 'git status --porcelain'.execute(null, projectDir).text.trim()
-			if (!hash.isEmpty()) {
-				git = hash + (dirty.isEmpty() ? '' : '+dirty')
-			}
-		}
-		catch (Exception ignored) {
-		}
-		def versionProps = new Properties()
-		file('version.properties').withInputStream { versionProps.load(it) }
-		def dir = buildInfoDir.get().asFile
-		dir.mkdirs()
-		new File(dir, 'mcpserver-build.properties').text =
-			"version=${versionProps.getProperty('version', '0.0.0')}\n" +
-			"git=${git}\n" +
-			"built=${new Date().format("yyyy-MM-dd HH:mm:ss z", TimeZone.getTimeZone('UTC'))}\n"
-	}
-}
-
-tasks.named('processResources') {
-	dependsOn 'generateBuildInfo'
-	from buildInfoDir
-}
+// The build shared by every ghidra-plugin-* repo, then what is this plugin's own.
+apply from: 'gradle/ghidra-plugin-common.gradle'
 
 dependencies {
 	// MCP Java SDK (bundle: mcp-core + Jackson 3 JSON binding)
@@ -116,176 +18,27 @@ dependencies {
 	}
 }
 
-/**
- * Convenience tasks for local development:
- * - `gradlew buildExtension` creates the extension zip in `dist/`
- * - `gradlew installExtension` unzips that extension into the Ghidra *user* Extensions folder
- *   (~/.config/ghidra/ghidra_<version>/Extensions on Linux), mirroring the Ghidra UI
- *   "Install Extensions" flow.
- * - `gradlew uninstallExtension` removes it again.
- *
- * Nothing here writes under GHIDRA_INSTALL_DIR: the SDK is shared between the plugin repos and
- * read-only (extracted by the dailydriver session). The stock template's zip copy into
- * <install>/Extensions/Ghidra is dropped for that reason — the running Ghidra never read it.
- */
-def extensionName = project.name
+// mcpserver-build.properties: the version, git commit (+dirty) and build time the running
+// server reports (get_application_info, GET /version, the startup log line), so "which build
+// am I talking to?" is answerable over the wire instead of by guessing from restarts.
+buildStamp()
 
-def ghidraUserExtensionsDir = {
-	def overrideProp = project.findProperty("GHIDRA_USER_EXTENSIONS_DIR")
-	if (overrideProp) {
-		return file(overrideProp.toString())
-	}
-	def overrideEnv = System.getenv("GHIDRA_USER_EXTENSIONS_DIR")
-	if (overrideEnv) {
-		return file(overrideEnv)
-	}
-
-	def osName = (System.getProperty("os.name") ?: "").toLowerCase(Locale.ROOT)
-	def ghidraUserProfileDirName = "${DISTRO_PREFIX}_${RELEASE_NAME}"
-
-	if (osName.contains("windows")) {
-		def appData = System.getenv("APPDATA")
-		if (appData) {
-			return file("${appData}/ghidra/${ghidraUserProfileDirName}/Extensions")
-		}
-	}
-
-	if (osName.contains("mac") || osName.contains("darwin")) {
-		return file("${System.getProperty('user.home')}/Library/ghidra/${ghidraUserProfileDirName}/Extensions")
-	}
-
-	def xdgConfigHome = System.getenv("XDG_CONFIG_HOME")
-	def linuxConfigDir = xdgConfigHome ?: "${System.getProperty('user.home')}/.config"
-	return file("${linuxConfigDir}/ghidra/${ghidraUserProfileDirName}/Extensions")
-}.call()
-
-def buildZipProvider = tasks.named('buildExtension', Zip).flatMap { it.archiveFile }
-
-tasks.register('cleanExtractedExtension', Delete) {
-	group = "Ghidra"
-	description = "Delete the extracted extension from Ghidra's user Extensions folder"
-	delete new File(ghidraUserExtensionsDir, extensionName)
+tasks.named('verify') {
+	dependsOn 'smokeTest'
 }
 
-tasks.register('extractExtension', Copy) {
-	group = "Ghidra"
-	description = "Extract the built extension into Ghidra's user Extensions folder"
-
-	dependsOn tasks.named('buildExtension'), tasks.named('cleanExtractedExtension')
-
-	from {
-		zipTree(buildZipProvider.get().asFile)
-	}
-	into ghidraUserExtensionsDir
+// Every tool, driven headless against a fresh import of the committed sample
+// (src/test/smoke/, a freestanding ELF; build-sample.sh regenerates it). The script's own
+// verdict is the result: analyzeHeadless exits 0 even when a postScript throws.
+ghidraHeadless('smokeTest') {
+	description = 'Run McpToolSmokeScript headless against a fresh import of the committed sample'
+	importFile = file('src/test/smoke/target.bin')
+	postScript 'McpToolSmokeScript.java'
+	requiredLine = 'SMOKE OK'
 }
 
-tasks.register('installExtension') {
-	group = "Ghidra"
-	description = "Extract the built extension into the user Extensions folder"
-	dependsOn tasks.named('extractExtension')
-}
-
-tasks.register('uninstallExtension') {
-	group = "Ghidra"
-	description = "Delete the extracted extension from the user Extensions folder"
-	dependsOn tasks.named('cleanExtractedExtension')
-}
-
-/**
- * Headless smoke test (`gradlew smokeTest`), hermetic by construction.
- *
- * Two things make a headless run test something other than what you just built, and both have
- * bitten us: a stale extension copy that headless loads instead (one under
- * <install>/Ghidra/Extensions went stale at 0.4.0 and every smoke run silently exercised it), and
- * a headless run launched outside the flatpak resolving its settings dir to the native
- * ~/.config/ghidra rather than the flatpak tree the IDE uses. So the settings dir is pinned into
- * build/ via -Dapplication.settingsdir (GHIDRA_JAVA_OPTIONS is analyzeHeadless's VM-arg
- * passthrough), and the freshly built zip is extracted into THAT settings dir's Extensions folder,
- * which headless searches too — never into the install, which is a shared read-only SDK and
- * would otherwise hand every plugin's smoke run every other plugin's extension.
- */
-def smokeDir = file("${layout.buildDirectory.get().asFile}/smoke")
-
-tasks.register('smokeTest', Exec) {
-	group = "verification"
-	description = "Run McpToolSmokeScript headless against a fresh import of the freshly built extension"
-
-	dependsOn tasks.named('buildExtension')
-
-	def projectDir = new File(smokeDir, "project")
-	def settingsDir = new File(smokeDir, "settings")
-	def target = new File(smokeDir, "ls.bin")
-	def logFile = new File(smokeDir, "smoke.log")
-
-	doFirst {
-		delete smokeDir
-		projectDir.mkdirs()
-		settingsDir.mkdirs()
-		copy {
-			from zipTree(buildZipProvider.get().asFile)
-			into new File(settingsDir, "ghidra/${DISTRO_PREFIX}_${RELEASE_NAME}/Extensions")
-		}
-		// Compile a fixed target instead of borrowing the host's /bin/ls: the script's
-		// rename chain needs the _init symbol, which a distro binary only carries when
-		// the distro ships symbols (Fedora's MiniDebugInfo has it, Ubuntu's stripped
-		// coreutils don't). A freshly compiled, unstripped ELF has it everywhere.
-		def targetSrc = new File(smokeDir, "target.c")
-		targetSrc.text = '#include <stdio.h>\n' +
-			'static int helper(int x) { return x * 3 + 1; }\n' +
-			'static int mix(int a, int b) { int r = 0; for (int i = 0; i < a; i++) r += b ^ i; return r; }\n' +
-			// A function-pointer dispatch table, for create kind=functions_from_table.
-			'void *mcp_table[2] = { (void *) helper, (void *) mix };\n' +
-			'int main(int argc, char **argv) {\n' +
-			'  int total = 0;\n' +
-			'  for (int i = 0; i < argc; i++) total += mix(helper(i), argc) + (argv[i] ? 1 : 0);\n' +
-			'  printf("smoke %d %d\\n", helper(argc), total);\n' +
-			'  return total & 1;\n' +
-			'}\n'
-		def run = { String what, String... cmd ->
-			def proc = new ProcessBuilder(cmd).redirectErrorStream(true).start()
-			def out = proc.inputStream.text
-			if (proc.waitFor() != 0) {
-				throw new GradleException(what + " failed:\n" + out)
-			}
-		}
-		run("cc (smoke target)", "cc", "-O0", "-g0", "-o", target.path, targetSrc.path)
-		// A stripped twin of the same build: fid_build ingests the named one, fid_apply has
-		// to put those names back on this one. Its main() is padded with a loop so it clears
-		// the FID score threshold on its own (a bare printf main is ~15 code units, right on
-		// Ghidra's 14.6 default).
-		run("cc (stripped smoke target)", "cc", "-O0", "-g0", "-s",
-			"-o", new File(smokeDir, "ls-stripped.bin").path, targetSrc.path)
-		// An ar archive of the object: the container path of import (one program per member).
-		run("cc -c (smoke object)", "cc", "-O0", "-g0", "-c",
-			"-o", new File(smokeDir, "target.o").path, targetSrc.path)
-		run("ar (smoke archive)", "ar", "rcs", new File(smokeDir, "smoke.a").path,
-			new File(smokeDir, "target.o").path)
-	}
-
-	environment 'GHIDRA_JAVA_OPTIONS', "-Dapplication.settingsdir=${settingsDir}"
-	commandLine "${ghidraInstallDir}/support/analyzeHeadless",
-		projectDir, "smoke",
-		"-import", target,
-		"-scriptPath", file("ghidra_scripts"),
-		"-postScript", "McpToolSmokeScript"
-
-	ignoreExitValue = true
-	standardOutput = new ByteArrayOutputStream()
-	errorOutput = standardOutput
-
-	doLast {
-		def output = standardOutput.toString()
-		logFile.text = output
-		// The script reports its own verdict; a zero exit code alone proves nothing, because
-		// analyzeHeadless exits 0 even when a postScript throws.
-		def unexpected = (output =~ /(?m)^.*UNEXPECTED.*$/).collect { it }
-		if (!output.contains("SMOKE COMPLETE") || !unexpected.isEmpty()) {
-			throw new GradleException("smoke test failed — see ${logFile}\n" +
-				(unexpected.isEmpty() ? "script did not reach SMOKE COMPLETE"
-					: unexpected.join("\n")))
-		}
-		def version = file("version.properties").readLines()
-			.find { it.startsWith("version=") }?.substring("version=".length())
-		logger.lifecycle("smoke test passed (extension ${version}) — full log: ${logFile}")
-	}
+tasks.register('generateSmokeSample', Exec) {
+	group = 'Ghidra'
+	description = 'Rebuild src/test/smoke/target*.{bin,a} from target.c with the host cc'
+	commandLine 'sh', file('src/test/smoke/build-sample.sh').path
 }

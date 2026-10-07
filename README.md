@@ -114,9 +114,9 @@ To build yourself: JDK 21+ and two paths in a gitignored, project-local
 
 ```bash
 ./gradlew buildExtension     # -> dist/ghidra_<ver>_<date>_MCPServer.zip
-./gradlew installExtension   # deploy the zip into the Ghidra install + user Extensions dir
-./gradlew copyDependencies   # refresh third-party jars in lib/ (Eclipse/GhidraDev classpath)
-./gradlew smokeTest          # drive every tool headless against a freshly compiled tiny ELF
+./gradlew installExtension   # extract the zip into the user Extensions dir
+./gradlew verify             # everything CI runs: packaging check, JUnit, smoke test
+./gradlew smokeTest          # drive every tool headless against the committed sample ELF
 ```
 
 Restart Ghidra to load the new build (confirm with `GET /version`).

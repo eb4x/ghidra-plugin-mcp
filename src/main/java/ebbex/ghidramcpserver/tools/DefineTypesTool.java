@@ -268,11 +268,11 @@ public class DefineTypesTool implements ProgramTool {
 
 	/** A far marker's position: the composite or function it sat inside (null at top level)
 	 * and the declarator name it modifies. */
-	private record FarMark(String owner, String name) {
+	record FarMark(String owner, String name) {
 	}
 
 	/** The source with the markers blanked out, and where they were. */
-	private record FarScan(String source, List<FarMark> marks) {
+	record FarScan(String source, List<FarMark> marks) {
 	}
 
 	/**
@@ -283,7 +283,7 @@ public class DefineTypesTool implements ProgramTool {
 	 * / {@code union X {} body or {@code f(} parameter list the marker sits in. A bare {@code far}
 	 * only counts next to a {@code *}, so a field that happens to be named {@code far} survives.
 	 */
-	private static FarScan scanFarMarkers(String source) {
+	static FarScan scanFarMarkers(String source) {
 		String text = COMMENTS.matcher(source).replaceAll(" ");
 		Matcher m = TOKEN.matcher(text);
 		StringBuilder out = new StringBuilder();
