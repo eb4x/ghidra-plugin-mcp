@@ -1892,7 +1892,19 @@ _Verification record for the five entries above._
       pattern a case-insensitive regex over the same normalised text (`\b0x628\b`).
   9 and 12 need no change (own error with a retired name; Ghidra's auto label on a pointer).
 - **Verified:** smoke test (binding, far layout via `describe`, redefinition report, regex
-  search, upgrade dry run) and live on a scratch copy of NEBULAR.EXE — see the live note below.
+  search, upgrade dry run), and live on 0.24.1 against `/scratch-mcp/NEBULAR-scratch.EXE`
+  (a `manage_files op=copy` of `/REX/NEBULAR.EXE`, deleted afterwards):
+  `define_types` of a struct naming `struct ColorList __far *` and `struct SeriesHeader *`
+  body-less reported `Existing types used as-is: ColorList (1538 (0x602) bytes), SeriesHeader
+  (152 (0x98) bytes)` and `Far pointers (4 bytes): McpProbe.colors, McpProbe.name,
+  ColorListFarProbe`; `describe ColorList` printed `+0x0: uint16 num_colors`, `+0x2:
+  Color[256] table`; `disassemble` of `sprite_series_load` printed `LEA AX,[BP + 0xf818]  ;
+  0xf818 = archive`; `decompile room_picture_load` carried the `⚠ UNRESOLVED CALLS:
+  func_0x00000000` line; `search_memory regex=true '\b0x628\b'` returned 2 hits where the
+  substring form returned 7; `set_data_type local_11a → long` refused with `covers local_118
+  (undefined2 @ Stack[-0x118]:2 = +0x2 in the new type)` and `replace_overlapping=true`
+  applied it (0.24.0 printed the removed name as `[Invalid VariableSymbol - Deleted!]`; 0.24.1
+  builds the report first).
 
 ## 2026-10-07 — RESOLVED (0.24.0) — no way to upgrade programs after a language-version bump except closing the project and running headless — ghidra
 - **Task:** 594 FID library objects under `/lib/LLIBCE` in `mads`, all saved under x86 4.7
