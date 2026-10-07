@@ -203,13 +203,15 @@ public class SetDataTypeTool implements ProgramTool {
 		boolean replaceOverlapping = Args.boolArg(args, "replace_overlapping", false);
 		return Transactions.modify(program, "Set variable type", () -> {
 			List<Variable> overlapping = overlapping(function, target, dataType);
+			// Described before anything is removed: a deleted variable's symbol no longer has
+			// a name to print, and the names are the whole point of the report.
+			String covered = overlapMap(target, overlapping);
 			String removed = "";
 			if (!overlapping.isEmpty() && replaceOverlapping) {
 				for (Variable other : overlapping) {
 					function.removeVariable(other);
 				}
-				removed = "\nRemoved " + overlapping.size() + " overlapping variable(s): " +
-					overlapMap(target, overlapping);
+				removed = "\nRemoved " + overlapping.size() + " overlapping variable(s): " + covered;
 			}
 			try {
 				applyType(target, dataType);
@@ -221,7 +223,7 @@ public class SetDataTypeTool implements ProgramTool {
 				// Ghidra's own message lists storage ranges; what the caller needs is which
 				// field of the new type each old local was, so the rename can carry over.
 				throw new Exception(e.getMessage() + "\nThe new type (" + dataType.getLength() +
-					" bytes) covers " + overlapMap(target, overlapping) + ". Pass " +
+					" bytes) covers " + covered + ". Pass " +
 					"replace_overlapping=true to remove them and apply the type; then name the " +
 					"fields with manage_types op=rename_field.");
 			}
