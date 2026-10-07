@@ -332,19 +332,20 @@ public class SetDataTypeTool implements ProgramTool {
 			}
 			List<Variable> hits =
 				Variables.intersecting(function, resized, symbol.getPCAddress(), null);
+			// Described before anything is removed: a deleted variable's symbol has no name
+			// left to print, only "[Invalid VariableSymbol - Deleted!]".
+			String hitsText = Variables.describe(function, hits);
 			String removed = "";
 			if (!hits.isEmpty() && !replaceOverlapping) {
 				throw new Exception("committing this symbol would remove " + hits.size() +
-					" existing variable(s) whose storage it overlaps: " +
-					Variables.describe(function, hits) +
+					" existing variable(s) whose storage it overlaps: " + hitsText +
 					". Pass replace_overlapping=true to accept that, or clear them first.");
 			}
 			if (!hits.isEmpty()) {
 				for (Variable other : hits) {
 					function.removeVariable(other);
 				}
-				removed = "\nRemoved " + hits.size() + " overlapping variable(s): " +
-					Variables.describe(function, hits);
+				removed = "\nRemoved " + hits.size() + " overlapping variable(s): " + hitsText;
 			}
 			Map<Long, String> before = Variables.snapshot(function);
 			HighFunctionDBUtil.updateDBVariable(symbol, null, dataType, SourceType.USER_DEFINED);

@@ -2035,3 +2035,14 @@ _Verification record for the five entries above._
   pad the candidate list; and the overlap check was storage-only, naming 14 variables where
   Ghidra would remove one — it now keys on first use as `checkVariableConflict` does, so the
   DX:AX symbol collides with the DX half defined by the same call and nothing else.
+- **Verified live on 0.27.1** by madstools: the refusal named exactly `iVar11 (int @ DX:2,
+  first use OVERLAY_72::02d6e6)`; `set_data_type pc= storage=DX:AX type="void *32"
+  replace_overlapping=true` typed `DX:2,AX:2 defined at 02d6e6 (all 1 instances of pvVar6)` and
+  removed it; `stream_buffer` is named and saved. Two slips fixed in 0.27.2: the removed
+  variable printed as `[Invalid VariableSymbol - Deleted!]` (described after the delete), and
+  after the lock the same definition listed twice (`pvVar6 @ DX:2,AX:2` from the stored symbol
+  and from the decompiler's own HighVariable), making `storage=DX:AX` ambiguous against itself
+  — candidates are now keyed by name and storage, and nameless stack slots are listed only
+  when nothing named is. Recorded trade-off (decompiler-side): a type lock on a DX:AX call
+  result also covers the argument built in DX:AX before the call, so a pointer type propagates
+  into that argument's halves.

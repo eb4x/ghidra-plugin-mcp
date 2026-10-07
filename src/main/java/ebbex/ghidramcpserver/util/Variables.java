@@ -113,8 +113,12 @@ public final class Variables {
 			throw new IllegalArgumentException("Could not decompile " + function.getName() +
 				" to resolve the variable defined at " + pc);
 		}
-		Map<HighVariable, Varnode> candidates = new LinkedHashMap<>();
-		List<String> seen = new ArrayList<>();
+		// Keyed by "name @ storage", not by HighVariable: once a definition carries a locked
+		// symbol the decompiler can hand back two HighVariables for it (the stored symbol's and
+		// its own), and a pick that is ambiguous against itself is no pick.
+		Map<String, HighTarget> candidates = new LinkedHashMap<>();
+		List<String> named = new ArrayList<>();
+		List<String> unnamed = new ArrayList<>();
 		Iterator<VarnodeAST> varnodes = high.locRange();
 		while (varnodes.hasNext()) {
 			Varnode vn = varnodes.next();
@@ -122,35 +126,46 @@ public final class Variables {
 			if (owner == null || !pc.equals(vn.getPCAddress())) {
 				continue;
 			}
-			// A store to a global is "defined" at the instruction too, but a global has no
-			// merge group to peel and is named at its address, not here. Locals and parameters
-			// are what the handle is for; a global still shows in the list for orientation.
 			// Constants, globals and unmapped temporaries are written there too, but none of
 			// them is a local the handle can name; listing them buried the one that is.
 			if (!(owner instanceof HighLocal || owner instanceof HighParam)) {
 				continue;
 			}
 			String text = storageText(high, program, vn);
-			seen.add(owner.getName() + " @ " + text);
+			String key = owner.getName() + " @ " + text;
+			boolean isUnnamed = owner.getName() == null || owner.getName().equals("UNNAMED");
+			if (isUnnamed) {
+				unnamed.add(key);
+			}
+			else if (!named.contains(key)) {
+				named.add(key);
+			}
 			if (storage != null && !storageMatches(text, storage)) {
 				continue;
 			}
-			candidates.putIfAbsent(owner, vn);
+			// Nameless stack halves the call scribbles over are selectable by storage only;
+			// without one, the named definitions are what the caller is choosing between.
+			if (isUnnamed && storage == null && !named.isEmpty()) {
+				continue;
+			}
+			candidates.putIfAbsent(key, new HighTarget(high, owner, vn));
 		}
 		if (candidates.size() == 1) {
-			Map.Entry<HighVariable, Varnode> only = candidates.entrySet().iterator().next();
-			return new HighTarget(high, only.getKey(), only.getValue());
+			return candidates.values().iterator().next();
 		}
+		List<String> listed = named.isEmpty() ? unnamed : named;
 		if (candidates.isEmpty()) {
 			throw new IllegalArgumentException("No decompiler variable is defined at " + pc +
-				(storage == null ? "" : " in " + storage) + (seen.isEmpty()
+				(storage == null ? "" : " in " + storage) + (listed.isEmpty()
 						? " (no instruction there writes a local; decompile dump_symbols=true " +
 							"prints each symbol's pc)"
-						: "; defined there: " + String.join(", ", seen)));
+						: "; defined there: " + String.join(", ", listed) +
+							(unnamed.isEmpty() || named.isEmpty() ? ""
+									: " (+" + unnamed.size() + " unnamed stack slot(s))")));
 		}
 		throw new IllegalArgumentException(candidates.size() + " variables are defined at " + pc +
 			"; add 'storage' to pick one (spelled as listed, or DX:AX for a pair): " +
-			String.join(", ", seen));
+			String.join(", ", candidates.keySet()));
 	}
 
 	/**
