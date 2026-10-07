@@ -1964,7 +1964,11 @@ _Verification record for the five entries above._
   `findLocation` refuse a name two functions or locations share, listing both with addresses.
   `set_data_type kind=data mutability=constant|volatile|normal|writable` sets Ghidra's data
   setting (with `type` omitted it changes only the setting); `inspect` prints a non-default
-  mutability.
+  mutability. The setting alone did not make `ES:[BX]` fold: the decompiler's `RuleSegment`
+  folded a segment op only with both inputs constant, and `PrintC::opSegmentOp` dropped the
+  segment, so a known ES with a variable offset printed as a near deref whichever way ES was
+  known. `ghidra-core` changed that in dailydriver (constant base + variable offset now prints
+  `*(byte *)(off + 0x20750)`); no tool was needed for it.
 - **Item 4:** `search_memory kind=instruction markup=true` matches the text `disassemble`
   prints (same `representation` code, labels and frame variables substituted); the default
   stays raw operand text, and the description and no-match note say which form was searched
