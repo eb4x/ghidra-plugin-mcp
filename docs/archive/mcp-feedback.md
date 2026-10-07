@@ -1923,3 +1923,16 @@ _Verification record for the five entries above._
 - **Verified:** smoke test (dry run on fresh imports reports them current and writes nothing).
   The upgrade branch itself has no fixture — every program the suite can reach is current by
   construction — so it is proven by the next version bump, not by this commit.
+
+## 2026-10-07 — RESOLVED (0.24.2) — a new boolean/integer parameter is rejected until the client reconnects — madstools
+- **Friction:** `search_memory regex=true` failed the first time with
+  `/regex: string found, boolean expected`; the identical retry went through.
+- **Cause:** a client holding a pre-restart schema sends a parameter it has never seen as a
+  string, and the MCP SDK validates arguments against the server's own schema before the
+  tool runs. `sizeProp` had the same fix in a223e0b; every other `boolProp`/`intProp` did not.
+- **Fix:** `boolProp` admits `"true"`/`"false"` (enum-limited, so `"yes"` is still refused
+  rather than parsed as false); `intProp` admits a decimal-digit string. `Args` already parsed
+  both.
+- **Verified live** on 0.24.2, read-only against `/REX/NEBULAR.EXE` over plain HTTP:
+  `regex:"true", limit:"5"` returned the 2 hits; `regex:"yes"` was refused with
+  `does not have a value in the enumeration [true, false, "true", "false"]`.
