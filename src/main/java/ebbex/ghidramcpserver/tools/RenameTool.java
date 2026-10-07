@@ -12,11 +12,14 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
 import ebbex.ghidramcpserver.util.Variables;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.data.DataType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
+import ghidra.program.model.listing.VariableStorage;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
+import ghidra.program.model.pcode.HighVariable;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolType;
@@ -44,7 +47,12 @@ public class RenameTool implements ProgramTool {
 		return "Rename something. kind=function renames the function given by 'function'; " +
 			"kind=label|data renames the symbol at 'address'. kind=parameter|local_variable " +
 			"renames a variable inside the function given by 'function', identified by its " +
-			"current 'variable_name'. reset=true (kind=function|label|data, no 'new_name') drops " +
+			"current 'variable_name' — or, for a decompiler variable, by 'pc', the address of the " +
+			"instruction that defines it (decompile dump_symbols=true prints it as pc=); the " +
+			"decompiler renumbers iVar7-style names after every edit, the pc does not move. With " +
+			"'pc', only the merge group defined there is named: a variable the decompiler merged " +
+			"from several roles is split and the new symbol type-locked (Ghidra's Split Out As New " +
+			"Variable). reset=true (kind=function|label|data, no 'new_name') drops " +
 			"the user name and returns to Ghidra's default: a function becomes FUN_<addr> or, " +
 			"for a thunk, shows its target's name again; a label or data symbol is removed, and " +
 			"the dynamic DAT_ label shows while something references the address.";
@@ -63,7 +71,11 @@ public class RenameTool implements ProgramTool {
 					"(for kind=function|parameter|local_variable)"),
 				"address", Schemas.stringProp("Address of the label/data (for kind=label|data)"),
 				"variable_name", Schemas.stringProp(
-					"Current variable name (for kind=parameter|local_variable)")),
+					"Current variable name (for kind=parameter|local_variable)"),
+				"pc", Schemas.stringProp("kind=local_variable: address of the instruction that " +
+					"defines the variable, instead of 'variable_name'"),
+				"storage", Schemas.stringProp("With 'pc': which definition at that instruction " +
+					"when there are several (a register name such as DX, or Stack[-0x10])")),
 			"required", List.of("kind"));
 	}
 
@@ -215,10 +227,16 @@ public class RenameTool implements ProgramTool {
 			String newName) {
 		String functionRef = Args.stringArg(args, "function", null);
 		String oldName = Args.stringArg(args, "variable_name", null);
-		if (functionRef == null || oldName == null) {
-			return Results.error("'function' and 'variable_name' are required for variable renames");
+		String pcArg = Args.stringArg(args, "pc", null);
+		if (functionRef == null || (oldName == null && pcArg == null)) {
+			return Results.error("'function' and 'variable_name' (or 'pc') are required for " +
+				"variable renames");
 		}
 		Function function = Locations.findFunction(program, functionRef);
+		if (pcArg != null) {
+			return renameByPc(program, function, Locations.parseAddress(program, pcArg),
+				Args.stringArg(args, "storage", null), newName);
+		}
 
 		// Parameters and simple stack locals exist on the database function directly.
 		Variable dbVariable = Variables.findDbVariable(function, oldName);
@@ -234,12 +252,67 @@ public class RenameTool implements ProgramTool {
 		HighSymbol highSymbol = Variables.findHighSymbol(decompilers, program, function, oldName);
 		if (highSymbol == null) {
 			return Results.error("No parameter or local variable named '" + oldName + "' in " +
-				function.getName());
+				function.getName() + " (the decompiler renumbers its temporaries after every " +
+				"edit; rename by 'pc', the defining instruction, which does not move)");
 		}
 		return Transactions.modify(program, "Rename variable", () -> {
+			refuseIfOverlapping(function, highSymbol.getStorage(), highSymbol.getPCAddress(), null);
+			var before = Variables.snapshot(function);
 			HighFunctionDBUtil.updateDBVariable(highSymbol, newName, null,
 				SourceType.USER_DEFINED);
-			return "Renamed variable " + oldName + " -> " + newName + " in " + function.getName();
+			return "Renamed variable " + oldName + " -> " + newName + " in " + function.getName() +
+				removedNote(function, before);
 		});
+	}
+
+	/**
+	 * Name the variable defined at one instruction. If that definition is one merge group of a
+	 * larger speculative merge, only its group is split out and named — the GUI's "Split Out As
+	 * New Variable" — and the new symbol is type-locked (an undefined type becomes the unsigned
+	 * integer of its size), because an unlocked peel merges straight back.
+	 */
+	private McpSchema.CallToolResult renameByPc(Program program, Function function, Address pc,
+			String storage, String newName) {
+		Variables.HighTarget target = Variables.findByPc(decompilers, program, function, pc, storage);
+		return Transactions.modify(program, "Rename variable", () -> {
+			String oldName = target.variable().getName();
+			int group = target.groupSize();
+			int all = target.instanceCount();
+			HighVariable peeled = Variables.split(target);
+			HighSymbol symbol = peeled.getSymbol();
+			DataType type = Variables.lockableType(program, symbol.getDataType());
+			refuseIfOverlapping(function, symbol.getStorage(), symbol.getPCAddress(), null);
+			var before = Variables.snapshot(function);
+			HighFunctionDBUtil.updateDBVariable(symbol, newName, type, SourceType.USER_DEFINED);
+			String where = Variables.storageText(program, target.varnode()) + " defined at " + pc;
+			String split = group < all
+					? "split " + group + " of " + all + " instances of " + oldName +
+						" out as their own variable"
+					: "all " + all + " instances of " + oldName;
+			return "Named " + newName + ": " + where + " (" + split + "; type-locked as " +
+				type.getName() + ")" + removedNote(function, before);
+		});
+	}
+
+	/**
+	 * Ghidra removes any local whose storage a newly committed symbol intersects, without a
+	 * word (a type lock on a DX:AX call result took the DX:2 symbol next to it). Name them and
+	 * stop instead; set_data_type replace_overlapping=true is the deliberate way through.
+	 */
+	private static void refuseIfOverlapping(Function function, VariableStorage storage, Address pc,
+			Variable exclude) throws Exception {
+		List<Variable> hits = Variables.intersecting(function, storage, pc, exclude);
+		if (!hits.isEmpty()) {
+			throw new Exception("committing a symbol at " + storage + " would remove " +
+				hits.size() + " existing variable(s) whose storage it overlaps: " +
+				Variables.describe(function, hits) + ". Clear them first (clear " +
+				"kind=local_variable), or use set_data_type replace_overlapping=true.");
+		}
+	}
+
+	private static String removedNote(Function function, Map<Long, String> before) {
+		List<String> removed = Variables.removedSince(function, before);
+		return removed.isEmpty() ? ""
+				: "\nRemoved by Ghidra as overlapping: " + String.join(", ", removed);
 	}
 }

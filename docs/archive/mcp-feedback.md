@@ -1995,3 +1995,35 @@ _Verification record for the five entries above._
   function=madspack_close` resolves to the body again without the two-candidate error, `inspect
   1f95:07e2` shows the default-named thunk following its target with the committed parameter
   typing intact, and the auto-save caught it.
+
+## 2026-10-08 — RESOLVED (0.27.0) — decompiler variable names are not a handle: renumbered after every edit, merged roles can only be peeled blind, overlapping symbols vanish silently — madstools (friction log 3)
+- **Friction:** five renames issued together on `sprite_series_load` — the first changed the
+  numbering and the other four failed (`lVar12` had become `lVar11`). The only way to split a
+  merged variable was `set_data_type` on it, which locks whichever varnode is the
+  representative: 13 peels for 5 wanted roles, a 12k-token decompile after each. A type lock on
+  a DX:AX call result deleted the DX:2 symbol beside it without a word. `set_data_type` left a
+  USER_DEFINED symbol under the auto name `iVar7`, indistinguishable from a temporary. `inspect`
+  printed first use as an offset from the entry.
+- **Fix, the handle:** `rename` / `set_data_type` kind=local_variable take `pc`, the address of
+  the instruction that defines the variable (what `dump_symbols` prints as `pc=`), with
+  `storage` to pick between several definitions at one instruction (a DX:AX result). The
+  varnode defined there is split out of its speculative merge first
+  (`HighFunction.splitOutMergeGroup`, the GUI's "Split Out As New Variable"), the new symbol is
+  type-locked (an undefined type becomes the unsigned integer of its size, as the GUI does, or
+  the peel merges straight back), and the result says how many of the variable's instances
+  were peeled. `clear kind=local_variable pc=` deletes the stored local first used there.
+- **Fix, the overlap:** before committing a symbol, every stored variable whose storage it
+  intersects is listed and the edit refused unless `replace_overlapping=true` (rename has no
+  such flag: it refuses and points at `clear` or `set_data_type`); after the commit, a snapshot
+  diff names whatever Ghidra removed anyway. Measured in the 12.1.3 source: `FunctionDB` calls
+  `VariableUtilities.checkVariableConflict(..., deleteConflictingVariables=true)`, and
+  `HighFunctionDBUtil.clearConflictingLocalVariables` does the same for equal first use.
+- **Fix, the readouts:** `dump_symbols` marks every symbol `[name: user|auto]` and
+  `[type: locked|free]` and prints `pc=` for all of them, so a temporary named after a callee's
+  parameter (`dest`) or a locked auto name no longer passes for the user's; `set_data_type`
+  says when a lock keeps an auto-looking name; `inspect` prints `first_use=<address>`.
+- **Verified** by JUnit (`VariablesTest`, `ClearByPcTest`) and the smoke run, which takes an
+  auto-named symbol's pc from `dump_symbols`, names and types the definition by pc, and checks
+  that a pc defining nothing is refused with the list. Live verification on NEBULAR.EXE pending
+  madstools' next session. Items 6 and 8 of the log (zero-length trailing array, type
+  propagation through a call's DX:AX argument) are decompiler behaviour and stay recorded only.

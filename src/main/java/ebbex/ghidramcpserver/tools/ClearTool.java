@@ -10,6 +10,7 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ebbex.ghidramcpserver.util.Variables;
 import ghidra.app.cmd.function.DeleteFunctionCmd;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
@@ -65,6 +66,10 @@ public class ClearTool implements ProgramTool {
 				"function", Schemas.stringProp(
 					"Function name or an address inside it (for kind=local_variable|function)"),
 				"variable_name", Schemas.stringProp("Local variable to delete (for kind=local_variable)"),
+				"pc", Schemas.stringProp("kind=local_variable: the variable's first-use address " +
+					"(inspect prints it as first_use=, dump_symbols as pc=) instead of, or " +
+					"narrowing, 'variable_name' — a type-locked symbol can carry a renumbered " +
+					"iVar-style name"),
 				"name", Schemas.stringProp(
 					"Which label to delete when several share the address (for kind=label)"),
 				"to_address", Schemas.stringProp(
@@ -219,10 +224,16 @@ public class ClearTool implements ProgramTool {
 	private McpSchema.CallToolResult clearLocalVariable(Program program, Map<String, Object> args) {
 		String functionRef = Args.stringArg(args, "function", null);
 		String variableName = Args.stringArg(args, "variable_name", null);
-		if (functionRef == null || variableName == null) {
-			return Results.error("'function' and 'variable_name' are required for kind=local_variable");
+		String pcArg = Args.stringArg(args, "pc", null);
+		if (functionRef == null || (variableName == null && pcArg == null)) {
+			return Results.error("'function' and 'variable_name' (or 'pc') are required for " +
+				"kind=local_variable");
 		}
 		Function function = Locations.findFunction(program, functionRef);
+		if (pcArg != null) {
+			return clearLocalByFirstUse(program, function, Locations.parseAddress(program, pcArg),
+				variableName);
+		}
 
 		Variable target = null;
 		for (Variable local : function.getLocalVariables()) {
@@ -248,6 +259,42 @@ public class ClearTool implements ProgramTool {
 		return Transactions.modify(program, "Delete local variable", () -> {
 			function.removeVariable(toRemove);
 			return "Deleted local variable " + variableName + " from " + function.getName();
+		});
+	}
+
+	/**
+	 * The database local(s) whose first use is {@code pc}; {@code name}, if given, narrows to
+	 * one when several register locals start at the same instruction (a DX:AX result's halves).
+	 */
+	private McpSchema.CallToolResult clearLocalByFirstUse(Program program, Function function,
+			Address pc, String name) {
+		List<Variable> at = new ArrayList<>();
+		List<String> all = new ArrayList<>();
+		for (Variable local : function.getLocalVariables()) {
+			String firstUse = Variables.firstUse(function, local);
+			all.add(local.getName() + " (" + local.getVariableStorage() + ", first use " +
+				firstUse + ")");
+			if (firstUse.equals(pc.toString()) && (name == null || local.getName().equals(name))) {
+				at.add(local);
+			}
+		}
+		if (at.isEmpty()) {
+			return Results.error("No local variable of " + function.getName() + " has its first " +
+				"use at " + pc + (name == null ? "" : " named '" + name + "'") +
+				(all.isEmpty() ? " (the function has no stored locals)"
+						: "; stored locals: " + String.join(", ", all)));
+		}
+		if (at.size() > 1) {
+			return Results.error(at.size() + " locals have their first use at " + pc +
+				"; add 'variable_name' to pick one: " + Variables.describe(function, at));
+		}
+		Variable toRemove = at.get(0);
+		return Transactions.modify(program, "Delete local variable", () -> {
+			String removed = toRemove.getName() + " (" + toRemove.getDataType().getName() + " @ " +
+				toRemove.getVariableStorage() + ")";
+			function.removeVariable(toRemove);
+			return "Deleted local variable " + removed + " first used at " + pc + " from " +
+				function.getName();
 		});
 	}
 }

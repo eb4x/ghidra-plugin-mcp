@@ -216,7 +216,46 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
 			prog("decompile", Map.of("function", "main"), program);
-			prog("decompile", Map.of("function", "main", "dump_symbols", true), program);
+			McpSchema.CallToolResult symbols =
+				prog("decompile", Map.of("function", "main", "dump_symbols", true), program);
+			String symbolText = text(symbols);
+			if (!symbolText.contains("[name: ") || !symbolText.contains("[type: ")) {
+				failures++;
+				println("!! dump_symbols does not mark name origin / type lock");
+			}
+			// The pc handle: take a decompiler-named symbol's defining pc from the dump and name
+			// that definition by pc, then type it by pc — the stable handle friction log 3 asked
+			// for. An address no instruction writes a variable at must be refused with the list.
+			java.util.regex.Matcher autoSym = java.util.regex.Pattern
+					.compile("// (\\S+)  .*\\[name: auto\\].* pc=(\\S+)")
+					.matcher(symbolText);
+			if (autoSym.find()) {
+				String pc = autoSym.group(2);
+				McpSchema.CallToolResult named = prog("rename", Map.of("kind", "local_variable",
+					"function", "main", "pc", pc, "new_name", "mcp_pc_named"), program);
+				if (!text(named).startsWith("Named mcp_pc_named: ")) {
+					failures++;
+					println("!! rename by pc did not name the definition at " + pc + ": " +
+						text(named));
+				}
+				McpSchema.CallToolResult typed = prog("set_data_type", Map.of("kind",
+					"local_variable", "function", "main", "pc", pc, "type", "uint"), program);
+				if (!text(typed).startsWith("Set type uint (4 bytes) on ")) {
+					failures++;
+					println("!! set_data_type by pc did not type the definition at " + pc + ": " +
+						text(typed));
+				}
+			}
+			else {
+				println("(no auto-named decompiler symbol with a pc in main; pc handle not " +
+					"exercised)");
+			}
+			McpSchema.CallToolResult noPc = prog("rename", Map.of("kind", "local_variable",
+				"function", "main", "pc", "0x1", "new_name", "mcp_nowhere"), program);
+			if (!text(noPc).contains("No decompiler variable is defined at")) {
+				failures++;
+				println("!! rename by a pc that defines nothing was not refused: " + text(noPc));
+			}
 			prog("decompile", Map.of("function", "main", "dump_jumptables", true), program);
 			prog("inspect", Map.of("location", "main"), program);
 			prog("xrefs", Map.of("location", "main", "direction", "to", "limit", 5), program);

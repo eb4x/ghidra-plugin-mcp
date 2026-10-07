@@ -327,6 +327,11 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   types did not undo it.
 - **Expected:** a `split_variable`-style op, or a per-variable option the decompiler honours.
 - **Workaround:** none; lived with it.
+- **Partly built (0.27.0):** `rename` / `set_data_type` kind=local_variable `pc=` split the
+  merge group defined at that instruction out of a merged variable and lock it (the GUI's
+  "Split Out As New Variable"), so peeling a role is one call instead of a blind round. Still
+  open: a way to say "this local is memory, reload it" — the register carry of `records` across
+  the error `goto`s is alias analysis, not a split problem, and needs a decompiler-side option.
 
 ## 2026-10-07 — decompile — a 12k-token function has to be re-decompiled whole for each A/B experiment — madstools
 - **Task:** bisect which of a dozen type changes made `sprite_series_load` (1938 bytes) noisier.

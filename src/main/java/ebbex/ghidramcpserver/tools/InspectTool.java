@@ -9,6 +9,7 @@ import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
+import ebbex.ghidramcpserver.util.Variables;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.lang.Register;
@@ -218,10 +219,12 @@ public class InspectTool implements ProgramTool {
 	}
 
 	private static void appendVariable(StringBuilder sb, String kind, Variable variable) {
+		// First use as an address, not an offset from the entry: it is the handle rename and
+		// set_data_type take as 'pc', and nobody wants to add hex to a segmented entry by hand.
 		sb.append("  ").append(kind).append("  ").append(variable.getName()).append("  ")
 				.append(variable.getDataType().getName()).append("  ")
-				.append(variable.getVariableStorage()).append("  fu=0x")
-				.append(Integer.toHexString(variable.getFirstUseOffset())).append("  ")
+				.append(variable.getVariableStorage()).append("  first_use=")
+				.append(Variables.firstUse(variable.getFunction(), variable)).append("  ")
 				.append(variable.getSource()).append('\n');
 	}
 

@@ -2,6 +2,7 @@ package ebbex.ghidramcpserver.tools;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -88,27 +89,33 @@ public class SetDataTypeTool implements ProgramTool {
 
 	@Override
 	public Map<String, Object> inputSchema() {
-		return Map.of(
-			"type", "object",
-			"properties", Map.of(
-				"kind", Schemas.enumProp("What to type", KINDS),
-				"type", Schemas.stringProp("C data type string (required except for kind=struct)"),
-				"address", Schemas.stringProp("Address (for kind=data)"),
-				"mutability", Schemas.enumProp("kind=data: the data item's mutability setting " +
-					"(constant = never written, so the decompiler may fold its value; volatile = " +
-					"every access is kept; default: leave as is)", MUTABILITIES),
-				"function", Schemas.stringProp("Function name or an address inside it " +
-					"(for kind=local_variable|parameter|return|struct)"),
-				"variable_name", Schemas.stringProp(
-					"Variable name (for kind=local_variable|parameter|struct)"),
-				"struct", structSchema(),
-				"follow_calls", Schemas.boolProp(
-					"kind=struct inferred: recurse into called functions (default true)"),
-				"replace_overlapping", Schemas.boolProp("kind=local_variable|parameter: remove " +
-					"the function's other variables whose storage the retyped one would now " +
-					"cover (their names are lost; the result lists them with the offset each " +
-					"maps to in the new type, for manage_types op=rename_field) (default false)")),
-			"required", List.of("kind"));
+		// Map.of stops at ten pairs; keep insertion order for a readable schema.
+		Map<String, Object> properties = new LinkedHashMap<>();
+		properties.put("kind", Schemas.enumProp("What to type", KINDS));
+		properties.put("type",
+			Schemas.stringProp("C data type string (required except for kind=struct)"));
+		properties.put("address", Schemas.stringProp("Address (for kind=data)"));
+		properties.put("mutability", Schemas.enumProp("kind=data: the data item's mutability " +
+			"setting (constant = never written, so the decompiler may fold its value; volatile = " +
+			"every access is kept; default: leave as is)", MUTABILITIES));
+		properties.put("function", Schemas.stringProp("Function name or an address inside it " +
+			"(for kind=local_variable|parameter|return|struct)"));
+		properties.put("variable_name",
+			Schemas.stringProp("Variable name (for kind=local_variable|parameter|struct)"));
+		properties.put("pc", Schemas.stringProp("kind=local_variable: address of the instruction " +
+			"that defines the variable, instead of 'variable_name' (decompile dump_symbols=true " +
+			"prints it as pc=); only the merge group defined there is typed, splitting it out of " +
+			"a merged variable"));
+		properties.put("storage", Schemas.stringProp("With 'pc': which definition at that " +
+			"instruction when there are several (a register name such as DX, or Stack[-0x10])"));
+		properties.put("struct", structSchema());
+		properties.put("follow_calls",
+			Schemas.boolProp("kind=struct inferred: recurse into called functions (default true)"));
+		properties.put("replace_overlapping", Schemas.boolProp("kind=local_variable|parameter: " +
+			"remove the function's other variables whose storage the retyped one would now cover " +
+			"(their names are lost; the result lists them with the offset each maps to in the " +
+			"new type, for manage_types op=rename_field) (default false)"));
+		return Map.of("type", "object", "properties", properties, "required", List.of("kind"));
 	}
 
 	private static Map<String, Object> structSchema() {
@@ -245,16 +252,22 @@ public class SetDataTypeTool implements ProgramTool {
 			DataType dataType) {
 		String functionRef = Args.stringArg(args, "function", null);
 		String variableName = Args.stringArg(args, "variable_name", null);
-		if (functionRef == null || variableName == null) {
-			return Results.error("'function' and 'variable_name' are required");
+		if (functionRef == null || (variableName == null && args.get("pc") == null)) {
+			return Results.error("'function' and 'variable_name' (or 'pc') are required");
 		}
 		Function function = Locations.findFunction(program, functionRef);
+		boolean replaceOverlapping = Args.boolArg(args, "replace_overlapping", false);
+		String pcArg = Args.stringArg(args, "pc", null);
+		if (pcArg != null) {
+			return applyByPc(program, function, Locations.parseAddress(program, pcArg),
+				Args.stringArg(args, "storage", null), dataType, replaceOverlapping);
+		}
 		VarTarget target = resolveVariable(program, function, variableName);
 		if (target == null) {
 			return Results.error("No variable named '" + variableName + "' in " +
-				function.getName());
+				function.getName() + " (the decompiler renumbers its temporaries after every " +
+				"edit; address one by 'pc', the defining instruction, which does not move)");
 		}
-		boolean replaceOverlapping = Args.boolArg(args, "replace_overlapping", false);
 		return Transactions.modify(program, "Set variable type", () -> {
 			List<Variable> overlapping = overlapping(function, target, dataType);
 			// Described before anything is removed: a deleted variable's symbol no longer has
@@ -267,6 +280,14 @@ public class SetDataTypeTool implements ProgramTool {
 				}
 				removed = "\nRemoved " + overlapping.size() + " overlapping variable(s): " + covered;
 			}
+			else if (!overlapping.isEmpty() && target.highSymbol() != null) {
+				// Ghidra deletes these without a word when the symbol is committed (a type
+				// lock on a DX:AX call result took the DX:2 symbol beside it). Stop first.
+				throw new Exception("committing this symbol would remove " + overlapping.size() +
+					" existing variable(s) whose storage it overlaps: " + covered +
+					". Pass replace_overlapping=true to accept that, or clear them first.");
+			}
+			Map<Long, String> before = Variables.snapshot(function);
 			try {
 				applyType(target, dataType);
 			}
@@ -282,8 +303,79 @@ public class SetDataTypeTool implements ProgramTool {
 					"fields with manage_types op=rename_field.");
 			}
 			return "Set type of " + variableName + " to " + dataType.getName() + " (" +
-				dataType.getLength() + " bytes) in " + function.getName() + removed;
+				dataType.getLength() + " bytes) in " + function.getName() + removed +
+				autoNameNote(target.highSymbol(), variableName) + removedNote(function, before);
 		});
+	}
+
+	/**
+	 * Type the variable defined at one instruction. The definition's merge group is split out
+	 * of a speculative merge first (Ghidra's Split Out As New Variable), so the lock lands on
+	 * the role the caller pointed at rather than on whichever varnode is the representative.
+	 */
+	private McpSchema.CallToolResult applyByPc(Program program, Function function, Address pc,
+			String storage, DataType dataType, boolean replaceOverlapping) {
+		Variables.HighTarget target = Variables.findByPc(decompilers, program, function, pc, storage);
+		return Transactions.modify(program, "Set variable type", () -> {
+			String oldName = target.variable().getName();
+			int group = target.groupSize();
+			int all = target.instanceCount();
+			HighVariable peeled = Variables.split(target);
+			HighSymbol symbol = peeled.getSymbol();
+			VariableStorage resized = symbol.getStorage();
+			try {
+				resized = VariableUtilities.resizeStorage(symbol.getStorage(), dataType, true,
+					function);
+			}
+			catch (Exception e) {
+				// Ghidra will say so itself when it commits; the overlap check uses what it can.
+			}
+			List<Variable> hits =
+				Variables.intersecting(function, resized, symbol.getPCAddress(), null);
+			String removed = "";
+			if (!hits.isEmpty() && !replaceOverlapping) {
+				throw new Exception("committing this symbol would remove " + hits.size() +
+					" existing variable(s) whose storage it overlaps: " +
+					Variables.describe(function, hits) +
+					". Pass replace_overlapping=true to accept that, or clear them first.");
+			}
+			if (!hits.isEmpty()) {
+				for (Variable other : hits) {
+					function.removeVariable(other);
+				}
+				removed = "\nRemoved " + hits.size() + " overlapping variable(s): " +
+					Variables.describe(function, hits);
+			}
+			Map<Long, String> before = Variables.snapshot(function);
+			HighFunctionDBUtil.updateDBVariable(symbol, null, dataType, SourceType.USER_DEFINED);
+			String where = Variables.storageText(program, target.varnode()) + " defined at " + pc;
+			String split = group < all
+					? "split " + group + " of " + all + " instances of " + oldName +
+						" out as their own variable"
+					: "all " + all + " instances of " + oldName;
+			return "Set type " + dataType.getName() + " (" + dataType.getLength() + " bytes) on " +
+				where + " (" + split + ")" + removed + autoNameNote(symbol, symbol.getName()) +
+				removedNote(function, before);
+		});
+	}
+
+	/**
+	 * A type lock turns the decompiler's throwaway name into a USER_DEFINED symbol that still
+	 * looks like a temporary, and nothing downstream can tell the two apart. Say so.
+	 */
+	private static String autoNameNote(HighSymbol symbol, String name) {
+		if (symbol == null || !Variables.isAutoName(name)) {
+			return "";
+		}
+		return "\nNote: the symbol keeps the decompiler's name '" + name + "' but is now a " +
+			"user symbol with a locked type; rename it (rename kind=local_variable pc=...) or " +
+			"clear it so it does not pass for a temporary.";
+	}
+
+	private static String removedNote(Function function, Map<Long, String> before) {
+		List<String> removed = Variables.removedSince(function, before);
+		return removed.isEmpty() ? ""
+				: "\nRemoved by Ghidra as overlapping: " + String.join(", ", removed);
 	}
 
 	/**

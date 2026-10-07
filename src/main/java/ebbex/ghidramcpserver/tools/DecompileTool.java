@@ -91,9 +91,11 @@ public class DecompileTool implements ProgramTool {
 					"items", Map.of("type", "string")),
 				"timeout_s", Schemas.intProp("Decompiler timeout in seconds (default " +
 					DEFAULT_TIMEOUT + ")"),
-				"dump_symbols", Schemas.boolProp("Also append the decompiler's HighSymbol table " +
-					"(each local/param's name, storage, and — for dynamic locals — hash and pc " +
-					"address); for debugging variable mapping/rename persistence (default false)"),
+				"dump_symbols", Schemas.boolProp("Also append the decompiler's HighSymbol table: " +
+					"each local/param's name, storage, type, whether the name is the user's or " +
+					"the decompiler's for this run, whether the type is locked, and the pc of the " +
+					"defining instruction — the stable handle for rename/set_data_type 'pc' " +
+					"(default false)"),
 				"dump_jumptables", Schemas.boolProp("Also append the function's jump tables, both " +
 					"the overrides sent to the decompiler (read from the <func>::override::jmp_* " +
 					"symbol namespace) and the tables the decompiler came back with, so you can " +
@@ -181,17 +183,24 @@ public class DecompileTool implements ProgramTool {
 			return "\n// -- decompiler symbols: none (no high function) --\n";
 		}
 		StringBuilder sb = new StringBuilder("\n// -- decompiler symbols --\n");
+		sb.append("// name  storage  type  [name: user|auto] [type: locked|free] [pc=defining " +
+			"instruction, the handle for rename/set_data_type 'pc']\n");
 		Iterator<HighSymbol> symbols = high.getLocalSymbolMap().getSymbols();
 		while (symbols.hasNext()) {
 			HighSymbol symbol = symbols.next();
 			sb.append("// ").append(symbol.getName()).append("  ").append(symbol.getStorage())
 					.append("  ").append(symbol.getDataType().getName());
+			// Which names are the caller's and which the decompiler made up this run is
+			// invisible in the C: a temporary named after a callee's parameter (dest) reads
+			// exactly like a user name, and a type-locked symbol can keep an auto-looking one.
+			sb.append(symbol.isNameLocked() ? "  [name: user]" : "  [name: auto]");
+			sb.append(symbol.isTypeLocked() ? " [type: locked]" : " [type: free]");
 			if (symbol.getFirstWholeMap() instanceof DynamicEntry dynamic) {
 				sb.append("  hash=0x").append(Long.toHexString(dynamic.getHash()));
-				Address pc = symbol.getPCAddress();
-				if (pc != null && pc != Address.NO_ADDRESS) {
-					sb.append(" pc=").append(pc);
-				}
+			}
+			Address pc = symbol.getPCAddress();
+			if (pc != null && pc != Address.NO_ADDRESS) {
+				sb.append("  pc=").append(pc);
 			}
 			sb.append('\n');
 		}
