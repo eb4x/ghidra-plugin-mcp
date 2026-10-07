@@ -284,7 +284,8 @@ public class RenameTool implements ProgramTool {
 			refuseIfOverlapping(function, symbol.getStorage(), symbol.getPCAddress(), null);
 			var before = Variables.snapshot(function);
 			HighFunctionDBUtil.updateDBVariable(symbol, newName, type, SourceType.USER_DEFINED);
-			String where = Variables.storageText(program, target.varnode()) + " defined at " + pc;
+			String where = Variables.storageText(target.high(), program, target.varnode()) +
+				" defined at " + pc;
 			String split = group < all
 					? "split " + group + " of " + all + " instances of " + oldName +
 						" out as their own variable"

@@ -125,10 +125,14 @@ public final class Variables {
 			// A store to a global is "defined" at the instruction too, but a global has no
 			// merge group to peel and is named at its address, not here. Locals and parameters
 			// are what the handle is for; a global still shows in the list for orientation.
-			boolean local = owner instanceof HighLocal || owner instanceof HighParam;
-			String text = storageText(program, vn);
-			seen.add(owner.getName() + " @ " + text + (local ? "" : " (global, not selectable)"));
-			if (!local || (storage != null && !storageMatches(program, vn, storage))) {
+			// Constants, globals and unmapped temporaries are written there too, but none of
+			// them is a local the handle can name; listing them buried the one that is.
+			if (!(owner instanceof HighLocal || owner instanceof HighParam)) {
+				continue;
+			}
+			String text = storageText(high, program, vn);
+			seen.add(owner.getName() + " @ " + text);
+			if (storage != null && !storageMatches(text, storage)) {
 				continue;
 			}
 			candidates.putIfAbsent(owner, vn);
@@ -140,12 +144,13 @@ public final class Variables {
 		if (candidates.isEmpty()) {
 			throw new IllegalArgumentException("No decompiler variable is defined at " + pc +
 				(storage == null ? "" : " in " + storage) + (seen.isEmpty()
-						? " (no instruction there writes a variable; decompile dump_symbols=true " +
+						? " (no instruction there writes a local; decompile dump_symbols=true " +
 							"prints each symbol's pc)"
 						: "; defined there: " + String.join(", ", seen)));
 		}
 		throw new IllegalArgumentException(candidates.size() + " variables are defined at " + pc +
-			"; add 'storage' to pick one: " + String.join(", ", seen));
+			"; add 'storage' to pick one (spelled as listed, or DX:AX for a pair): " +
+			String.join(", ", seen));
 	}
 
 	/**
@@ -176,10 +181,14 @@ public final class Variables {
 	}
 
 	/**
-	 * The function's variables whose storage intersects {@code storage}, other than
-	 * {@code exclude} and a variable with exactly that storage at that first use (which Ghidra
-	 * reuses rather than removes). Committing a symbol over them makes Ghidra delete them
-	 * silently, so a caller lists these first and asks before going on.
+	 * The function's variables Ghidra would delete when a symbol with this storage and first
+	 * use is committed: those with the <em>same first use</em> whose storage intersects it,
+	 * other than {@code exclude} and the one with exactly that storage (which Ghidra reuses).
+	 * Register locals are keyed by storage plus first use, so a DX:AX result at one call
+	 * collides with the DX half defined by that same call and with nothing else in the
+	 * function — the rule {@code VariableUtilities.checkVariableConflict} and
+	 * {@code HighFunctionDBUtil.clearConflictingLocalVariables} both apply. Committing over
+	 * them is silent, so a caller lists these first and asks before going on.
 	 */
 	public static List<Variable> intersecting(Function function, VariableStorage storage,
 			Address pc, Variable exclude) {
@@ -189,14 +198,11 @@ public final class Variables {
 		}
 		int firstUse = pc == null ? 0 : (int) pc.subtract(function.getEntryPoint());
 		for (Variable other : function.getAllVariables()) {
-			if (other.equals(exclude)) {
+			if (other.equals(exclude) || other.getFirstUseOffset() != firstUse) {
 				continue;
 			}
 			VariableStorage otherStorage = other.getVariableStorage();
-			if (!otherStorage.intersects(storage)) {
-				continue;
-			}
-			if (otherStorage.equals(storage) && other.getFirstUseOffset() == firstUse) {
+			if (!otherStorage.intersects(storage) || otherStorage.equals(storage)) {
 				continue;
 			}
 			hits.add(other);
@@ -256,7 +262,21 @@ public final class Variables {
 		return removed;
 	}
 
-	/** {@code AX:2}, {@code Stack[-0x10]:2}, or {@code addr:size} for a varnode. */
+	/**
+	 * A varnode's storage the way {@code dump_symbols} prints a symbol's: {@code AX:2},
+	 * {@code DX:2,AX:2} for a joined pair (the decompiler's own address for it is an opaque
+	 * {@code VARIABLE:...}), {@code Stack[-0x10]:2}.
+	 */
+	public static String storageText(HighFunction high, Program program, Varnode vn) {
+		try {
+			return high.buildStorage(vn).toString();
+		}
+		catch (Exception e) {
+			return storageText(program, vn);
+		}
+	}
+
+	/** {@code AX:2}, {@code Stack[-0x10]:2}, or {@code addr:size} for a plain varnode. */
 	public static String storageText(Program program, Varnode vn) {
 		Register register = program.getRegister(vn.getAddress(), vn.getSize());
 		if (register != null) {
@@ -270,15 +290,19 @@ public final class Variables {
 		return vn.getAddress() + ":" + vn.getSize();
 	}
 
-	private static boolean storageMatches(Program program, Varnode vn, String wanted) {
-		String text = storageText(program, vn);
-		String w = wanted.trim();
-		if (text.equalsIgnoreCase(w)) {
-			return true;
-		}
-		// Without the ":size" suffix: a register name alone, or Stack[off].
-		int colon = text.lastIndexOf(':');
-		return colon > 0 && text.substring(0, colon).equalsIgnoreCase(w);
+	/**
+	 * Whether a caller's spelling names this storage: as printed ({@code DX:2,AX:2}), without
+	 * the sizes ({@code DX,AX}), or as a register pair ({@code DX:AX}), case-insensitively.
+	 */
+	static boolean storageMatches(String text, String wanted) {
+		return text.equalsIgnoreCase(wanted.trim()) ||
+			normalizeStorage(text).equals(normalizeStorage(wanted));
+	}
+
+	/** {@code DX:2,AX:2}, {@code DX:AX}, {@code dx, ax} all become {@code dx,ax}. */
+	static String normalizeStorage(String storage) {
+		return storage.toLowerCase().replaceAll("\\s+", "").replaceAll(":\\d+", "")
+				.replace(':', ',');
 	}
 
 	private static HighFunction decompile(Decompilers decompilers, Program program,

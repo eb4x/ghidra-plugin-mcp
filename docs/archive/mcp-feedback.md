@@ -2024,6 +2024,14 @@ _Verification record for the five entries above._
   says when a lock keeps an auto-looking name; `inspect` prints `first_use=<address>`.
 - **Verified** by JUnit (`VariablesTest`, `ClearByPcTest`) and the smoke run, which takes an
   auto-named symbol's pc from `dump_symbols`, names and types the definition by pc, and checks
-  that a pc defining nothing is refused with the list. Live verification on NEBULAR.EXE pending
-  madstools' next session. Items 6 and 8 of the log (zero-length trailing array, type
-  propagation through a call's DX:AX argument) are decompiler behaviour and stay recorded only.
+  that a pc defining nothing is refused with the list. Items 6 and 8 of the log (zero-length
+  trailing array, type propagation through a call's DX:AX argument) are decompiler behaviour
+  and stay recorded only.
+- **0.27.0 → 0.27.1, from madstools' first live try** (heap_alloc's DX:AX result at
+  `OVERLAY_72::02d6e6`, nothing went through): a joined pair printed as the decompiler's opaque
+  `VARIABLE:00000000:4` and `storage=DX:AX` did not select it — storage is now spelled through
+  `HighFunction.buildStorage` (`DX:2,AX:2`, as `dump_symbols` prints) and matched with or
+  without sizes and as a `DX:AX` pair; constants, globals and unmapped temporaries no longer
+  pad the candidate list; and the overlap check was storage-only, naming 14 variables where
+  Ghidra would remove one — it now keys on first use as `checkVariableConflict` does, so the
+  DX:AX symbol collides with the DX half defined by the same call and nothing else.

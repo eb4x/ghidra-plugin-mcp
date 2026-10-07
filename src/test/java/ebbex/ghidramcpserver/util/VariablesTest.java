@@ -46,24 +46,34 @@ public class VariablesTest extends RealModeProgramTest {
 	}
 
 	@Test
-	public void intersectingNamesEveryLocalTheStorageCovers() throws Exception {
+	public void intersectingIsKeyedByFirstUseLikeGhidrasConflictCheck() throws Exception {
 		Function f = functionWithRegisterLocals();
-		// A 4-byte DX:AX result at the same first use covers both halves; a DX later on too,
-		// since Ghidra's conflict check is by storage and the caller must hear about it.
+		// A 4-byte DX:AX result at this first use covers both halves defined by the same
+		// instruction; the DX used later in the function is a different variable and stays.
 		VariableStorage dxax = new VariableStorage(program, program.getRegister("DX"),
 			program.getRegister("AX"));
 		List<Variable> hits = Variables.intersecting(f, dxax,
 			program.getAddressFactory().getAddress("1000:0030"), null);
 		String described = Variables.describe(f, hits);
+		assertEquals(described, 2, hits.size());
 		assertTrue(described, described.contains("dx_half (word @ DX:2, first use 1000:0030)"));
 		assertTrue(described, described.contains("ax_half"));
-		assertTrue(described, described.contains("later_dx (word @ DX:2, first use 1000:0040)"));
+		assertFalse(described, described.contains("later_dx"));
 		// The variable with exactly this storage at this first use is reused, not removed.
 		VariableStorage dx = new VariableStorage(program, program.getRegister("DX"));
-		List<Variable> same = Variables.intersecting(f, dx,
-			program.getAddressFactory().getAddress("1000:0030"), null);
-		assertEquals(Variables.describe(f, same), 1, same.size());
-		assertEquals("later_dx", same.get(0).getName());
+		assertTrue(Variables.intersecting(f, dx,
+			program.getAddressFactory().getAddress("1000:0030"), null).isEmpty());
+	}
+
+	@Test
+	public void storageSpellingsMatchTheDumpAndTheRegisterPair() {
+		assertTrue(Variables.storageMatches("DX:2,AX:2", "DX:AX"));
+		assertTrue(Variables.storageMatches("DX:2,AX:2", "dx:2,ax:2"));
+		assertTrue(Variables.storageMatches("DX:2,AX:2", "DX, AX"));
+		assertTrue(Variables.storageMatches("AX:2", "ax"));
+		assertTrue(Variables.storageMatches("Stack[-0x10]:2", "Stack[-0x10]"));
+		assertFalse(Variables.storageMatches("DX:2,AX:2", "DX"));
+		assertFalse(Variables.storageMatches("AX:2", "DX"));
 	}
 
 	@Test
