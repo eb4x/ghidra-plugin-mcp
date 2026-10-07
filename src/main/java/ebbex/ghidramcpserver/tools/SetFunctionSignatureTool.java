@@ -19,6 +19,7 @@ import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.FunctionDefinitionDataType;
+import ghidra.program.model.data.VoidDataType;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
@@ -104,7 +105,8 @@ public class SetFunctionSignatureTool implements ProgramTool {
 				"return", Map.of(
 					"type", "object",
 					"description", "Custom return storage {type, storage}, e.g. a far pointer returned " +
-						"in DX:AX; may be given with 'parameters' or on its own to fix just the return",
+						"in DX:AX; may be given with 'parameters' or on its own to fix just the return. " +
+						"type 'void' means no return value and ignores 'storage'",
 					"properties", Map.of(
 						"type", Schemas.stringProp("Return data type"),
 						"storage", Schemas.stringProp(
@@ -229,10 +231,22 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			Variable returnVar;
 			String retEcho;
 			if (finalReturnSpec != null) {
-				DataType retType = parseType(program, finalReturnSpec.type());
-				VariableStorage retStorage = parseStorage(program, finalReturnSpec.storage(), retType);
-				returnVar = new ReturnParameterImpl(retType, retStorage, program);
-				retEcho = " -> " + retStorage + ":" + retType.getName();
+				boolean isVoid = finalReturnSpec.type().trim().equals("void");
+				DataType retType = isVoid ? VoidDataType.dataType
+						: parseType(program, finalReturnSpec.type());
+				if (retType instanceof VoidDataType) {
+					// "void in AX" means "no return value": void has no storage, and Ghidra
+					// refuses a void variable with any ("The void type is not permitted").
+					returnVar = new ReturnParameterImpl(retType, VariableStorage.VOID_STORAGE,
+						program);
+					retEcho = " -> void (storage '" + finalReturnSpec.storage() + "' ignored)";
+				}
+				else {
+					VariableStorage retStorage =
+						parseStorage(program, finalReturnSpec.storage(), retType);
+					returnVar = new ReturnParameterImpl(retType, retStorage, program);
+					retEcho = " -> " + retStorage + ":" + retType.getName();
+				}
 			}
 			else {
 				returnVar = function.getReturn();

@@ -291,7 +291,7 @@ public class DisassembleTool implements ProgramTool {
 	 * This stays even once that lands &mdash; the extension also runs against stock Ghidra,
 	 * where it will not be fixed.
 	 */
-	private static String representation(CodeUnitFormat format, Instruction instruction) {
+	static String representation(CodeUnitFormat format, Instruction instruction) {
 		StringBuilder text = new StringBuilder(format.getMnemonicRepresentation(instruction));
 		int operands = instruction.getNumOperands();
 		String separator = instruction.getSeparator(0);

@@ -289,12 +289,22 @@ public class ManageTypesTool implements ProgramTool {
 		// Read what is there before the write, to report the replacement and to work out whether
 		// the new field leaves a hole behind it.
 		DataTypeComponent old = structure.getComponentContaining(offset);
+		boolean intoFiller = old == null || Undefined.isUndefined(old.getDataType());
+		// A field written over the tail of the struct runs past its end; Ghidra refuses that
+		// ("Not enough undefined bytes to fit"), so grow the struct by the overhang first — the
+		// caller said where the field goes, and the end of a struct is the one place where
+		// "not enough room" has an obvious meaning.
+		int consumed = intoFiller ? undefinedBytesFrom(structure, offset, fieldType.getLength()) : 0;
+		int growth = intoFiller ? Math.max(0, offset + fieldType.getLength() -
+			Math.max(structure.getLength(), offset + consumed)) : 0;
 		String replaced;
-		if (old == null || Undefined.isUndefined(old.getDataType())) {
+		if (intoFiller) {
 			// Filler rather than a field: a non-packed struct reports its gaps as undefined
-			// components, and calling those an "unnamed field" overstates what was there.
-			replaced = (old == null ? "undefined bytes" : plural(old.getLength(), "undefined byte")) +
-				" at +0x" + Integer.toHexString(old == null ? offset : old.getOffset());
+			// components, and calling those an "unnamed field" overstates what was there. Count
+			// what the new field actually consumes — filler is one component PER BYTE, so the
+			// component at the offset says "1 byte" however many the field takes.
+			replaced = plural(consumed, "undefined byte") + " at +0x" + Integer.toHexString(offset) +
+				(growth > 0 ? " and growing the struct by " + plural(growth, "byte") : "");
 		}
 		else {
 			replaced = (old.getFieldName() != null ? old.getFieldName() : "an unnamed field") +
@@ -320,6 +330,9 @@ public class ManageTypesTool implements ProgramTool {
 				sb.append("Turned packing OFF for ").append(structure.getName())
 						.append(" — its current field offsets are now fixed rather than " +
 							"recomputed. This affects every use of the type.\n");
+			}
+			if (growth > 0) {
+				structure.growStructure(growth);
 			}
 			structure.replaceAtOffset(offset, fieldType, -1, fieldName, null);
 			sb.append("Set +0x").append(Integer.toHexString(offset)).append(" of ")
@@ -386,6 +399,19 @@ public class ManageTypesTool implements ProgramTool {
 				Integer.toHexString(NEIGHBOURHOOD_BYTES)).append(" bytes)");
 		}
 		return sb.toString();
+	}
+
+	/** How many of the {@code length} bytes from {@code offset} are undefined filler today. */
+	private static int undefinedBytesFrom(Structure structure, int offset, int length) {
+		int count = 0;
+		for (int at = offset; at < offset + length && at < structure.getLength(); at++) {
+			DataTypeComponent component = structure.getComponentContaining(at);
+			if (component != null && !Undefined.isUndefined(component.getDataType())) {
+				break;
+			}
+			count++;
+		}
+		return count;
 	}
 
 	private static String plural(int count, String noun) {

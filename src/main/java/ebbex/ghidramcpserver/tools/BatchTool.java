@@ -44,7 +44,9 @@ public class BatchTool implements ProgramTool {
 			"deleting a set of bogus references found with xrefs). 'edits' is a list of objects, " +
 			"each with an 'op' (" + String.join("|", ops.keySet()) + ") plus that op's arguments " +
 			"(same as the standalone tool, minus 'program'). Edits run in order, continue on error, " +
-			"and the program is saved once. 'function'/'location' NAMES are resolved against the " +
+			"each commits on its own, and the program is saved once at the end (a 'save " +
+			"deferred' note means auto-analysis started by an edit was still running; the edits " +
+			"are in memory and the next save writes them). 'function'/'location' NAMES are resolved against the " +
 			"pre-batch state before any edit runs, so a plan may rename a function and keep " +
 			"addressing later edits to it by the old name; a name that doesn't exist yet (created " +
 			"by an earlier edit in the same batch) resolves when its edit runs.";

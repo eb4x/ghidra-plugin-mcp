@@ -18,6 +18,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.address.SegmentedAddress;
+import ghidra.program.model.listing.CodeUnitFormat;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Program;
@@ -44,7 +45,11 @@ public class SearchMemoryTool implements ProgramTool {
 		return "Search program memory. kind=bytes matches a hex pattern where '??' is a wildcard " +
 			"byte (e.g. '48 8b ?? c3'); kind=text matches an ASCII substring; kind=instruction " +
 			"matches disassembled instruction text case-insensitively (e.g. 'JMP word ptr CS:' " +
-			"or 'MOV AX' — a substring of mnemonic + operands as the listing prints them; " +
+			"or 'MOV AX' — a substring of mnemonic + raw operands: addresses and frame offsets " +
+			"as numbers, 'CALLF 1f95:07f0' and '[BP + 0x7]'; markup=true matches the text " +
+			"disassemble prints instead, with labels and frame variables substituted, " +
+			"'CALLF OVLSTUB_65_00DA' and '[BP + Stack[0x5]]' — the two spellings of one operand " +
+			"differ, so pick the form the pattern is written in; " +
 			"regex=true makes it a Java regex over the same uppercased, space-collapsed text, " +
 			"so a constant can be anchored: '\\b0x628\\b' no longer matches 0x6288). " +
 			"Returns matching addresses (default limit " + DEFAULT_LIMIT + "). source=file scans " +
@@ -70,7 +75,10 @@ public class SearchMemoryTool implements ProgramTool {
 				"limit", Schemas.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")"),
 				"regex", Schemas.boolProp("kind=instruction only: treat 'pattern' as a regex " +
 					"(case-insensitive, matched anywhere in the instruction text) instead of a " +
-					"substring (default false)")),
+					"substring (default false)"),
+				"markup", Schemas.boolProp("kind=instruction only: match the text disassemble " +
+					"prints (labels and frame variables substituted for addresses and offsets) " +
+					"instead of the raw operand text (default false)")),
 			"required", List.of("pattern"));
 	}
 
@@ -101,8 +109,8 @@ public class SearchMemoryTool implements ProgramTool {
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 
 		if (kind.equals("instruction")) {
-			return searchInstructions(program, pattern, Args.boolArg(args, "regex", false), offset,
-				limit);
+			return searchInstructions(program, pattern, Args.boolArg(args, "regex", false),
+				Args.boolArg(args, "markup", false), offset, limit);
 		}
 
 		byte[] values;
@@ -252,7 +260,7 @@ public class SearchMemoryTool implements ProgramTool {
 	 * The full instruction text is echoed per hit, since the pattern only matched part of it.
 	 */
 	private static McpSchema.CallToolResult searchInstructions(Program program, String pattern,
-			boolean regex, int offset, int limit) {
+			boolean regex, boolean markup, int offset, int limit) {
 		// A substring cannot say "this constant and not a longer one": '0x628' also matched
 		// 0x6288, 0x6286 and 0x6280, burying the one real hit. A regex can (\b0x628\b).
 		Predicate<String> matches;
@@ -272,13 +280,21 @@ public class SearchMemoryTool implements ProgramTool {
 		List<String> hits = new ArrayList<>();
 		int index = 0;
 		boolean more = false;
+		// Instruction.toString is the raw form: operand addresses and frame offsets as numbers.
+		// The listing (and disassemble) substitute labels and frame variables through
+		// CodeUnitFormat, so 'CALLF OVLSTUB_65_00DA' exists only in that form — and a frame
+		// operand is '[BP + 0x7]' raw but '[BP + Stack[0x5]]' marked up (the frame offset
+		// leaves out the saved BP), so the two never match each other's patterns.
+		CodeUnitFormat format = CodeUnitFormat.DEFAULT;
 		for (Instruction instruction : program.getListing().getInstructions(true)) {
-			if (!matches.test(normalizeInstructionText(instruction.toString()))) {
+			String text = markup ? DisassembleTool.representation(format, instruction)
+					: instruction.toString();
+			if (!matches.test(normalizeInstructionText(text))) {
 				continue;
 			}
 			if (index >= offset) {
 				if (hits.size() < limit) {
-					hits.add(blockRelative(program, instruction.getAddress()) + "  " + instruction +
+					hits.add(blockRelative(program, instruction.getAddress()) + "  " + text +
 						describeContainer(program, instruction.getAddress()));
 				}
 				else {
@@ -293,6 +309,11 @@ public class SearchMemoryTool implements ProgramTool {
 				(offset > 0 ? " at offset " + offset : "") +
 				"\nNote: only disassembled instructions are searched — bytes not yet " +
 				"disassembled never match; use kind=bytes for those." +
+				(markup ? "\nNote: markup=true matched the text disassemble prints (labels, " +
+					"frame variables); markup=false matches raw operands (addresses, offsets)."
+						: "\nNote: raw operand text was matched (addresses and frame offsets as " +
+							"numbers, e.g. '[BP + 0x7]'); a label or frame-variable name as " +
+							"disassemble prints it needs markup=true.") +
 				Results.regexHint(pattern, regex));
 		}
 		String footer = more

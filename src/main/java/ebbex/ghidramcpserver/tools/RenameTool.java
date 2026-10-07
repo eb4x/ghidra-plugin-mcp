@@ -79,7 +79,7 @@ public class RenameTool implements ProgramTool {
 
 		return switch (kind) {
 			case "function" -> renameFunction(program, args, newName);
-			case "label", "data" -> renameSymbol(program, args, newName);
+			case "label", "data" -> renameSymbol(program, args, kind, newName);
 			case "parameter", "local_variable" -> renameVariable(program, args, newName);
 			default -> Results.error("unhandled kind " + kind);
 		};
@@ -114,13 +114,26 @@ public class RenameTool implements ProgramTool {
 	}
 
 	private McpSchema.CallToolResult renameSymbol(Program program, Map<String, Object> args,
-			String newName) {
+			String kind, String newName) {
 		String addressArg = Args.stringArg(args, "address", null);
 		if (addressArg == null) {
 			return Results.error("'address' is required for kind=label|data");
 		}
 		Address address = Locations.parseAddress(program, addressArg);
 		Symbol symbol = program.getSymbolTable().getPrimarySymbol(address);
+		if (symbol == null && kind.equals("data") &&
+			program.getListing().getDefinedDataAt(address) != null) {
+			// Ghidra's default DAT_/PTR_ARRAY_ labels are dynamic: they exist only where
+			// something references the address, not because data is defined there. So whether
+			// "rename the data at X" finds a symbol looked like it depended on the type applied
+			// a moment earlier; it depended on the references. Naming defined data that has no
+			// symbol yet is what the caller meant — make the label.
+			return Transactions.modify(program, "Name data", () -> {
+				program.getSymbolTable().createLabel(address, newName, SourceType.USER_DEFINED);
+				return "Named the data at " + address + " " + newName +
+					" (it had no symbol: nothing references it, so no default label existed)";
+			});
+		}
 		if (symbol == null) {
 			return Results.error("No symbol at " + address + " to rename — this address has no " +
 				"symbol yet (e.g. a bare byte in a data/BSS block). Use create kind=label to make " +

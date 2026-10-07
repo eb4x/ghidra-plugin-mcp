@@ -3,7 +3,11 @@ package ebbex.ghidramcpserver.util;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
 
+import javax.swing.SwingUtilities;
+
+import ghidra.framework.model.TransactionInfo;
 import ghidra.program.model.listing.Program;
+import ghidra.util.SystemUtilities;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** The single write path: run a mutation on the Swing EDT inside a transaction. */
@@ -16,6 +20,13 @@ public final class Transactions {
 	 * String, long, Callable)}.
 	 */
 	private static final long DEFAULT_TIMEOUT_MS = 60_000;
+
+	/**
+	 * How long to wait for another transaction on the program to close before opening ours
+	 * inside it. Auto-analysis after a signature change is usually over in well under this;
+	 * a longer one is joined rather than waited on (see {@link #modify}).
+	 */
+	private static final long SETTLE_MS = 1_500;
 
 	private Transactions() {
 	}
@@ -36,10 +47,24 @@ public final class Transactions {
 	 * for the event thread. For bulk work that legitimately holds the transaction for a long time
 	 * — a whole-program {@code migrate} is thousands of edits in one transaction — where the
 	 * single-edit default would report a timeout on a migration that is merely working.
+	 *
+	 * <p><b>Ghidra transactions nest per program, not per thread.</b> If anything else holds a
+	 * transaction open on this program when ours starts — the GUI's auto-analysis, which a
+	 * signature or variable edit a moment earlier scheduled on a background thread, wraps its
+	 * whole run in one ({@code BackgroundCommandTask}) — ours becomes an <em>entry</em> inside it.
+	 * Entries cannot be rolled back on their own: ending one with {@code commit=false} marks the
+	 * enclosing transaction aborted, and when that finally ends Ghidra discards everything since
+	 * the last checkpoint — the analysis's work and every other entry, including edits this
+	 * server had already reported as "ok" (a 36-edit batch kept two). So this method first gives
+	 * an open transaction a short chance to close, and if it must join one, a failing body is
+	 * reported but <em>not</em> rolled back; the message says so. Only an outermost transaction
+	 * of our own is rolled back on failure.
 	 */
 	public static McpSchema.CallToolResult modify(Program program, String txName, long timeoutMs,
 			Callable<String> body) {
+		awaitNoOpenTransaction(program);
 		Callable<McpSchema.CallToolResult> task = () -> {
+			TransactionInfo enclosing = program.getCurrentTransactionInfo();
 			int tx = program.startTransaction(txName);
 			boolean commit = false;
 			try {
@@ -49,7 +74,12 @@ public final class Transactions {
 			}
 			catch (Exception e) {
 				String detail = e.getMessage() != null ? e.getMessage() : e.toString();
-				return Results.error(txName + " failed: " + detail);
+				if (enclosing == null) {
+					return Results.error(txName + " failed: " + detail);
+				}
+				// Keep the entry: aborting it would take the enclosing transaction down with it.
+				commit = true;
+				return Results.error(txName + " failed: " + detail + "\n" + keptNote(enclosing));
 			}
 			finally {
 				program.endTransaction(tx, commit);
@@ -82,5 +112,36 @@ public final class Transactions {
 			// an Error, or a failure in the transaction bookkeeping itself.
 			return Results.error(txName + " failed: " + e);
 		}
+	}
+
+	/**
+	 * Wait, briefly and off the event thread, for a transaction someone else holds on the
+	 * program to close, so that ours gets a checkpoint of its own. Headless Ghidra runs analysis
+	 * synchronously on the caller's thread, so there is nothing to wait for there — and a script
+	 * calling tools from inside its own transaction would wait out the whole bound for nothing.
+	 */
+	private static void awaitNoOpenTransaction(Program program) {
+		if (SwingUtilities.isEventDispatchThread() || SystemUtilities.isInHeadlessMode()) {
+			return;
+		}
+		long deadline = System.currentTimeMillis() + SETTLE_MS;
+		while (program.getCurrentTransactionInfo() != null &&
+			System.currentTimeMillis() < deadline) {
+			try {
+				Thread.sleep(50);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return;
+			}
+		}
+	}
+
+	private static String keptNote(TransactionInfo enclosing) {
+		return "Note: this ran inside the open transaction '" + enclosing.getDescription() +
+			"' (Ghidra nests transactions per program), so it was NOT rolled back: rolling back " +
+			"an entry aborts the whole enclosing transaction and would discard its other work, " +
+			"including earlier edits of this batch. Any partial change this edit made before " +
+			"failing is still in place — re-read the target to check.";
 	}
 }

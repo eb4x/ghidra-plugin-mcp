@@ -315,3 +315,30 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
   language changes did not bump it and R2-harvard is a new id, so `check` has nothing to flag
   there (`ghidra-plugin-aeon`). Recorded so a future reader does not mistake it for a pass.
 - This entry stays open until the two pending directions land.
+
+## 2026-10-07 — decompile / set_data_type — no way to split a merged register variable or pin a local to memory — madstools
+- **Task:** (NEBULAR.EXE `sprite_series_load`) after committing `ArchiveHandle`, `SeriesHeader`
+  and the far-pointer pairs as typed locals, the decompiler stopped treating `records` and the
+  result pair as aliased by the calls and carried them in registers across the error `goto`s
+  (`dest = records; ... LAB_: records = dest;`, plus `pSVar2`/`iVar10` copies of `result`).
+- **Friction:** not a tool bug (Ghidra's alias analysis stops at type-locked locals), but the
+  tools offer no "this local is memory, reload it", no `split_variable` (Ghidra's "Split Out As
+  New Variable"), and no per-variable volatile/address-tied setting. Reverting the two 2-byte
+  types did not undo it.
+- **Expected:** a `split_variable`-style op, or a per-variable option the decompiler honours.
+- **Workaround:** none; lived with it.
+
+## 2026-10-07 — decompile — a 12k-token function has to be re-decompiled whole for each A/B experiment — madstools
+- **Task:** bisect which of a dozen type changes made `sprite_series_load` (1938 bytes) noisier.
+- **Friction:** `decompile` returns the whole function (~12k tokens); one full decompile per
+  experiment made the bisection unaffordable.
+- **Expected:** `decompile ... range=` (address range, or "lines containing X" with context), or
+  a diff against the previous decompile of the same function.
+- **Workaround:** fewer experiments.
+
+## 2026-10-07 — set_comment — a comment that names a decompiler temporary goes stale — madstools
+- **Friction:** a pre comment naming `iVar10` is wrong the next time the decompiler numbers its
+  variables differently, and a merged register variable (entry above) cannot be named at all.
+- **Workaround:** comments talk about the expression (`translate + 0xfc`) rather than the
+  variable holding it. A convention note for now; a fix would be naming support for merged
+  variables.

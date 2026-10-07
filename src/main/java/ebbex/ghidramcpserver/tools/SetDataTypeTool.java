@@ -24,6 +24,7 @@ import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.DataUtilities;
 import ghidra.program.model.data.DataUtilities.ClearDataMode;
+import ghidra.program.model.data.MutabilitySettingsDefinition;
 import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.StructureDataType;
@@ -51,6 +52,10 @@ public class SetDataTypeTool implements ProgramTool {
 
 	private static final int DECOMPILE_TIMEOUT = 30;
 
+	/** Ghidra's data mutability setting, in {@link MutabilitySettingsDefinition}'s order. */
+	private static final List<String> MUTABILITIES =
+		List.of("normal", "volatile", "constant", "writable");
+
 	private final Decompilers decompilers;
 
 	public SetDataTypeTool(Decompilers decompilers) {
@@ -65,7 +70,10 @@ public class SetDataTypeTool implements ProgramTool {
 	@Override
 	public String description() {
 		return "Apply a C data type. kind=data defines/retypes data at 'address' (creating it " +
-			"if the address is undefined). kind=local_variable|parameter retypes the variable " +
+			"if the address is undefined); 'mutability' sets Ghidra's per-item setting there, " +
+			"e.g. constant for a never-written segment/table word so the decompiler folds its " +
+			"value (with 'type' omitted it changes only the setting of the existing data). " +
+			"kind=local_variable|parameter retypes the variable " +
 			"'variable_name' in 'function'. kind=return sets the return type of 'function'. " +
 			"'type' is a C type string like 'int', 'char *', 'uint32_t[8]', or a known struct name. " +
 			"kind=struct declares 'variable_name' a struct pointer: supply a 'struct' layout " +
@@ -86,6 +94,9 @@ public class SetDataTypeTool implements ProgramTool {
 				"kind", Schemas.enumProp("What to type", KINDS),
 				"type", Schemas.stringProp("C data type string (required except for kind=struct)"),
 				"address", Schemas.stringProp("Address (for kind=data)"),
+				"mutability", Schemas.enumProp("kind=data: the data item's mutability setting " +
+					"(constant = never written, so the decompiler may fold its value; volatile = " +
+					"every access is kept; default: leave as is)", MUTABILITIES),
 				"function", Schemas.stringProp("Function name or an address inside it " +
 					"(for kind=local_variable|parameter|return|struct)"),
 				"variable_name", Schemas.stringProp(
@@ -141,8 +152,18 @@ public class SetDataTypeTool implements ProgramTool {
 			return applyStruct(program, args);
 		}
 
+		String mutability = Args.stringArg(args, "mutability", null);
+		if (mutability != null && !MUTABILITIES.contains(mutability)) {
+			return Results.error("mutability must be one of " + MUTABILITIES);
+		}
+		if (mutability != null && !kind.equals("data")) {
+			return Results.error("'mutability' is a setting on defined data; it needs kind=data");
+		}
 		String typeString = Args.stringArg(args, "type", null);
 		if (typeString == null || typeString.isBlank()) {
+			if (mutability != null) {
+				return setMutability(program, args, mutability);
+			}
 			return Results.error("type is required");
 		}
 		DataType dataType = parseType(program, typeString);
@@ -165,12 +186,45 @@ public class SetDataTypeTool implements ProgramTool {
 			return Results.error("'address' is required for kind=data");
 		}
 		Address address = Locations.parseAddress(program, addressArg);
+		String mutability = Args.stringArg(args, "mutability", null);
 		return Transactions.modify(program, "Set data type", () -> {
 			Data data = DataUtilities.createData(program, address, dataType, -1,
 				ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
 			return "Applied " + dataType.getName() + " (" + data.getLength() + " bytes) @ " +
-				address + " = " + data.getDefaultValueRepresentation();
+				address + " = " + data.getDefaultValueRepresentation() +
+				applyMutability(data, mutability);
 		});
+	}
+
+	/** kind=data with 'mutability' but no 'type': change the setting of the data already there. */
+	private McpSchema.CallToolResult setMutability(Program program, Map<String, Object> args,
+			String mutability) {
+		String addressArg = Args.stringArg(args, "address", null);
+		if (addressArg == null) {
+			return Results.error("'address' is required for kind=data");
+		}
+		Address address = Locations.parseAddress(program, addressArg);
+		Data data = program.getListing().getDefinedDataAt(address);
+		if (data == null) {
+			return Results.error("No defined data at " + address + " to set the mutability of; " +
+				"give 'type' as well to define it first.");
+		}
+		return Transactions.modify(program, "Set data mutability",
+			() -> data.getDataType().getName() + " (" + data.getLength() + " bytes) @ " + address +
+				applyMutability(data, mutability));
+	}
+
+	/**
+	 * Apply the setting the decompiler reads to decide whether a global's value may be folded
+	 * ({@code constant}) or every access must be kept ({@code volatile}). It is a setting on the
+	 * data instance, not on the type, so it survives a retype and the type stays shared.
+	 */
+	private static String applyMutability(Data data, String mutability) {
+		if (mutability == null) {
+			return "";
+		}
+		MutabilitySettingsDefinition.DEF.setChoice(data, MUTABILITIES.indexOf(mutability));
+		return ", mutability " + MutabilitySettingsDefinition.DEF.getValueString(data);
 	}
 
 	private McpSchema.CallToolResult applyToReturn(Program program, Map<String, Object> args,

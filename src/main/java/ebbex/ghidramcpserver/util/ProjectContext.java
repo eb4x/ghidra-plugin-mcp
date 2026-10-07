@@ -215,8 +215,9 @@ public class ProjectContext {
 	 * Save a program without hanging when it is busy. An edit (rename, signature/variable change)
 	 * fires {@code FUNCTION_CHANGED} events that make Ghidra's auto-analysis schedule follow-on
 	 * analysis on a background thread holding its own transaction; a save while that transaction is
-	 * open fails the lock with "Unable to lock due to active transaction" even though the edits
-	 * already committed. Rather than block on <em>all</em> analysis (which can hold the endpoint's
+	 * open fails the lock with "Unable to lock due to active transaction" (and an edit made while
+	 * it is open is an entry nested in it, checkpointed only when it ends — see
+	 * {@link Transactions#modify}). Rather than block on <em>all</em> analysis (which can hold the endpoint's
 	 * write lock for minutes on a big batch and time the client out), poll the non-throwing
 	 * {@link Program#canLock()} probe with a short backoff and save the instant the lock is free.
 	 * If the program stays busy past {@code timeoutMillis}, give up and report <em>deferred</em> —

@@ -1,8 +1,10 @@
 package ebbex.ghidramcpserver.util;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import ghidra.app.util.NamespaceUtils;
 import ghidra.program.model.address.Address;
@@ -60,12 +62,23 @@ public final class Locations {
 				return byAddress;
 			}
 		}
+		List<Function> named = new ArrayList<>();
 		SymbolIterator symbols = program.getSymbolTable().getSymbols(nameOrAddress);
 		while (symbols.hasNext()) {
 			Symbol symbol = symbols.next();
 			if (symbol.getSymbolType() == SymbolType.FUNCTION) {
-				return program.getFunctionManager().getFunctionAt(symbol.getAddress());
+				named.add(program.getFunctionManager().getFunctionAt(symbol.getAddress()));
 			}
+		}
+		if (named.size() == 1) {
+			return named.get(0);
+		}
+		if (named.size() > 1) {
+			// Two functions may carry one name in different namespaces (an overlay gate renamed
+			// after the body it jumps to, say). Picking the first silently edits whichever the
+			// symbol table hands back; say which there are and ask for an address instead.
+			throw new IllegalArgumentException("'" + nameOrAddress + "' names " + named.size() +
+				" functions; use an address: " + describeAll(named));
 		}
 		Function byBareHex = functionContaining(program, nameOrAddress);
 		if (byBareHex != null) {
@@ -91,9 +104,22 @@ public final class Locations {
 				return address;
 			}
 		}
+		List<Symbol> named = new ArrayList<>();
 		SymbolIterator symbols = program.getSymbolTable().getSymbols(nameOrAddress);
-		if (symbols.hasNext()) {
-			return symbols.next().getAddress();
+		while (symbols.hasNext()) {
+			Symbol symbol = symbols.next();
+			if (named.stream().noneMatch(s -> s.getAddress().equals(symbol.getAddress()))) {
+				named.add(symbol);
+			}
+		}
+		if (named.size() == 1) {
+			return named.get(0).getAddress();
+		}
+		if (named.size() > 1) {
+			throw new IllegalArgumentException("'" + nameOrAddress + "' names " + named.size() +
+				" locations; use an address: " + named.stream()
+						.map(s -> s.getName(true) + " @ " + s.getAddress())
+						.collect(Collectors.joining(", ")));
 		}
 		// Bare hex, or a decompiler 'Ram' global name copy-pasted from a decompile.
 		Address bareHex = toAddress(program, nameOrAddress);
@@ -119,6 +145,13 @@ public final class Locations {
 		return s.matches("(?i)0x[0-9a-f]+") ||
 			s.matches("(?i)[0-9a-f]+:[0-9a-f]+") ||
 			s.contains("::");
+	}
+
+	private static String describeAll(List<Function> functions) {
+		return functions.stream()
+				.map(f -> f.getName(true) + " @ " + f.getEntryPoint() +
+					(f.isThunk() ? " (thunk)" : ""))
+				.collect(Collectors.joining(", "));
 	}
 
 	private static Function functionContaining(Program program, String addressString) {

@@ -1936,3 +1936,42 @@ _Verification record for the five entries above._
 - **Verified live** on 0.24.2, read-only against `/REX/NEBULAR.EXE` over plain HTTP:
   `regex:"true", limit:"5"` returned the 2 hits; `regex:"yes"` was refused with
   `does not have a value in the enumeration [true, false, "true", "false"]`.
+
+## 2026-10-07 — RESOLVED (0.25.0) — NEBULAR.EXE sprite_series_load session: a failed batch edit discarded the "ok" ones, void-in-AX refused, data with no symbol can't be named, instruction search misses listing text, no constant mutability, set_field undercounts, shared names resolve silently — madstools
+- **Lost edits (item 1), the one that mattered.** A 36-edit batch reported `35 ok, 1 failed`
+  and left only edits [0] and [1] in the program. Cause, read in the 12.1.3 source: Ghidra
+  nests transactions **per program, not per thread**
+  (`DomainObjectTransactionManager.startTransaction` adds an entry to whatever transaction is
+  open). A `set_function_signature` early in the batch fired `FUNCTION_CHANGED`, auto-analysis
+  scheduled a background `BackgroundCommandTask`, which wraps its whole run in one transaction;
+  every later edit became an entry inside it, and `Transactions.modify` ending the failing
+  edit's entry with `commit=false` set the enclosing transaction's status to ABORTED
+  (`DomainObjectDBTransaction.endEntry`). When analysis ended, `DBHandle.doEndTransaction`
+  rolled the database back to the last checkpoint — after edit [1]. Nothing in Ghidra warns.
+- **Fix:** `Transactions.modify` records whether another transaction is open before starting
+  its own; a failing body inside one is committed (kept) and the error says so and why, with
+  "re-read the target"; only an outermost transaction of ours is rolled back. Before the write
+  it also gives an open transaction up to 1.5s to close, so most edits get a checkpoint of
+  their own. `batch`'s description names the "save deferred" case. Test:
+  `TransactionNestingTest` opens an "Auto Analysis" transaction, fails an edit inside it, and
+  checks the enclosing transaction's own label survives.
+- **Items 2, 3, 6, 11, 12 (and 5):** `return={type:"void", storage:"AX"}` is accepted as "no
+  return value" (`VoidDataType`, `VOID_STORAGE`, storage echoed as ignored). `rename kind=data`
+  on defined data with no symbol creates the label — default `DAT_` labels are dynamic and exist
+  only at referenced addresses, which is why the type looked like the cause. `manage_types
+  op=set_field` counts the undefined bytes the field consumes (filler is one component per
+  byte) and grows the struct when the field runs past its end. `Locations.findFunction` /
+  `findLocation` refuse a name two functions or locations share, listing both with addresses.
+  `set_data_type kind=data mutability=constant|volatile|normal|writable` sets Ghidra's data
+  setting (with `type` omitted it changes only the setting); `inspect` prints a non-default
+  mutability.
+- **Item 4:** `search_memory kind=instruction markup=true` matches the text `disassemble`
+  prints (same `representation` code, labels and frame variables substituted); the default
+  stays raw operand text, and the description and no-match note say which form was searched
+  and that `Stack[0x5]` marked up is `[BP + 0x7]` raw.
+- **Verified** by JUnit (`TransactionNestingTest`, `VoidReturnStorageTest`, `RenameDataTest`,
+  `SetFieldCountTest`, `FindFunctionAmbiguityTest`, `SearchMemoryMarkupTest`) and the smoke
+  run; live verification against `/REX/NEBULAR.EXE` pending the next shared-Ghidra restart.
+- **Still open** from the same log: split/alias control for merged register variables (7),
+  `decompile` by range or as a diff (8), comments that name decompiler temporaries (10); see
+  the open log.

@@ -12,6 +12,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.lang.Register;
+import ghidra.program.model.data.MutabilitySettingsDefinition;
 import ghidra.program.model.lang.RegisterValue;
 import ghidra.program.model.listing.ProgramContext;
 import ghidra.program.model.listing.Bookmark;
@@ -124,7 +125,15 @@ public class InspectTool implements ProgramTool {
 			sb.append("Data: ").append(data.getDataType().getName()).append(" (")
 					.append(data.getLength()).append(" bytes) @ ")
 					.append(data.getAddress()).append(" = ")
-					.append(data.getDefaultValueRepresentation()).append('\n');
+					.append(data.getDefaultValueRepresentation());
+			// Only a non-default setting is worth a word: it is what makes the decompiler fold
+			// (constant) or keep (volatile) this global, and nothing else shows it.
+			int mutability = MutabilitySettingsDefinition.DEF.getMutabilityMode(data);
+			if (mutability != MutabilitySettingsDefinition.NORMAL) {
+				sb.append(", mutability ")
+						.append(MutabilitySettingsDefinition.DEF.getValueString(data));
+			}
+			sb.append('\n');
 		}
 
 		appendComment(sb, listing, address, CommentType.PLATE, "plate");
