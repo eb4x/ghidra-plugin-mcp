@@ -1986,5 +1986,8 @@ _Verification record for the five entries above._
   not by deleting the symbol, which would delete the function. A label/data symbol is removed,
   and the result says whether a dynamic DAT_ label shows again (only while referenced).
 - **Verified** by `RenameResetTest` (plain function, thunk following its target, label removal,
-  `new_name` no longer required with reset) and the smoke run; live on NEBULAR.EXE pending
-  madstools' use after the 0.26.0 restart.
+  `new_name` no longer required with reset) and the smoke run. **Verified live** by madstools on
+  0.26.0: all six gates in `/REX/NEBULAR.EXE` reset by address; `decompile
+  function=madspack_close` resolves to the body again without the two-candidate error, `inspect
+  1f95:07e2` shows the default-named thunk following its target with the committed parameter
+  typing intact, and the auto-save caught it.
