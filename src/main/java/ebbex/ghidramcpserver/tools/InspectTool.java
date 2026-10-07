@@ -119,7 +119,10 @@ public class InspectTool implements ProgramTool {
 		Listing listing = program.getListing();
 		Data data = listing.getDefinedDataContaining(address);
 		if (data != null) {
-			sb.append("Data: ").append(data.getDataType().getName()).append(" @ ")
+			// The byte length is the only thing that tells a 2-byte near pointer from a 4-byte
+			// far one: both print a type name, and only the value's shape hinted at the width.
+			sb.append("Data: ").append(data.getDataType().getName()).append(" (")
+					.append(data.getLength()).append(" bytes) @ ")
 					.append(data.getAddress()).append(" = ")
 					.append(data.getDefaultValueRepresentation()).append('\n');
 		}

@@ -84,6 +84,8 @@ public class ListTool implements ProgramTool {
 	public String description() {
 		return "List program items of one kind (functions, symbols, strings, imports, exports, " +
 			"segments, data, namespaces), optionally filtered by a case-insensitive substring, " +
+			"(kind=strings lists only data already DEFINED as a string — text the analyzer never " +
+			"typed is found with search_memory kind=text instead) " +
 			"paginated with offset/limit (default limit " + DEFAULT_LIMIT + "). For kind=functions " +
 			"each line shows a caller count and you can sort by address|name|callers (callers is " +
 			"descending — the quickest way to spot heavily-used leaf helpers like memcpy/strlen). " +
@@ -229,6 +231,10 @@ public class ListTool implements ProgramTool {
 		String skipNote = skipped > 0 ? "  (" + skipped + " unreadable entries skipped)" : "";
 		if (total == 0) {
 			return Results.ok("No " + kind + (filter.isEmpty() ? "" : " matching '" + filter + "'") +
+				(kind.equals("strings")
+						? " among the DEFINED strings (kind=strings only lists data typed as a " +
+							"string; search_memory kind=text scans every byte)"
+						: "") +
 				skipNote);
 		}
 		return Results.ok(String.join("\n", window) + (window.isEmpty() ? "" : "\n") +

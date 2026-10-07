@@ -86,6 +86,16 @@ public class McpToolSmokeScript extends GhidraScript {
 		app("manage_files", Map.of("op", "delete", "path", "/smoke-scratch"), project);
 		app("manage_files", Map.of("op", "delete", "path", "/smoke-scratch", "recursive", true),
 			project);
+		// op=upgrade on a folder every program of which was imported minutes ago by this very
+		// Ghidra: the one deterministic outcome is "already current", and a dry run must say so
+		// without writing anything.
+		McpSchema.CallToolResult upgrade = app("manage_files",
+			Map.of("op", "upgrade", "path", "/", "recursive", true, "dry_run", true), project);
+		if (!text(upgrade).contains("already current") || text(upgrade).contains("would upgrade: /") ||
+			!text(upgrade).contains("Nothing was written")) {
+			failures++;
+			println("!! manage_files op=upgrade dry run on fresh imports: " + text(upgrade));
+		}
 		McpSchema.CallToolResult listing = app("list_files", Map.of(), project);
 
 		// list_files marks programs whose processor language has moved on since they were
@@ -265,6 +275,21 @@ public class McpToolSmokeScript extends GhidraScript {
 			}
 			prog("search_memory", Map.of("kind", "instruction", "pattern", "PUSH", "limit", 5),
 				program);
+			// regex=true: an anchored constant, the case a substring cannot express ('0x628' also
+			// matched 0x6288). The pattern is anchored to the mnemonic start so it has to apply.
+			McpSchema.CallToolResult anchored = prog("search_memory",
+				Map.of("kind", "instruction", "pattern", "^PUSH\\b", "regex", true, "limit", 3),
+				program);
+			if (Boolean.TRUE.equals(anchored.isError()) || text(anchored).startsWith("No ")) {
+				failures++;
+				println("!! search_memory regex=true found nothing for ^PUSH\\b: " + text(anchored));
+			}
+			McpSchema.CallToolResult badRegex = prog("search_memory",
+				Map.of("kind", "instruction", "pattern", "PUSH(", "regex", true), program);
+			if (!Boolean.TRUE.equals(badRegex.isError())) {
+				failures++;
+				println("!! search_memory regex=true accepted an unbalanced pattern");
+			}
 
 			// read_bytes, all three outcomes. The uninitialized case is the one worth pinning: a
 			// BSS read has to say the image carries no bytes there — the fact the caller was
@@ -442,6 +467,52 @@ public class McpToolSmokeScript extends GhidraScript {
 			prog("manage_types", Map.of("op", "set_field", "name", "mcp_midfield_rec",
 				"offset", "0x6", "type", "byte[2]", "new_name", "middle",
 				"freeze_layout", true), program);
+
+			// define_types binding rules, the ones a 1538-byte struct was silently emptied by:
+			// a body-less 'struct X' in a later call must bind to the existing X, not replace it
+			// with an empty placeholder; a full body for an existing name redefines it and says
+			// so with the old size; '__far *' widens a pointer to 4 bytes whatever the program's
+			// default; op=describe reads the layout back.
+			prog("define_types", Map.of("source",
+				"struct mcp_bind_inner { int a; int b; char tail[24]; };"), program);
+			McpSchema.CallToolResult bound = prog("define_types", Map.of("source",
+				"#pragma pack(1)\nstruct mcp_bind_outer { struct mcp_bind_inner *near_p; " +
+					"struct mcp_bind_inner __far *far_p; char far *text; };\n" +
+					"typedef struct mcp_bind_inner * __far mcp_bind_inner_far;"), program);
+			McpSchema.CallToolResult inner = prog("manage_types",
+				Map.of("op", "describe", "name", "mcp_bind_inner"), program);
+			McpSchema.CallToolResult outer = prog("manage_types",
+				Map.of("op", "describe", "name", "mcp_bind_outer"), program);
+			int innerSize = 24 + 2 * program.getDataTypeManager().getDataOrganization()
+					.getIntegerSize();
+			int nearSize = program.getDataTypeManager().getDataOrganization().getPointerSize();
+			if (!text(inner).contains(innerSize + " (0x") || !text(inner).contains("tail")) {
+				failures++;
+				println("!! define_types: body-less 'struct mcp_bind_inner' did not bind to the " +
+					"existing type: " + text(inner));
+			}
+			if (!text(bound).contains("mcp_bind_inner (" + innerSize + " (0x") ||
+				!text(bound).contains("Far pointers (4 bytes): mcp_bind_outer.far_p, " +
+					"mcp_bind_outer.text, mcp_bind_inner_far") ||
+				!text(bound).contains("pack(1)")) {
+				failures++;
+				println("!! define_types: far markers / existing-type report: " + text(bound));
+			}
+			if (!text(outer).contains("+0x0: mcp_bind_inner * near_p  (" + nearSize + " byte") ||
+				!text(outer).contains("+0x" + Integer.toHexString(nearSize) +
+					": mcp_bind_inner *32 far_p  (4 bytes)") ||
+				!text(outer).contains("+0x" + Integer.toHexString(nearSize + 4) +
+					": char *32 text  (4 bytes)")) {
+				failures++;
+				println("!! manage_types op=describe / far layout: " + text(outer));
+			}
+			McpSchema.CallToolResult redefined = prog("define_types", Map.of("source",
+				"struct mcp_bind_inner { int a; };"), program);
+			if (!text(redefined).contains("REDEFINED in place (was " + innerSize + " (0x")) {
+				failures++;
+				println("!! define_types: redefinition did not report the old size: " +
+					text(redefined));
+			}
 
 			// manage_types: not-found path (deterministic; no custom types guaranteed here).
 			prog("manage_types", Map.of("op", "delete", "name", "__mcp_no_such_type__"), program);

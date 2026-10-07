@@ -14,8 +14,11 @@ import ghidra.program.model.data.Composite;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.data.Structure;
+import ghidra.program.model.data.TypeDef;
 import ghidra.program.model.data.Undefined;
+import ghidra.program.model.data.Union;
 import ghidra.program.model.listing.Program;
 import ghidra.util.data.DataTypeParser;
 import ghidra.util.data.DataTypeParser.AllowedDataTypes;
@@ -30,7 +33,11 @@ import io.modelcontextprotocol.spec.McpSchema;
  */
 public class ManageTypesTool implements ProgramTool {
 
-	private static final List<String> OPS = List.of("rename", "delete", "rename_field", "set_field");
+	private static final List<String> OPS =
+		List.of("describe", "rename", "delete", "rename_field", "set_field");
+
+	/** Fields printed by op=describe before it truncates. */
+	private static final int MAX_DESCRIBED_FIELDS = 400;
 
 	/** How far either side of an edited offset to echo the layout back. */
 	private static final int NEIGHBOURHOOD_BYTES = 16;
@@ -43,7 +50,10 @@ public class ManageTypesTool implements ProgramTool {
 	@Override
 	public String description() {
 		return "Manage type definitions in the program's data type manager (types are created " +
-			"with define_types and applied with set_data_type). op=rename renames the type 'name' " +
+			"with define_types and applied with set_data_type). op=describe prints the type " +
+			"'name': its size, packing state and every field with offset, type and byte length " +
+			"(a typedef's target, an enum's values, a function definition's prototype) — the way " +
+			"to read a layout back without editing it. op=rename renames the type 'name' " +
 			"to 'new_name'. op=delete removes the type 'name' entirely; anything still using it " +
 			"reverts to an undefined type. op=rename_field renames a field of the struct/union " +
 			"'name' — identify the field by 'field' (its current name, or a byte offset like 0x1a) " +
@@ -111,12 +121,74 @@ public class ManageTypesTool implements ProgramTool {
 		DataType dataType = matches.get(0);
 
 		return switch (op) {
+			case "describe" -> Results.ok(describe(dataType));
 			case "rename" -> rename(program, dataType, args);
 			case "delete" -> delete(program, dtm, dataType);
 			case "rename_field" -> renameField(program, dataType, args);
 			case "set_field" -> setField(program, dataType, args);
 			default -> Results.error("unhandled op " + op);
 		};
+	}
+
+	/** The full layout of a type, in the shape set_field's echo already uses for its neighbourhood. */
+	private static String describe(DataType dataType) {
+		StringBuilder sb = new StringBuilder();
+		switch (dataType) {
+			case Composite composite -> {
+				sb.append(composite instanceof Union ? "union " : "struct ")
+						.append(composite.getPathName()).append("  ")
+						.append(DefineTypesTool.size(composite)).append(", ")
+						.append(DefineTypesTool.packing(composite));
+				DataTypeComponent[] fields = composite.getDefinedComponents();
+				sb.append(", ").append(plural(fields.length, "field")).append(':');
+				int shown = 0;
+				int lastEnd = 0;
+				for (DataTypeComponent field : fields) {
+					if (shown == MAX_DESCRIBED_FIELDS) {
+						sb.append("\n  … ").append(fields.length - shown).append(" more");
+						break;
+					}
+					if (composite instanceof Structure && field.getOffset() > lastEnd) {
+						sb.append("\n  +0x").append(Integer.toHexString(lastEnd)).append(": ")
+								.append(range(lastEnd, field.getOffset())).append(" undefined");
+					}
+					sb.append("\n  +0x").append(Integer.toHexString(field.getOffset())).append(": ")
+							.append(field.getDataType().getName());
+					if (field.getFieldName() != null) {
+						sb.append(' ').append(field.getFieldName());
+					}
+					sb.append("  (").append(plural(field.getLength(), "byte")).append(')');
+					if (field.getComment() != null) {
+						sb.append("  // ").append(field.getComment());
+					}
+					lastEnd = field.getOffset() + field.getLength();
+					shown++;
+				}
+				if (composite instanceof Structure && lastEnd < composite.getLength() &&
+					shown == fields.length) {
+					sb.append("\n  +0x").append(Integer.toHexString(lastEnd)).append(": ")
+							.append(range(lastEnd, composite.getLength())).append(" undefined");
+				}
+			}
+			case TypeDef typedef -> sb.append("typedef ").append(typedef.getPathName())
+					.append(" = ").append(typedef.getDataType().getDisplayName()).append("  ")
+					.append(DefineTypesTool.size(typedef));
+			case ghidra.program.model.data.Enum e -> {
+				sb.append("enum ").append(e.getPathName()).append("  ")
+						.append(DefineTypesTool.size(e)).append(", ")
+						.append(plural(e.getCount(), "value")).append(':');
+				for (String name : e.getNames()) {
+					sb.append("\n  ").append(name).append(" = ").append(e.getValue(name))
+							.append(" (0x").append(Long.toHexString(e.getValue(name))).append(')');
+				}
+			}
+			case FunctionDefinition f -> sb.append("function ").append(f.getPathName())
+					.append(": ").append(f.getPrototypeString());
+			default -> sb.append(dataType.getPathName()).append("  ")
+					.append(dataType.getDisplayName()).append("  ")
+					.append(DefineTypesTool.size(dataType));
+		}
+		return sb.toString();
 	}
 
 	private McpSchema.CallToolResult renameField(Program program, DataType dataType,

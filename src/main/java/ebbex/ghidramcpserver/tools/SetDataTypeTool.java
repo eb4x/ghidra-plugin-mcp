@@ -27,9 +27,12 @@ import ghidra.program.model.data.DataUtilities.ClearDataMode;
 import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.StructureDataType;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
+import ghidra.program.model.listing.VariableStorage;
+import ghidra.program.model.listing.VariableUtilities;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
@@ -69,7 +72,10 @@ public class SetDataTypeTool implements ProgramTool {
 			"(name/size/fields, offset-based so packed layouts with gaps just work) to build and " +
 			"apply it, or omit 'struct' to let the decompiler infer one from usage. A field with " +
 			"'bits' set is a bitfield; consecutive bitfields sharing an 'offset' pack lsb-first " +
-			"into that storage unit.";
+			"into that storage unit. Retyping a stack local to something larger fails with a " +
+			"storage conflict when the decompiler had split that range into several locals; " +
+			"the error maps each to its offset in the new type, and replace_overlapping=true " +
+			"removes them and applies the type.";
 	}
 
 	@Override
@@ -86,7 +92,11 @@ public class SetDataTypeTool implements ProgramTool {
 					"Variable name (for kind=local_variable|parameter|struct)"),
 				"struct", structSchema(),
 				"follow_calls", Schemas.boolProp(
-					"kind=struct inferred: recurse into called functions (default true)")),
+					"kind=struct inferred: recurse into called functions (default true)"),
+				"replace_overlapping", Schemas.boolProp("kind=local_variable|parameter: remove " +
+					"the function's other variables whose storage the retyped one would now " +
+					"cover (their names are lost; the result lists them with the offset each " +
+					"maps to in the new type, for manage_types op=rename_field) (default false)")),
 			"required", List.of("kind"));
 	}
 
@@ -156,9 +166,10 @@ public class SetDataTypeTool implements ProgramTool {
 		}
 		Address address = Locations.parseAddress(program, addressArg);
 		return Transactions.modify(program, "Set data type", () -> {
-			DataUtilities.createData(program, address, dataType, -1,
+			Data data = DataUtilities.createData(program, address, dataType, -1,
 				ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
-			return "Applied " + dataType.getName() + " @ " + address;
+			return "Applied " + dataType.getName() + " (" + data.getLength() + " bytes) @ " +
+				address + " = " + data.getDefaultValueRepresentation();
 		});
 	}
 
@@ -171,7 +182,8 @@ public class SetDataTypeTool implements ProgramTool {
 		Function function = Locations.findFunction(program, functionRef);
 		return Transactions.modify(program, "Set return type", () -> {
 			function.setReturnType(dataType, SourceType.USER_DEFINED);
-			return "Set return type of " + function.getName() + " to " + dataType.getName();
+			return "Set return type of " + function.getName() + " to " + dataType.getName() +
+				" (" + dataType.getLength() + " bytes)";
 		});
 	}
 
@@ -188,11 +200,84 @@ public class SetDataTypeTool implements ProgramTool {
 			return Results.error("No variable named '" + variableName + "' in " +
 				function.getName());
 		}
+		boolean replaceOverlapping = Args.boolArg(args, "replace_overlapping", false);
 		return Transactions.modify(program, "Set variable type", () -> {
-			applyType(target, dataType);
-			return "Set type of " + variableName + " to " + dataType.getName() + " in " +
-				function.getName();
+			List<Variable> overlapping = overlapping(function, target, dataType);
+			String removed = "";
+			if (!overlapping.isEmpty() && replaceOverlapping) {
+				for (Variable other : overlapping) {
+					function.removeVariable(other);
+				}
+				removed = "\nRemoved " + overlapping.size() + " overlapping variable(s): " +
+					overlapMap(target, overlapping);
+			}
+			try {
+				applyType(target, dataType);
+			}
+			catch (Exception e) {
+				if (overlapping.isEmpty() || replaceOverlapping) {
+					throw e;
+				}
+				// Ghidra's own message lists storage ranges; what the caller needs is which
+				// field of the new type each old local was, so the rename can carry over.
+				throw new Exception(e.getMessage() + "\nThe new type (" + dataType.getLength() +
+					" bytes) covers " + overlapMap(target, overlapping) + ". Pass " +
+					"replace_overlapping=true to remove them and apply the type; then name the " +
+					"fields with manage_types op=rename_field.");
+			}
+			return "Set type of " + variableName + " to " + dataType.getName() + " (" +
+				dataType.getLength() + " bytes) in " + function.getName() + removed;
 		});
+	}
+
+	/**
+	 * The function's other variables whose storage the target would cover once retyped.
+	 * The decompiler splits an untyped stack buffer into one local per accessed slot, so a
+	 * struct laid over it collides with every one of them; empty when the new storage cannot
+	 * be computed (register locals, hash storage).
+	 */
+	private static List<Variable> overlapping(Function function, VarTarget target,
+			DataType dataType) {
+		VariableStorage storage = target.dbVariable() != null
+				? target.dbVariable().getVariableStorage()
+				: target.highSymbol().getStorage();
+		VariableStorage resized;
+		try {
+			resized = VariableUtilities.resizeStorage(storage, dataType, true, function);
+		}
+		catch (Exception e) {
+			return List.of();
+		}
+		List<Variable> hits = new ArrayList<>();
+		for (Variable other : function.getAllVariables()) {
+			if (other.equals(target.dbVariable())) {
+				continue;
+			}
+			if (other.getVariableStorage().intersects(resized)) {
+				hits.add(other);
+			}
+		}
+		return hits;
+	}
+
+	/** {@code local_80 (undefined2 @ Stack[-0x80] = +0x96 in the new type), …}. */
+	private static String overlapMap(VarTarget target, List<Variable> overlapping) {
+		VariableStorage storage = target.dbVariable() != null
+				? target.dbVariable().getVariableStorage()
+				: target.highSymbol().getStorage();
+		boolean stack = storage.isStackStorage();
+		long base = stack ? storage.getStackOffset() : 0;
+		List<String> parts = new ArrayList<>();
+		for (Variable other : overlapping) {
+			String where = other.getVariableStorage().toString();
+			if (stack && other.isStackVariable()) {
+				long delta = other.getStackOffset() - base;
+				where += " = " + (delta < 0 ? "-0x" + Long.toHexString(-delta)
+						: "+0x" + Long.toHexString(delta)) + " in the new type";
+			}
+			parts.add(other.getName() + " (" + other.getDataType().getName() + " @ " + where + ")");
+		}
+		return String.join(", ", parts);
 	}
 
 	/**

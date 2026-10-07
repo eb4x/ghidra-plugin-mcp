@@ -8,6 +8,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Args;
@@ -149,6 +151,7 @@ public class DecompileTool implements ProgramTool {
 		if (c != null && !c.isBlank()) {
 			out.append(coverageHeader(program, function, results))
 					.append(undeclaredInputWarning(function, results))
+					.append(unresolvedCallWarning(c))
 					.append(c);
 			if (dumpSymbols) {
 				out.append(symbolDump(results.getHighFunction()));
@@ -406,6 +409,33 @@ public class DecompileTool implements ProgramTool {
 				: " — omitted from the guessed prototype; their true positions among\n" +
 					"//     the declared args are unknown. Cross-check disassemble, then pin " +
 					"with set_function_signature.\n");
+	}
+
+	private static final Pattern UNRESOLVED_CALL = Pattern.compile("\\bfunc_0x([0-9a-fA-F]+)\\(");
+
+	/**
+	 * The decompiler prints a call whose target it could not resolve as {@code func_0x...()}
+	 * with nothing to say it is one. On an overlaid DOS program that is the signature of a
+	 * dispatch stub whose target was not recovered, and the segment value threaded through the
+	 * arguments is the overlay number &mdash; not a function the program lacks.
+	 */
+	private static String unresolvedCallWarning(String c) {
+		Map<String, Integer> targets = new LinkedHashMap<>();
+		Matcher m = UNRESOLVED_CALL.matcher(c);
+		while (m.find()) {
+			targets.merge("func_0x" + m.group(1), 1, Integer::sum);
+		}
+		if (targets.isEmpty()) {
+			return "";
+		}
+		StringBuilder sb = new StringBuilder("//   ⚠ UNRESOLVED CALLS: ");
+		targets.forEach((name, count) -> sb.append(name).append(count > 1 ? " ×" + count : "")
+				.append(", "));
+		sb.setLength(sb.length() - 2);
+		return sb.append(" — the callee's address was not recovered (a computed or indirect\n" +
+			"//     call with no reference). In an overlaid DOS program this is usually an " +
+			"RTLink dispatch stub\n//     whose target the analyzer missed; xrefs on the call " +
+			"site shows what it has, and ghidra-plugin-rtlink owns the gap.\n").toString();
 	}
 
 	/**

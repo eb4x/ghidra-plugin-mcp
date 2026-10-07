@@ -1844,3 +1844,70 @@ _Verification record for the five entries above._
   x86-64 smoke target it exercises **0 instructions** and prints that count rather than passing
   silently. AEON was the first language here that defines one. Kept for the next language that
   does — and as a reminder that a green smoke run is not evidence about this.
+
+## 2026-10-07 — RESOLVED (0.24.0) — NEBULAR.EXE palette session: define_types emptied structs, no far-pointer spelling, no layout readout, split locals block a struct — madstools
+- **Task:** reverse-engineering the palette path of `/REX/NEBULAR.EXE` (x86-16 real mode,
+  RTLink overlays); the full log is at `~/src/madstools/.review/ghidra/mcp-friction.md`.
+- **Friction, by item, and the fix:**
+  3. `define_types` replaced a 1538-byte `ColorList` with an empty one when a later call
+     mentioned `struct ColorList *` without a body; noticed only because the decompiler rendered
+     it as a 1-byte type. **Cause, in the CParser source:** with `storeDataType=true` (what the
+     tool used) `findAnyComposite` looks only in the parser's own table, never in the program,
+     so a body-less `struct X` mints an empty `X` and `addDef` stores it with
+     `REPLACE_HANDLER` over the real one. **Fix:** parse with `storeDataType=false` (the parser
+     then binds the name to the program's existing composite) and resolve the results into the
+     program ourselves. A full body for an existing name still replaces, in place
+     (`DataTypeManagerDB.updateExistingDataType` → `doReplaceWith`, so references survive), and
+     the result says `REDEFINED in place (was 1538 (0x602) bytes)`; a body-less reference is
+     listed under `Existing types used as-is`; a forward declaration alone is flagged `EMPTY`.
+  4. No C spelling for a far pointer: `__far`/`__ptr32` accepted and discarded, `far` a parse
+     error. **Cause:** CParser's grammar consumes the `FAR`/`PTR32`/`NEAR` tokens in
+     `TypeQualifier` and does nothing with them; `far` is not a token. **Fix:** `define_types`
+     records `__far *`, `far *` and `__ptr32` before parsing, strips them, and widens the
+     matching field / typedef / parameter / return pointer to 4 bytes afterwards (a bare `far`
+     counts only next to a `*`, so a field named `far` survives). The description says the
+     default width follows the program and points at `T *32` for the other tools.
+  5. No way to read a type's size or layout: **`manage_types op=describe`** (size, packing
+     state, every field with offset/type/bytes and the undefined gaps; typedef target, enum
+     values, function prototype). `define_types` also prints each type's size.
+  6. Pointer width visible only through the value's print shape: `inspect` and the
+     `set_data_type` echoes now carry the byte length.
+  7. `#pragma pack(1)` honoured but undocumented: documented in the `define_types` description.
+  8. `set_data_type kind=local_variable` over the decompiler's split locals fails with a storage
+     conflict and nothing could merge them. **Fix:** the error now maps each overlapping local
+     to its offset in the new type, and `replace_overlapping=true` removes them, applies the
+     type and lists what went (for `manage_types op=rename_field` afterwards). Same mechanism
+     as Ghidra's own retype-from-decompiler (`HighFunctionDBUtil.clearConflictingLocalVariables`),
+     but explicit, since the names are lost.
+  1. `list kind=strings` covers only defined string data: description and the no-match message
+     say so and point at `search_memory kind=text`.
+  2. `disassemble` printed `[BP + local_7ea]` and `LEA AX,[BP + 0xf818]` for the same slot:
+     a raw frame-relative operand now gets `; 0xf818 = local_7ea` appended. The
+     displacement-to-frame delta is not assumed: it is learned from any operand in the same
+     function that carries both a displacement and a stack reference, so the hint is exact for
+     that function or absent.
+  10. `decompile` showed `func_0x00000000(...)` with nothing saying the callee was unresolved:
+      an `⚠ UNRESOLVED CALLS` header line lists them with the RTLink-gate hint.
+  11. `search_memory kind=instruction pattern="0x628"` matched `0x6288`: `regex=true` makes the
+      pattern a case-insensitive regex over the same normalised text (`\b0x628\b`).
+  9 and 12 need no change (own error with a retired name; Ghidra's auto label on a pointer).
+- **Verified:** smoke test (binding, far layout via `describe`, redefinition report, regex
+  search, upgrade dry run) and live on a scratch copy of NEBULAR.EXE — see the live note below.
+
+## 2026-10-07 — RESOLVED (0.24.0) — no way to upgrade programs after a language-version bump except closing the project and running headless — ghidra
+- **Task:** 594 FID library objects under `/lib/LLIBCE` in `mads`, all saved under x86 4.7
+  while the running fork is at 4.8 (GP-7017); `list_files` marked them `** needs upgrade` and
+  every tool refused, correctly, since the rewrite is one-way and auto-saved.
+- **Workaround used:** `manage_project op=close`, `analyzeHeadless … -process -recursive
+  -noanalysis` from the host (which opens with `okToUpgrade=true` and saves), `manage_project
+  op=open`. Worked (594 in 2 minutes) but took the project away from every session and needs
+  an SDK whose language version matches the running fork.
+- **Fix:** `manage_files op=upgrade path=<file|folder> recursive=true dry_run=true|false`.
+  Each program is first opened with the upgrade refused — success means current, an
+  upgradable `VersionException` means it needs the rewrite — then reopened with
+  `okToUpgrade=true` and saved. Reports upgraded / would upgrade / already current / skipped
+  (busy, read-only, not checked out, open in a tool) / failed per file, successes capped at
+  100 lines, failures and skips always printed. The read tools keep refusing.
+- **Verified:** smoke test (dry run on fresh imports reports them current and writes nothing).
+  The upgrade branch itself has no fixture — every program the suite can reach is current by
+  construction — so it is proven by the next version bump, not by this commit.

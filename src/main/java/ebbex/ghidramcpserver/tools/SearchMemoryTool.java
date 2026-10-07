@@ -6,6 +6,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import java.util.Map;
 
 import ebbex.ghidramcpserver.ProgramTool;
@@ -41,7 +44,9 @@ public class SearchMemoryTool implements ProgramTool {
 		return "Search program memory. kind=bytes matches a hex pattern where '??' is a wildcard " +
 			"byte (e.g. '48 8b ?? c3'); kind=text matches an ASCII substring; kind=instruction " +
 			"matches disassembled instruction text case-insensitively (e.g. 'JMP word ptr CS:' " +
-			"or 'MOV AX' — a substring of mnemonic + operands as the listing prints them). " +
+			"or 'MOV AX' — a substring of mnemonic + operands as the listing prints them; " +
+			"regex=true makes it a Java regex over the same uppercased, space-collapsed text, " +
+			"so a constant can be anchored: '\\b0x628\\b' no longer matches 0x6288). " +
 			"Returns matching addresses (default limit " + DEFAULT_LIMIT + "). source=file scans " +
 			"the program's on-disk file instead (kind=bytes|text), returning FILE OFFSETS — " +
 			"pasteable into read_file — each with the address(es) it is loaded at in this program, " +
@@ -62,7 +67,10 @@ public class SearchMemoryTool implements ProgramTool {
 				"source", Schemas.enumProp("What to scan: memory (default, the loaded address " +
 					"space) or file (the program's on-disk file, by offset)", SOURCES),
 				"offset", Schemas.intProp("Skip this many matches (for paging; default 0)"),
-				"limit", Schemas.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")")),
+				"limit", Schemas.intProp("Maximum matches to return (default " + DEFAULT_LIMIT + ")"),
+				"regex", Schemas.boolProp("kind=instruction only: treat 'pattern' as a regex " +
+					"(case-insensitive, matched anywhere in the instruction text) instead of a " +
+					"substring (default false)")),
 			"required", List.of("pattern"));
 	}
 
@@ -93,7 +101,8 @@ public class SearchMemoryTool implements ProgramTool {
 		int offset = Math.max(0, Args.intArg(args, "offset", 0));
 
 		if (kind.equals("instruction")) {
-			return searchInstructions(program, pattern, offset, limit);
+			return searchInstructions(program, pattern, Args.boolArg(args, "regex", false), offset,
+				limit);
 		}
 
 		byte[] values;
@@ -243,13 +252,28 @@ public class SearchMemoryTool implements ProgramTool {
 	 * The full instruction text is echoed per hit, since the pattern only matched part of it.
 	 */
 	private static McpSchema.CallToolResult searchInstructions(Program program, String pattern,
-			int offset, int limit) {
-		String needle = normalizeInstructionText(pattern);
+			boolean regex, int offset, int limit) {
+		// A substring cannot say "this constant and not a longer one": '0x628' also matched
+		// 0x6288, 0x6286 and 0x6280, burying the one real hit. A regex can (\b0x628\b).
+		Predicate<String> matches;
+		if (regex) {
+			try {
+				matches = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).asPredicate();
+			}
+			catch (PatternSyntaxException e) {
+				return Results.error("regex=true but 'pattern' is not a valid regex: " +
+					e.getDescription() + " at index " + e.getIndex());
+			}
+		}
+		else {
+			String needle = normalizeInstructionText(pattern);
+			matches = text -> text.contains(needle);
+		}
 		List<String> hits = new ArrayList<>();
 		int index = 0;
 		boolean more = false;
 		for (Instruction instruction : program.getListing().getInstructions(true)) {
-			if (!normalizeInstructionText(instruction.toString()).contains(needle)) {
+			if (!matches.test(normalizeInstructionText(instruction.toString()))) {
 				continue;
 			}
 			if (index >= offset) {

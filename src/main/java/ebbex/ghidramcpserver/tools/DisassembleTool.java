@@ -8,6 +8,7 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.CodeUnitFormat;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
@@ -15,6 +16,10 @@ import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Listing;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.listing.Variable;
+import ghidra.program.model.scalar.Scalar;
+import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.StackReference;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Disassembly listing for a function, or a run of instructions from an address. */
@@ -32,7 +37,10 @@ public class DisassembleTool implements ProgramTool {
 	public String description() {
 		return "Show disassembly. Give a 'function' (name or contained address) to disassemble a " +
 			"whole function, or an 'address' plus 'count' instructions (default " + DEFAULT_COUNT +
-			").";
+			"). A frame-relative operand the analyzer left raw ('[BP + 0xf818]' where a sibling " +
+			"prints '[BP + local_7ea]') gets a trailing '; 0xf818 = local_7ea' naming the " +
+			"variable at that slot, using the frame offset the function's referenced operands " +
+			"establish.";
 	}
 
 	@Override
@@ -135,11 +143,134 @@ public class DisassembleTool implements ProgramTool {
 	private void appendInstructions(StringBuilder sb, InstructionIterator it,
 			CodeUnitFormat format, int max) {
 		int n = 0;
+		FrameHints hints = new FrameHints();
 		while (it.hasNext() && n < max) {
 			Instruction instruction = it.next();
 			sb.append(instruction.getAddress()).append("  ")
-					.append(representation(format, instruction)).append('\n');
+					.append(representation(format, instruction))
+					.append(hints.hint(instruction)).append('\n');
 			n++;
+		}
+	}
+
+	/**
+	 * Names the frame variable behind a raw {@code [BP + imm]} operand. The listing only
+	 * substitutes a variable name where the analyzer left a stack reference, so an
+	 * address-taken slot ({@code LEA AX,[BP + 0xf818]}) prints as a bare displacement while
+	 * its neighbours read {@code [BP + local_7ea]}, and pairing the two takes arithmetic the
+	 * caller should not have to do. The displacement-to-frame-offset delta (the saved-BP and
+	 * return-address slots) is not assumed: it is learned from any operand in the same
+	 * function that has both a displacement and a stack reference, so the hint is exact for
+	 * that function or absent.
+	 */
+	private static final class FrameHints {
+
+		private Function function;
+		private Register register;
+		private Long delta;
+
+		String hint(Instruction instruction) {
+			Function here = instruction.getProgram().getFunctionManager()
+					.getFunctionContaining(instruction.getAddress());
+			if (here == null) {
+				return "";
+			}
+			if (here != function) {
+				function = here;
+				learn();
+			}
+			if (delta == null) {
+				return "";
+			}
+			StringBuilder sb = new StringBuilder();
+			for (int i = 0; i < instruction.getNumOperands(); i++) {
+				if (hasStackReference(instruction, i)) {
+					continue;
+				}
+				Scalar displacement = displacement(instruction, i);
+				if (displacement == null) {
+					continue;
+				}
+				int offset = (int) (displacement.getSignedValue() + delta);
+				Variable variable = function.getStackFrame().getVariableContaining(offset);
+				if (variable == null) {
+					continue;
+				}
+				sb.append(sb.isEmpty() ? "  ; " : ", ").append(displacement).append(" = ")
+						.append(variable.getName());
+				int into = offset - variable.getStackOffset();
+				if (into != 0) {
+					sb.append("+0x").append(Integer.toHexString(into));
+				}
+			}
+			return sb.toString();
+		}
+
+		/** Find one operand with both a frame displacement and a stack reference; it fixes
+		 * the register and the delta for the whole function. */
+		private void learn() {
+			register = null;
+			delta = null;
+			InstructionIterator it = function.getProgram().getListing()
+					.getInstructions(function.getBody(), true);
+			while (it.hasNext()) {
+				Instruction instruction = it.next();
+				for (int i = 0; i < instruction.getNumOperands(); i++) {
+					Register base = baseRegister(instruction, i);
+					Scalar displacement = base == null ? null : scalar(instruction, i);
+					if (displacement == null) {
+						continue;
+					}
+					for (Reference reference : instruction.getOperandReferences(i)) {
+						if (reference instanceof StackReference stack) {
+							register = base;
+							delta = stack.getStackOffset() - displacement.getSignedValue();
+							return;
+						}
+					}
+				}
+			}
+		}
+
+		private Scalar displacement(Instruction instruction, int operand) {
+			Register base = baseRegister(instruction, operand);
+			return base != null && base.equals(register) ? scalar(instruction, operand) : null;
+		}
+
+		/** The single register of an operand shaped {@code [reg + imm]}, else null. */
+		private static Register baseRegister(Instruction instruction, int operand) {
+			Register only = null;
+			for (Object object : instruction.getOpObjects(operand)) {
+				if (object instanceof Register r) {
+					if (only != null) {
+						return null;
+					}
+					only = r;
+				}
+			}
+			return only;
+		}
+
+		private static Scalar scalar(Instruction instruction, int operand) {
+			Scalar only = null;
+			for (Object object : instruction.getOpObjects(operand)) {
+				if (object instanceof Scalar s) {
+					if (only != null) {
+						return null;
+					}
+					only = s;
+				}
+			}
+			return only;
+		}
+
+		private static boolean hasStackReference(Instruction instruction, int operand) {
+			for (Reference reference : instruction.getOperandReferences(operand)) {
+				if (reference.isStackReference()) {
+					return true;
+				}
+			}
+			return false;
 		}
 	}
 
@@ -190,6 +321,7 @@ public class DisassembleTool implements ProgramTool {
 			CodeUnitFormat format) {
 		InstructionIterator it = program.getListing().getInstructions(function.getEntryPoint(), true);
 		int emitted = 0;
+		FrameHints hints = new FrameHints();
 		while (it.hasNext() && emitted < MAX_COUNT * 4) {
 			Instruction instruction = it.next();
 			if (program.getFunctionManager()
@@ -197,7 +329,8 @@ public class DisassembleTool implements ProgramTool {
 				break;
 			}
 			sb.append(instruction.getAddress()).append("  ")
-					.append(representation(format, instruction)).append('\n');
+					.append(representation(format, instruction))
+					.append(hints.hint(instruction)).append('\n');
 			emitted++;
 		}
 		return emitted;

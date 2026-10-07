@@ -1,6 +1,7 @@
 package ebbex.ghidramcpserver.tools.app;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -14,18 +15,24 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.app.services.ProgramManager;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
+import ghidra.framework.model.DomainObject;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectData;
 import ghidra.framework.model.ToolManager;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.listing.Program;
+import ghidra.util.exception.VersionException;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /** Delete, rename, or move a file or folder within the project. */
 public class ManageFilesTool implements ApplicationLevelTool {
 
-	private static final List<String> OPS = List.of("delete", "rename", "move", "copy");
+	private static final List<String> OPS =
+		List.of("delete", "rename", "move", "copy", "upgrade");
+
+	/** Per-file lines an op=upgrade report prints before it summarises the rest. */
+	private static final int MAX_UPGRADE_LINES = 100;
 	private static final List<String> ON_DIRTY = List.of("refuse", "discard");
 
 	/** Closing a program in a tool repaints that tool's windows; bounded like manage_project's. */
@@ -54,7 +61,13 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			"op=delete first closes the file in any running tool showing it (e.g. a CodeBrowser " +
 			"tab); if it has unsaved changes there, the delete refuses unless on_dirty=discard " +
 			"(there is no 'save' — deleting destroys the file either way). rename/move/copy work " +
-			"on open files as-is.";
+			"on open files as-is. op=upgrade is the one deliberate way to apply the one-way " +
+			"upgrade every other tool refuses: for 'path' (a file, or a folder with 'recursive') " +
+			"it opens each program with the upgrade allowed, saves, and reports per file " +
+			"upgraded / already current / failed; dry_run=true only reports which files would be " +
+			"rewritten. Use it on bulk, uncurated material (a FID library folder) after a " +
+			"language or schema version bump; a hand-curated program is still better upgraded " +
+			"by its owner in the GUI, since the rewrite cannot be undone.";
 	}
 
 	@Override
@@ -67,7 +80,11 @@ public class ManageFilesTool implements ApplicationLevelTool {
 				"new_name", Schemas.stringProp("New leaf name (for op=rename, or optionally op=copy)"),
 				"dest_folder", Schemas.stringProp("Destination folder path (for op=move|copy)"),
 				"recursive", Schemas.boolProp("For op=delete on a folder: also delete everything " +
-					"inside it (default false, which fails on a non-empty folder)"),
+					"inside it (default false, which fails on a non-empty folder). For " +
+					"op=upgrade on a folder: descend into subfolders (default false)"),
+				"dry_run", Schemas.boolProp("For op=upgrade: open each program without " +
+					"upgrading and report which would be rewritten; nothing is saved (default " +
+					"false)"),
 				"on_dirty", Schemas.enumProp("For op=delete on a file open in a tool with unsaved " +
 					"changes: refuse (default) or discard (close it losing the changes, then " +
 					"delete). A clean open file is closed and deleted without this.", ON_DIRTY)),
@@ -108,6 +125,7 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			// Drop our own cached handle so the operation isn't blocked by us.
 			context.release(path);
 			return switch (op) {
+				case "upgrade" -> upgrade(List.of(file), path, Args.boolArg(args, "dry_run", false));
 				case "delete" -> deleteFile(project, file, path, onDirty);
 				case "rename" -> rename(file, Args.stringArg(args, "new_name", null));
 				case "move" -> move(data, file, Args.stringArg(args, "dest_folder", null));
@@ -122,6 +140,11 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			return Results.error("No project file or folder: " + path);
 		}
 		return switch (op) {
+			case "upgrade" -> {
+				List<DomainFile> files = new ArrayList<>();
+				collectFiles(folder, Args.boolArg(args, "recursive", false), files);
+				yield upgrade(files, path, Args.boolArg(args, "dry_run", false));
+			}
 			case "delete" -> deleteFolder(folder, Args.boolArg(args, "recursive", false));
 			case "rename" -> renameFolder(folder, Args.stringArg(args, "new_name", null));
 			case "move" -> moveFolder(data, folder, Args.stringArg(args, "dest_folder", null));
@@ -141,6 +164,144 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		catch (IllegalArgumentException e) {
 			return null;
 		}
+	}
+
+	private static void collectFiles(DomainFolder folder, boolean recursive,
+			List<DomainFile> files) {
+		for (DomainFile file : folder.getFiles()) {
+			files.add(file);
+		}
+		if (!recursive) {
+			return;
+		}
+		for (DomainFolder sub : folder.getFolders()) {
+			collectFiles(sub, true, files);
+		}
+	}
+
+	/** One program's fate under op=upgrade. */
+	private enum Fate {
+		UPGRADED, WOULD_UPGRADE, CURRENT, SKIPPED, FAILED
+	}
+
+	private record Outcome(DomainFile file, Fate fate, String detail) {
+	}
+
+	/**
+	 * The one deliberate upgrade path. Every read tool opens with {@code okToUpgrade=false} so a
+	 * version bump can never rewrite a curated program as a side effect of a lookup; the cost
+	 * was that 594 FID library objects could only be upgraded by closing the shared project and
+	 * running headless. Each file is first opened without upgrading, which is the exact test:
+	 * success means it is current, an upgradable {@link VersionException} means it needs the
+	 * rewrite, anything else is a failure to report, not to guess at.
+	 */
+	private McpSchema.CallToolResult upgrade(List<DomainFile> files, String path, boolean dryRun) {
+		long started = System.currentTimeMillis();
+		List<Outcome> outcomes = new ArrayList<>();
+		for (DomainFile file : files) {
+			outcomes.add(upgradeOne(file, dryRun));
+		}
+		long seconds = (System.currentTimeMillis() - started) / 1000;
+
+		Map<Fate, Long> counts = new EnumMap<>(Fate.class);
+		for (Outcome outcome : outcomes) {
+			counts.merge(outcome.fate(), 1L, Long::sum);
+		}
+		StringBuilder sb = new StringBuilder(dryRun ? "Dry run of upgrade " : "Upgrade ")
+				.append(path).append(": ").append(files.size()).append(" file(s) — ")
+				.append(counts.getOrDefault(Fate.UPGRADED, 0L)).append(" upgraded, ")
+				.append(counts.getOrDefault(Fate.WOULD_UPGRADE, 0L)).append(" would upgrade, ")
+				.append(counts.getOrDefault(Fate.CURRENT, 0L)).append(" already current, ")
+				.append(counts.getOrDefault(Fate.SKIPPED, 0L)).append(" skipped, ")
+				.append(counts.getOrDefault(Fate.FAILED, 0L)).append(" failed  (").append(seconds)
+				.append(" s)");
+		if (dryRun) {
+			sb.append("\nNothing was written.");
+		}
+		// Failures and skips always print in full: they are the lines someone has to act on.
+		// The successes are capped, since on a library folder they are hundreds of identical lines.
+		int shown = 0;
+		int hidden = 0;
+		for (Outcome outcome : outcomes) {
+			boolean mustShow = outcome.fate() == Fate.FAILED || outcome.fate() == Fate.SKIPPED;
+			if (!mustShow && shown >= MAX_UPGRADE_LINES) {
+				hidden++;
+				continue;
+			}
+			sb.append("\n  ").append(outcome.fate().name().toLowerCase().replace('_', ' '))
+					.append(": ").append(outcome.file().getPathname());
+			if (outcome.detail() != null) {
+				sb.append(" — ").append(outcome.detail());
+			}
+			if (!mustShow) {
+				shown++;
+			}
+		}
+		if (hidden > 0) {
+			sb.append("\n  … ").append(hidden).append(" more");
+		}
+		return counts.getOrDefault(Fate.FAILED, 0L) > 0 && counts.size() == 1
+				? Results.error(sb.toString())
+				: Results.ok(sb.toString());
+	}
+
+	private Outcome upgradeOne(DomainFile file, boolean dryRun) {
+		if (!Program.class.isAssignableFrom(file.getDomainObjectClass())) {
+			return new Outcome(file, Fate.SKIPPED, "not a program (" + file.getContentType() + ")");
+		}
+		if (file.isBusy()) {
+			return new Outcome(file, Fate.SKIPPED, "busy: a background task is running on it");
+		}
+		if (file.isReadOnly()) {
+			return new Outcome(file, Fate.SKIPPED, "read-only");
+		}
+		if (file.isVersioned() && !file.isCheckedOut()) {
+			return new Outcome(file, Fate.SKIPPED, "versioned and not checked out");
+		}
+		context.release(file.getPathname());
+		VersionException needed;
+		try {
+			DomainObject current = file.getDomainObject(this, false, false, TaskMonitor.DUMMY);
+			current.release(this);
+			return new Outcome(file, Fate.CURRENT, null);
+		}
+		catch (VersionException e) {
+			needed = e;
+		}
+		catch (Exception e) {
+			return new Outcome(file, Fate.FAILED, "could not open: " + message(e));
+		}
+		String detail = needed.getDetailMessage() != null ? needed.getDetailMessage()
+				: needed.getMessage();
+		if (!needed.isUpgradable()) {
+			return new Outcome(file, Fate.FAILED, "not upgradable: " + detail);
+		}
+		if (dryRun) {
+			return new Outcome(file, Fate.WOULD_UPGRADE, detail);
+		}
+		if (file.isOpen()) {
+			// An open instance is the one every consumer shares; an upgrade needs a fresh open.
+			return new Outcome(file, Fate.SKIPPED, "open in a tool; close it there first (" +
+				describeConsumers(file) + ")");
+		}
+		DomainObject upgraded = null;
+		try {
+			upgraded = file.getDomainObject(this, true, false, TaskMonitor.DUMMY);
+			upgraded.save("Upgrade via MCP manage_files", TaskMonitor.DUMMY);
+			return new Outcome(file, Fate.UPGRADED, detail);
+		}
+		catch (Exception e) {
+			return new Outcome(file, Fate.FAILED, "upgrade raised " + message(e));
+		}
+		finally {
+			if (upgraded != null) {
+				upgraded.release(this);
+			}
+		}
+	}
+
+	private static String message(Exception e) {
+		return e.getClass().getSimpleName() + (e.getMessage() == null ? "" : ": " + e.getMessage());
 	}
 
 	private static McpSchema.CallToolResult deleteFile(Project project, DomainFile file,
