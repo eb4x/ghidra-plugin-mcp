@@ -29,6 +29,26 @@ public final class Results {
 				.isError(Boolean.TRUE.equals(result.isError())).build();
 	}
 
+	/**
+	 * A hint for a substring filter that was probably meant as a regex: {@code "A|B"} as a
+	 * substring matches nothing, and the empty result reads as "the lines are not there"
+	 * rather than "the filter never could match". Empty when the filter has no regex
+	 * metacharacters or regex mode is already on.
+	 */
+	public static String regexHint(String filter, boolean regex) {
+		if (regex || filter == null || !REGEX_METACHARACTERS.matcher(filter).find()) {
+			return "";
+		}
+		return "\nNote: the filter was matched as a literal substring, and '" + filter +
+			"' contains regex syntax; pass regex=true if an alternation, anchor or class " +
+			"was meant.";
+	}
+
+	// Brackets and parentheses are deliberately not metacharacters here: "[BX + 0x36]" and
+	// "disp(reg)" are literal instruction-operand searches that work as substrings.
+	private static final java.util.regex.Pattern REGEX_METACHARACTERS =
+		java.util.regex.Pattern.compile("\\||\\\\[bBdDsSw]|^\\^|\\$$|\\.[*+?]");
+
 	/** Footer line for paginated listings. */
 	public static String paginationFooter(int shown, int offset, int total) {
 		if (total <= shown && offset == 0) {

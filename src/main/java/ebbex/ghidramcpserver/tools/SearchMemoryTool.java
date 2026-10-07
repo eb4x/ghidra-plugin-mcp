@@ -292,7 +292,8 @@ public class SearchMemoryTool implements ProgramTool {
 			return Results.ok("No instructions matching '" + pattern + "'" +
 				(offset > 0 ? " at offset " + offset : "") +
 				"\nNote: only disassembled instructions are searched — bytes not yet " +
-				"disassembled never match; use kind=bytes for those.");
+				"disassembled never match; use kind=bytes for those." +
+				Results.regexHint(pattern, regex));
 		}
 		String footer = more
 				? "\n(" + hits.size() + " matches from offset " + offset +

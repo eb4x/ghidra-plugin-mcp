@@ -120,7 +120,7 @@ public class ReadLogTool implements ApplicationLevelTool {
 		StringBuilder sb = new StringBuilder("Log: ").append(logFile.getAbsolutePath()).append('\n');
 		if (kept.isEmpty()) {
 			return Results.ok(sb.append("(no matching entries in ").append(stats[0])
-					.append(" lines scanned)").toString());
+					.append(" lines scanned)").append(Results.regexHint(filter, regex)).toString());
 		}
 		for (String entry : kept) {
 			sb.append(entry).append('\n');

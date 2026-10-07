@@ -28,6 +28,18 @@ public class ResultsTest {
 	}
 
 	@Test
+	public void regexHintFiresOnlyForLiteralFiltersWithRegexSyntax() {
+		assertTrue(Results.regexHint("Assuming DS|Neutralized", false).contains("regex=true"));
+		assertTrue(Results.regexHint("\\b0x628\\b", false).contains("regex=true"));
+		assertTrue(Results.regexHint("^PUSH", false).contains("regex=true"));
+		assertEquals("", Results.regexHint("Assuming DS|Neutralized", true));
+		assertEquals("", Results.regexHint("Assuming DS", false));
+		assertEquals("operand brackets are literal", "", Results.regexHint("[BX + 0x36]", false));
+		assertEquals("RISC disp(reg) is literal", "", Results.regexHint("0x4a(r6)", false));
+		assertEquals("", Results.regexHint("", false));
+	}
+
+	@Test
 	public void errorResultsAreFlagged() {
 		McpSchema.CallToolResult error = Results.error("boom");
 		assertTrue(Boolean.TRUE.equals(error.isError()));
