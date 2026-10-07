@@ -14,9 +14,17 @@ public final class Schemas {
 		return Map.of("type", "string", "description", description);
 	}
 
-	/** Schema fragment for an integer property with a description. */
+	/**
+	 * Schema fragment for an integer property, accepted as a JSON integer or as a string of
+	 * decimal digits. The string form exists for the same reason as {@link #sizeProp}'s: a
+	 * client still holding a pre-restart schema sends a parameter it has never seen as a
+	 * string, and the server validates arguments against its own schema before the tool
+	 * runs, so a new integer parameter was unusable until every client reconnected. Read with
+	 * {@link Args#intArg}, which parses the string.
+	 */
 	public static Map<String, Object> intProp(String description) {
-		return Map.of("type", "integer", "description", description);
+		return Map.of("type", List.of("integer", "string"), "pattern", "^-?[0-9]+$",
+			"description", description);
 	}
 
 	/**
@@ -34,9 +42,17 @@ public final class Schemas {
 		return Map.of("type", List.of("integer", "string"), "description", description);
 	}
 
-	/** Schema fragment for a boolean property with a description. */
+	/**
+	 * Schema fragment for a boolean property, accepted as a JSON boolean or as the strings
+	 * {@code "true"} / {@code "false"} — nothing else, so a client cannot send {@code "yes"}
+	 * and get silently refused. The string form is for pre-reconnect clients (see
+	 * {@link #intProp}): {@code regex=true} on {@code search_memory} was rejected with
+	 * "string found, boolean expected" the first time madstools used it. Read with
+	 * {@link Args#boolArg}.
+	 */
 	public static Map<String, Object> boolProp(String description) {
-		return Map.of("type", "boolean", "description", description);
+		return Map.of("type", List.of("boolean", "string"),
+			"enum", List.of(true, false, "true", "false"), "description", description);
 	}
 
 	/** Schema fragment for a string enum property. */
