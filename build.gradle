@@ -55,6 +55,7 @@ buildExtension.exclude '.settings/**'
 buildExtension.exclude '.project'
 buildExtension.exclude '.classpath'
 buildExtension.exclude 'docs/**'
+buildExtension.exclude 'CLAUDE.md'
 // Local, machine-specific: the extracted Ghidra install we compile against and
 // the gradle.properties pointing at it. Never ship these in the extension.
 buildExtension.exclude 'ghidra-sdk/**'
