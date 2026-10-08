@@ -52,7 +52,7 @@ public class RenameTool implements ProgramTool {
 			"decompiler renumbers iVar7-style names after every edit, the pc does not move. With " +
 			"'pc', only the merge group defined there is named: a variable the decompiler merged " +
 			"from several roles is split and the new symbol type-locked (Ghidra's Split Out As New " +
-			"Variable). reset=true (kind=function|label|data, no 'new_name') drops " +
+			"Variable), unless split=false names every instance as one. reset=true (kind=function|label|data, no 'new_name') drops " +
 			"the user name and returns to Ghidra's default: a function becomes FUN_<addr> or, " +
 			"for a thunk, shows its target's name again; a label or data symbol is removed, and " +
 			"the dynamic DAT_ label shows while something references the address.";
@@ -75,7 +75,11 @@ public class RenameTool implements ProgramTool {
 				"pc", Schemas.stringProp("kind=local_variable: address of the instruction that " +
 					"defines the variable, instead of 'variable_name'"),
 				"storage", Schemas.stringProp("With 'pc': which definition at that instruction " +
-					"when there are several (a register name such as DX, or Stack[-0x10])")),
+					"when there are several (a register name such as DX, or Stack[-0x10]); at " +
+					"a CALL the call's result is the default"),
+				"split", Schemas.boolProp("With 'pc': split the merge group defined there out " +
+					"of its variable and type-lock it (default true); false names the whole " +
+					"variable, every instance, with no split and no lock")),
 			"required", List.of("kind"));
 	}
 
@@ -150,8 +154,12 @@ public class RenameTool implements ProgramTool {
 		}
 		Function function = Locations.findFunction(program, ref);
 		if (function.getSymbol().getSource() == SourceType.DEFAULT) {
+			Function thunked = function.isThunk() ? function.getThunkedFunction(false) : null;
 			return Results.ok(function.getName() + " @ " + function.getEntryPoint() +
-				" already has its default name");
+				" already has its default name" + (thunked == null ? ""
+						: ": it is a thunk, and a default-named thunk displays its target's " +
+							"name; the name shown belongs to " + thunked.getName() + " @ " +
+							thunked.getEntryPoint() + " (reset or rename that one)"));
 		}
 		return Transactions.modify(program, "Reset function name", () -> {
 			String old = function.getName();
@@ -235,7 +243,7 @@ public class RenameTool implements ProgramTool {
 		Function function = Locations.findFunction(program, functionRef);
 		if (pcArg != null) {
 			return renameByPc(program, function, Locations.parseAddress(program, pcArg),
-				Args.stringArg(args, "storage", null), newName);
+				Args.stringArg(args, "storage", null), newName, Args.boolArg(args, "split", true));
 		}
 
 		// Parameters and simple stack locals exist on the database function directly.
@@ -272,25 +280,40 @@ public class RenameTool implements ProgramTool {
 	 * integer of its size), because an unlocked peel merges straight back.
 	 */
 	private McpSchema.CallToolResult renameByPc(Program program, Function function, Address pc,
-			String storage, String newName) {
+			String storage, String newName, boolean split) {
 		Variables.HighTarget target = Variables.findByPc(decompilers, program, function, pc, storage);
 		return Transactions.modify(program, "Rename variable", () -> {
 			String oldName = target.variable().getName();
 			int group = target.groupSize();
 			int all = target.instanceCount();
+			String where = Variables.storageText(target.high(), program, target.varnode()) +
+				" defined at " + pc + target.pickNote();
+			if (!split) {
+				HighSymbol whole = target.symbol();
+				if (whole == null) {
+					throw new Exception(oldName + " has no symbol to name as a whole; rename " +
+						"with split=true");
+				}
+				refuseIfOverlapping(function, whole.getStorage(), whole.getPCAddress(), null);
+				var before = Variables.snapshot(function);
+				HighFunctionDBUtil.updateDBVariable(whole, newName, null, SourceType.USER_DEFINED);
+				return "Named " + newName + ": " + where + " (all " + all + " instances of " +
+					oldName + ", not split, type not locked" +
+					Variables.otherPcsNote(target, oldName, "including") + ")" +
+					removedNote(function, before);
+			}
 			HighVariable peeled = Variables.split(target);
 			HighSymbol symbol = peeled.getSymbol();
 			DataType type = Variables.lockableType(program, symbol.getDataType());
 			refuseIfOverlapping(function, symbol.getStorage(), symbol.getPCAddress(), null);
 			var before = Variables.snapshot(function);
 			HighFunctionDBUtil.updateDBVariable(symbol, newName, type, SourceType.USER_DEFINED);
-			String where = Variables.storageText(target.high(), program, target.varnode()) +
-				" defined at " + pc;
-			String split = group < all
+			String groups = group < all
 					? "split " + group + " of " + all + " instances of " + oldName +
-						" out as their own variable"
+						" out as their own variable" +
+						Variables.otherPcsNote(target, oldName, "left")
 					: "all " + all + " instances of " + oldName;
-			return "Named " + newName + ": " + where + " (" + split + "; type-locked as " +
+			return "Named " + newName + ": " + where + " (" + groups + "; type-locked as " +
 				type.getName() + ")" + removedNote(function, before);
 		});
 	}

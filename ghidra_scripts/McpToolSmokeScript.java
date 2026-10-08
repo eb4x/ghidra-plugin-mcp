@@ -245,6 +245,16 @@ public class McpToolSmokeScript extends GhidraScript {
 					println("!! set_data_type by pc did not type the definition at " + pc + ": " +
 						text(typed));
 				}
+				// split=false names the whole variable the pc belongs to, with no split.
+				McpSchema.CallToolResult whole = prog("rename", Map.of("kind", "local_variable",
+					"function", "main", "pc", pc, "new_name", "mcp_pc_whole", "split", false),
+					program);
+				if (!text(whole).startsWith("Named mcp_pc_whole: ") ||
+					!text(whole).contains("not split")) {
+					failures++;
+					println("!! rename by pc with split=false did not name the whole variable " +
+						"at " + pc + ": " + text(whole));
+				}
 			}
 			else {
 				println("(no auto-named decompiler symbol with a pc in main; pc handle not " +

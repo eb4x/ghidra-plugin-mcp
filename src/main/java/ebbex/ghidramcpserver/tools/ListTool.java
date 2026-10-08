@@ -315,7 +315,8 @@ public class ListTool implements ProgramTool {
 			// A function object whose entry holds no instruction has no code at all — it looks
 			// resolved to every consumer while being empty. Say so on the line itself.
 			boolean husk = !f.isThunk() && listing.getInstructionAt(f.getEntryPoint()) == null;
-			String tag = husk ? "  <-- HUSK: no code at entry" : textBodyTag(program, f);
+			String tag = husk ? "  <-- HUSK: no code at entry"
+					: f.isThunk() ? thunkTag(f) : textBodyTag(program, f);
 			lines.add(f.getEntryPoint() + "  [" + callers + " callers, " + body + "B]  " +
 				signatureOf(f) + tag);
 		}
@@ -329,6 +330,21 @@ public class ListTool implements ProgramTool {
 	 * make up {@link #TEXT_BODY_RATIO} of the sampled body; tiny bodies are skipped, since a
 	 * handful of instruction bytes can be printable by chance.
 	 */
+	/**
+	 * A default-named thunk prints its target's name, so a gate's OVLSTUB_ name on a 5-byte
+	 * jump reads as the jump's own, and rename reset=true then rightly says there is nothing
+	 * to reset. The line says whose name it is.
+	 */
+	private static String thunkTag(Function f) {
+		Function target = f.getThunkedFunction(false);
+		if (target == null) {
+			return "  thunk";
+		}
+		boolean borrowed = f.getSymbol().getSource() == SourceType.DEFAULT;
+		return "  thunk -> " + target.getEntryPoint() +
+			(borrowed ? " (default name: shows the target's)" : " " + target.getName());
+	}
+
 	private static String textBodyTag(Program program, Function f) {
 		if (f.isThunk()) {
 			return "";

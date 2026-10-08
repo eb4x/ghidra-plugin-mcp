@@ -3,6 +3,7 @@ package ebbex.ghidramcpserver.tools;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,7 @@ import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ebbex.ghidramcpserver.util.Types;
 import ghidra.app.util.cparser.C.CParser;
 import ghidra.program.model.data.Array;
 import ghidra.program.model.data.ArrayDataType;
@@ -24,6 +26,7 @@ import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.EnumDataType;
 import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.data.ParameterDefinition;
 import ghidra.program.model.data.Pointer;
@@ -84,8 +87,10 @@ public class DefineTypesTool implements ProgramTool {
 			"'#pragma pack(1)'. Pointer width follows the program (2 bytes in a 16-bit program): " +
 			"write '__far *' (or 'far *', '__ptr32') for a 4-byte segment:offset pointer in a " +
 			"field, typedef or parameter — the same thing the other tools' type strings spell " +
-			"'T *32'. Each result line gives the type's size; manage_types op=describe prints a " +
-			"full layout.";
+			"'T *32'. An enum is int-sized (2 bytes in a 16-bit program) unless declared with an " +
+			"underlying type, 'enum Err : byte { … }' (any 1–8 byte integer type; " +
+			"__attribute__((packed)) is accepted by Ghidra's parser and ignored). Each result " +
+			"line gives the type's size; manage_types op=describe prints a full layout.";
 	}
 
 	@Override
@@ -109,7 +114,8 @@ public class DefineTypesTool implements ProgramTool {
 		if (source == null || source.isBlank()) {
 			return Results.error("source is required");
 		}
-		FarScan scan = scanFarMarkers(source);
+		EnumSizeScan sized = scanEnumSizes(source, program);
+		FarScan scan = scanFarMarkers(sized.source());
 		DataTypeManager dtm = program.getDataTypeManager();
 
 		// The parse runs inside the transaction: in non-storing mode CParser still fills an
@@ -126,21 +132,28 @@ public class DefineTypesTool implements ProgramTool {
 			List<String> notes = new ArrayList<>();
 			Map<String, DataType> typedefs = new TreeMap<>(parser.getTypes());
 			applyFarMarkers(scan.marks(), parser, typedefs, dtm, notes);
+			applyEnumSizes(sized.sizes(), parser);
 
+			List<DataType> parsed = new ArrayList<>();
+			parsed.addAll(new TreeMap<>(parser.getComposites()).values());
+			parsed.addAll(typedefs.values());
+			parsed.addAll(new TreeMap<>(parser.getEnums()).values());
+			parsed.addAll(new TreeMap<>(parser.getFunctions()).values());
+			// Judged before anything is stored: resolving one struct adds every type it refers
+			// to, and a type this call created must not then read as "already identical".
+			Map<String, DataType> existingBefore = new HashMap<>();
+			for (DataType dt : parsed) {
+				DataType existing = dtm.getDataType(dt.getCategoryPath(), dt.getName());
+				if (existing != null) {
+					existingBefore.put(dt.getPathName(), existing);
+				}
+			}
 			List<String> lines = new ArrayList<>();
 			Set<String> parsedComposites = parser.getComposites().keySet();
 			Set<String> referenced = new HashSet<>();
-			for (DataType dt : new TreeMap<>(parser.getComposites()).values()) {
-				lines.add(store(dtm, dt, placeholdersBefore, parsedComposites, referenced));
-			}
-			for (DataType dt : typedefs.values()) {
-				lines.add(store(dtm, dt, placeholdersBefore, parsedComposites, referenced));
-			}
-			for (DataType dt : new TreeMap<>(parser.getEnums()).values()) {
-				lines.add(store(dtm, dt, placeholdersBefore, parsedComposites, referenced));
-			}
-			for (DataType dt : new TreeMap<>(parser.getFunctions()).values()) {
-				lines.add(store(dtm, dt, placeholdersBefore, parsedComposites, referenced));
+			for (DataType dt : parsed) {
+				lines.add(store(dtm, dt, existingBefore.get(dt.getPathName()), placeholdersBefore,
+					parsedComposites, referenced));
 			}
 			StringBuilder sb = new StringBuilder();
 			if (lines.isEmpty()) {
@@ -164,9 +177,8 @@ public class DefineTypesTool implements ProgramTool {
 	 * Resolve one parsed type into the program and describe what that did to the name:
 	 * new, filled-in placeholder, unchanged, or redefined with the size it had before.
 	 */
-	private static String store(DataTypeManager dtm, DataType dt, Set<String> placeholdersBefore,
-			Set<String> parsedComposites, Set<String> referenced) {
-		DataType existing = dtm.getDataType(dt.getCategoryPath(), dt.getName());
+	private static String store(DataTypeManager dtm, DataType dt, DataType existing,
+			Set<String> placeholdersBefore, Set<String> parsedComposites, Set<String> referenced) {
 		String state;
 		if (existing == null) {
 			state = "new";
@@ -273,6 +285,77 @@ public class DefineTypesTool implements ProgramTool {
 
 	/** The source with the markers blanked out, and where they were. */
 	record FarScan(String source, List<FarMark> marks) {
+	}
+
+	/** {@code enum Name : base {}} with the base clause removed, and each enum's byte size. */
+	record EnumSizeScan(String source, Map<String, Integer> sizes) {
+	}
+
+	/** {@code enum Name : uint8 {}: the C++11/C23 underlying-type clause Ghidra's parser lacks. */
+	private static final Pattern ENUM_BASE =
+		Pattern.compile("\\benum\\s+([A-Za-z_]\\w*)?\\s*:\\s*([A-Za-z_][\\w\\s*]*?)\\s*\\{");
+
+	/**
+	 * Ghidra's C parser sizes every enum to the data organization's int (2 bytes in a 16-bit
+	 * program) or larger, and has no syntax to say otherwise: {@code enum X : uint8} is a parse
+	 * error there and {@code __attribute__((packed))} is accepted and ignored. This reads the
+	 * underlying-type clause off each enum, removes it so the parser sees plain C, and
+	 * remembers the base type's size; {@link #applyEnumSizes} sets it after the parse.
+	 *
+	 * @throws IllegalArgumentException for an anonymous enum with a base clause (nothing to key
+	 *             the size on), or a base type the program cannot resolve
+	 */
+	static EnumSizeScan scanEnumSizes(String source, Program program) {
+		Matcher m = ENUM_BASE.matcher(COMMENTS.matcher(source).replaceAll(" "));
+		Map<String, Integer> sizes = new HashMap<>();
+		StringBuilder out = new StringBuilder();
+		while (m.find()) {
+			String name = m.group(1);
+			String base = m.group(2).trim();
+			if (name == null) {
+				throw new IllegalArgumentException("'enum : " + base +
+					"' needs a tag name to size: write 'enum Name : " + base + " { … }'");
+			}
+			DataType baseType;
+			try {
+				baseType = Types.parse(program, base);
+			}
+			catch (Exception e) {
+				throw new IllegalArgumentException("enum " + name + ": base type '" + base +
+					"' — " + e.getMessage());
+			}
+			if (baseType.getLength() < 1 || baseType.getLength() > 8) {
+				throw new IllegalArgumentException("enum " + name + ": base type '" + base +
+					"' is " + baseType.getLength() + " bytes; an enum is 1 to 8");
+			}
+			sizes.put(name, baseType.getLength());
+			m.appendReplacement(out, Matcher.quoteReplacement("enum " + name + " {"));
+		}
+		m.appendTail(out);
+		return new EnumSizeScan(sizes.isEmpty() ? source : out.toString(), sizes);
+	}
+
+	/**
+	 * Resize the parsed enums to their declared base: the parser hands back
+	 * {@link EnumDataType} instances, whose {@code setLength} refuses a size the values do not
+	 * fit (the message says the minimum).
+	 */
+	private static void applyEnumSizes(Map<String, Integer> sizes, CParser parser)
+			throws Exception {
+		for (Map.Entry<String, Integer> entry : sizes.entrySet()) {
+			DataType dt = parser.getEnums().get(entry.getKey());
+			if (!(dt instanceof EnumDataType e)) {
+				throw new Exception("enum " + entry.getKey() + " was declared with a base type " +
+					"but the parser produced no enum of that name");
+			}
+			try {
+				e.setLength(entry.getValue());
+			}
+			catch (IllegalArgumentException ex) {
+				throw new Exception("enum " + entry.getKey() + " cannot be " + entry.getValue() +
+					" byte(s): its values need at least " + e.getMinimumPossibleLength());
+			}
+		}
 	}
 
 	/**

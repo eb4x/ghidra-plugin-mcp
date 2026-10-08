@@ -75,7 +75,11 @@ public class DecompileTool implements ProgramTool {
 			"prototype just omits the register args (where they belong among the declared ones " +
 			"is unknown), while a WRONG committed prototype mis-binds declared params to the " +
 			"wrong storage — plausible values read from the wrong place. Either way, cross-check " +
-			"with disassemble. Sweep a whole program for these with list kind=undeclared_inputs.";
+			"with disassemble. Sweep a whole program for these with list kind=undeclared_inputs. " +
+			"An input only shows where something consumes it: a register saved at entry and " +
+			"reloaded only to feed a callee whose prototype omits that register is dead code to " +
+			"the decompiler and goes unreported, so commit callees' register parameters first " +
+			"(bottom-up) and re-check the callers afterwards.";
 	}
 
 	@Override

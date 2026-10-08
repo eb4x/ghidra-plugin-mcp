@@ -24,6 +24,7 @@ import ghidra.program.model.pcode.HighParam;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.pcode.HighVariable;
 import ghidra.program.model.pcode.PcodeException;
+import ghidra.program.model.pcode.PcodeOp;
 import ghidra.program.model.pcode.Varnode;
 import ghidra.program.model.pcode.VarnodeAST;
 
@@ -74,11 +75,33 @@ public final class Variables {
 		return high.getLocalSymbolMap().getNameToSymbolMap().get(name);
 	}
 
-	/** A decompiler variable picked by the varnode defined at one instruction. */
-	public record HighTarget(HighFunction high, HighVariable variable, Varnode varnode) {
+	/**
+	 * A decompiler variable picked by the varnode defined at one instruction. {@code pickNote}
+	 * is empty, or says how the pick was defaulted when the caller gave no storage.
+	 */
+	public record HighTarget(HighFunction high, HighVariable variable, Varnode varnode,
+			String pickNote) {
 
 		public HighSymbol symbol() {
 			return variable.getSymbol();
+		}
+
+		/**
+		 * Where the variable's <em>other</em> merge groups are defined — the instances a split
+		 * leaves behind, or that a whole-group edit carries along — as distinct, sorted pcs.
+		 */
+		public List<Address> otherPcs() {
+			List<Address> pcs = new ArrayList<>();
+			for (Varnode instance : variable.getInstances()) {
+				Address at = instance.getPCAddress();
+				if (instance.getMergeGroup() == varnode.getMergeGroup() || at == null ||
+					at == Address.NO_ADDRESS || pcs.contains(at)) {
+					continue;
+				}
+				pcs.add(at);
+			}
+			pcs.sort(null);
+			return pcs;
 		}
 
 		/** How many of the variable's instances share the picked varnode's merge group. */
@@ -148,10 +171,23 @@ public final class Variables {
 			if (isUnnamed && storage == null && !named.isEmpty()) {
 				continue;
 			}
-			candidates.putIfAbsent(key, new HighTarget(high, owner, vn));
+			candidates.putIfAbsent(key, new HighTarget(high, owner, vn, ""));
 		}
 		if (candidates.size() == 1) {
 			return candidates.values().iterator().next();
+		}
+		// A call defines its result and, through INDIRECT ops, every frame slot it may
+		// clobber. Pointed at the call with no storage, the caller means the result.
+		if (storage == null && candidates.size() > 1) {
+			List<HighTarget> results = candidates.values().stream()
+					.filter(t -> isCallOutput(t.varnode()))
+					.toList();
+			if (results.size() == 1) {
+				HighTarget result = results.get(0);
+				return new HighTarget(result.high(), result.variable(), result.varnode(),
+					" — the call's result, picked over " + (candidates.size() - 1) +
+						" frame slot(s) the call may clobber; 'storage' picks one of those");
+			}
 		}
 		List<String> listed = named.isEmpty() ? unnamed : named;
 		if (candidates.isEmpty()) {
@@ -166,6 +202,25 @@ public final class Variables {
 		throw new IllegalArgumentException(candidates.size() + " variables are defined at " + pc +
 			"; add 'storage' to pick one (spelled as listed, or DX:AX for a pair): " +
 			String.join(", ", candidates.keySet()));
+	}
+
+	/** True when the varnode is what a CALL or CALLIND produces, not an INDIRECT side effect. */
+	private static boolean isCallOutput(Varnode vn) {
+		PcodeOp def = vn.getDef();
+		return def != null &&
+			(def.getOpcode() == PcodeOp.CALL || def.getOpcode() == PcodeOp.CALLIND);
+	}
+
+	/** "; other instances of iVar3 defined at 1000:0a12, 1000:0a40" (capped), or "". */
+	public static String otherPcsNote(HighTarget target, String name, String verb) {
+		List<Address> pcs = target.otherPcs();
+		if (pcs.isEmpty()) {
+			return "";
+		}
+		int cap = 8;
+		List<String> shown = pcs.stream().limit(cap).map(Address::toString).toList();
+		return "; " + verb + " " + pcs.size() + " other instance(s) of " + name + " defined at " +
+			String.join(", ", shown) + (pcs.size() > cap ? ", …" : "");
 	}
 
 	/**

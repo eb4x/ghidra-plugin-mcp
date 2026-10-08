@@ -10,6 +10,7 @@ import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ebbex.ghidramcpserver.util.Types;
 import ghidra.program.model.data.Composite;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
@@ -20,8 +21,6 @@ import ghidra.program.model.data.TypeDef;
 import ghidra.program.model.data.Undefined;
 import ghidra.program.model.data.Union;
 import ghidra.program.model.listing.Program;
-import ghidra.util.data.DataTypeParser;
-import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /**
@@ -274,8 +273,7 @@ public class ManageTypesTool implements ProgramTool {
 		}
 		DataType fieldType;
 		try {
-			DataTypeManager dtm = program.getDataTypeManager();
-			fieldType = new DataTypeParser(dtm, dtm, null, AllowedDataTypes.ALL).parse(typeString);
+			fieldType = Types.parse(program, typeString);
 		}
 		catch (Exception e) {
 			return Results.error("Could not parse type '" + typeString + "': " + e.getMessage());

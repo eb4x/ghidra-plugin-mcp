@@ -11,6 +11,7 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ebbex.ghidramcpserver.util.Types;
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.cmd.function.FunctionRenameOption;
 import ghidra.app.decompiler.DecompileResults;
@@ -33,8 +34,6 @@ import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighFunctionDBUtil.ReturnCommitOption;
 import ghidra.program.model.symbol.SourceType;
-import ghidra.util.data.DataTypeParser;
-import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 import ghidra.util.exception.InvalidInputException;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -310,8 +309,7 @@ public class SetFunctionSignatureTool implements ProgramTool {
 	}
 
 	private static DataType parseType(Program program, String typeString) throws Exception {
-		DataTypeManager dtm = program.getDataTypeManager();
-		return new DataTypeParser(dtm, dtm, null, AllowedDataTypes.ALL).parse(typeString);
+		return Types.parse(program, typeString);
 	}
 
 	private McpSchema.CallToolResult applyPrototype(Program program, Function function,

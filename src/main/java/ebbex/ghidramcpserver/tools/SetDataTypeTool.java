@@ -13,6 +13,7 @@ import ebbex.ghidramcpserver.util.Locations;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ebbex.ghidramcpserver.util.Transactions;
+import ebbex.ghidramcpserver.util.Types;
 import ebbex.ghidramcpserver.util.Variables;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
@@ -40,8 +41,6 @@ import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.pcode.HighVariable;
 import ghidra.program.model.symbol.SourceType;
-import ghidra.util.data.DataTypeParser;
-import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 import ghidra.util.task.TaskMonitor;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -107,7 +106,11 @@ public class SetDataTypeTool implements ProgramTool {
 			"prints it as pc=); only the merge group defined there is typed, splitting it out of " +
 			"a merged variable"));
 		properties.put("storage", Schemas.stringProp("With 'pc': which definition at that " +
-			"instruction when there are several (a register name such as DX, or Stack[-0x10])"));
+			"instruction when there are several (a register name such as DX, or Stack[-0x10]); " +
+			"at a CALL the call's result is the default"));
+		properties.put("split", Schemas.boolProp("With 'pc': split the merge group defined " +
+			"there out of its variable before typing it (default true); false types the whole " +
+			"variable, every instance"));
 		properties.put("struct", structSchema());
 		properties.put("follow_calls",
 			Schemas.boolProp("kind=struct inferred: recurse into called functions (default true)"));
@@ -173,7 +176,13 @@ public class SetDataTypeTool implements ProgramTool {
 			}
 			return Results.error("type is required");
 		}
-		DataType dataType = parseType(program, typeString);
+		DataType dataType;
+		try {
+			dataType = parseType(program, typeString);
+		}
+		catch (Exception e) {
+			return Results.error("Could not parse type '" + typeString + "': " + e.getMessage());
+		}
 		if (dataType == null) {
 			return Results.error("Unknown data type: " + typeString);
 		}
@@ -260,7 +269,8 @@ public class SetDataTypeTool implements ProgramTool {
 		String pcArg = Args.stringArg(args, "pc", null);
 		if (pcArg != null) {
 			return applyByPc(program, function, Locations.parseAddress(program, pcArg),
-				Args.stringArg(args, "storage", null), dataType, replaceOverlapping);
+				Args.stringArg(args, "storage", null), dataType, replaceOverlapping,
+				Args.boolArg(args, "split", true));
 		}
 		VarTarget target = resolveVariable(program, function, variableName);
 		if (target == null) {
@@ -314,14 +324,17 @@ public class SetDataTypeTool implements ProgramTool {
 	 * the role the caller pointed at rather than on whichever varnode is the representative.
 	 */
 	private McpSchema.CallToolResult applyByPc(Program program, Function function, Address pc,
-			String storage, DataType dataType, boolean replaceOverlapping) {
+			String storage, DataType dataType, boolean replaceOverlapping, boolean split) {
 		Variables.HighTarget target = Variables.findByPc(decompilers, program, function, pc, storage);
 		return Transactions.modify(program, "Set variable type", () -> {
 			String oldName = target.variable().getName();
 			int group = target.groupSize();
 			int all = target.instanceCount();
-			HighVariable peeled = Variables.split(target);
-			HighSymbol symbol = peeled.getSymbol();
+			HighSymbol symbol = split ? Variables.split(target).getSymbol() : target.symbol();
+			if (symbol == null) {
+				throw new Exception(oldName + " has no symbol to type as a whole; retype with " +
+					"split=true");
+			}
 			VariableStorage resized = symbol.getStorage();
 			try {
 				resized = VariableUtilities.resizeStorage(symbol.getStorage(), dataType, true,
@@ -350,13 +363,17 @@ public class SetDataTypeTool implements ProgramTool {
 			Map<Long, String> before = Variables.snapshot(function);
 			HighFunctionDBUtil.updateDBVariable(symbol, null, dataType, SourceType.USER_DEFINED);
 			String where = Variables.storageText(target.high(), program, target.varnode()) +
-				" defined at " + pc;
-			String split = group < all
-					? "split " + group + " of " + all + " instances of " + oldName +
-						" out as their own variable"
-					: "all " + all + " instances of " + oldName;
+				" defined at " + pc + target.pickNote();
+			String groups = !split
+					? "all " + all + " instances of " + oldName + ", not split" +
+						Variables.otherPcsNote(target, oldName, "including")
+					: group < all
+							? "split " + group + " of " + all + " instances of " + oldName +
+								" out as their own variable" +
+								Variables.otherPcsNote(target, oldName, "left")
+							: "all " + all + " instances of " + oldName;
 			return "Set type " + dataType.getName() + " (" + dataType.getLength() + " bytes) on " +
-				where + " (" + split + ")" + removed + autoNameNote(symbol, symbol.getName()) +
+				where + " (" + groups + ")" + removed + autoNameNote(symbol, symbol.getName()) +
 				removedNote(function, before);
 		});
 	}
@@ -624,9 +641,7 @@ public class SetDataTypeTool implements ProgramTool {
 	}
 
 	private static DataType parseType(Program program, String typeString) throws Exception {
-		DataTypeManager dtm = program.getDataTypeManager();
-		DataTypeParser parser = new DataTypeParser(dtm, dtm, null, AllowedDataTypes.ALL);
-		return parser.parse(typeString);
+		return Types.parse(program, typeString);
 	}
 
 	/** A variable to retype, resolved off the EDT: a DB variable or a decompiler symbol. */

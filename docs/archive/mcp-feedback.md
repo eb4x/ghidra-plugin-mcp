@@ -2046,3 +2046,47 @@ _Verification record for the five entries above._
   when nothing named is. Recorded trade-off (decompiler-side): a type lock on a DX:AX call
   result also covers the argument built in DX:AX before the call, so a pointer type propagates
   into that argument's halves.
+
+## 2026-10-08 — RESOLVED (0.28.0) — NEBULAR.EXE room_picture_load cleanup: no 1-byte enum, uint8 unrecognized, 13 candidates at a CALL pc, a pc rename splits a role that should stay whole, "already identical" for a type the call made, a thunk's borrowed name — madstools (friction log 4)
+- **Enum size (item 2):** Ghidra's C parser sizes every enum to the data organization's int (2
+  bytes in a 16-bit program) or whatever the values need; `enum X : uint8 {}` is a parse error
+  there and `__attribute__((packed))` is parsed and dropped (`CParser.allocateEnumDT`, with a
+  TODO to that effect). `define_types` now reads the C++11/C23 underlying-type clause itself —
+  `enum Err : byte { … }`, any 1–8 byte integer type — strips it before the parse and applies
+  the size with `EnumDataType.setLength` afterwards; a clause the values do not fit is refused
+  with the minimum.
+- **`uint8` (item 3):** Ghidra has `uint16`/`uint32`/`uint64` built-ins but no `uint8`; the
+  1-byte integers are `byte` and `sbyte`, and `uint8_t` exists only as a typedef in the C
+  library archives. One `util/Types.parse` serves every tool that takes a type string, and its
+  refusal names the width's Ghidra spellings when the text is a `u?intN` / `_t` form. **The
+  char-literal claim is not what the source says:** `byte` reaches the decompiler as metatype
+  `uint` with no char flag, and `PrintC::pushConstant` prints a char literal only for a
+  char-flagged type (`char`, `uchar`, `schar`) or a symbol with a forced char display format;
+  a `byte` 8 prints as `8`. Reported back to madstools for a re-check of what the variable was
+  actually typed.
+- **CALL pc default (item 4):** a call defines its result and, through INDIRECT ops, every frame
+  slot it may clobber, which is where the 13 candidates came from. With no `storage`, the
+  candidate whose varnode is the CALL/CALLIND output is picked and the message says so
+  (`— the call's result, picked over 12 frame slot(s) …; 'storage' picks one of those`).
+- **Whole-group naming (item 5):** `rename` / `set_data_type` `pc=` take `split=false`: the
+  whole variable the pc belongs to is named or typed, every instance, with no split and (for
+  rename) no type lock. Either way the message lists where the other merge groups are defined
+  (`left N other instance(s) of iVar3 defined at …` after a split, `including …` without), so
+  the choice can be checked before the next decompile.
+- **"unchanged (already identical)" (item 8):** storing the first struct resolves every type it
+  refers to into the program, so a struct the same call defined later was judged against its
+  own copy. New-vs-unchanged is now decided for every parsed type before anything is stored.
+- **Thunk with a borrowed name (item 9):** a default-named thunk displays its target's name
+  (`FunctionSymbol.doGetName`), so `OVLSTUB_65_00DA` on the 5-byte jump at OVERLAY_65::02d709
+  was the gate's name, not the jump's, and `reset=true` was right that there was nothing to
+  reset. `list kind=functions` now tags a thunk with its target and says when the name is the
+  target's; the reset message names the function the name belongs to.
+- **Missing UNDECLARED INPUTS (item 7) — reproduced, not a defect, an ordering trap.** On a
+  scratch copy of NEBULAR.EXE with `variant [DX]` dropped from `room_picture_load`, the header
+  did report `in_DX (DX:2)`. Dropping the `AX` parameter from the callee `room_depth_load` as
+  well made it vanish: the reload of the save slot then feeds nothing, the decompiler
+  eliminates the PUSH/reload as dead code, and the input no longer exists to report. An
+  undeclared input only shows where something consumes it, so callees' register parameters go
+  first (bottom-up) and callers get re-checked afterwards; the decompile description now says
+  so. Nothing for `ghidra-core`.
+- **Item 6** (the "should be unmapped" warning on a locked write-only local): noted, no action.

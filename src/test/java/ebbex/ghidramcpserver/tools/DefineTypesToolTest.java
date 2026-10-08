@@ -43,6 +43,37 @@ public class DefineTypesToolTest extends RealModeProgramTest {
 		assertTrue(out, out.contains("typedef ColorListFar = ColorList *32  4 bytes  new"));
 	}
 
+	/**
+	 * Storing the first struct resolves every type it refers to into the program, so a struct
+	 * the same call defines later must still read as new, not as "already identical".
+	 */
+	@Test
+	public void aStructPulledInByAnEarlierOneIsStillNew() throws Exception {
+		String out = ok(defineTypes, Map.of("source",
+			"struct Alpha { struct Beta *p; };\nstruct Beta { int x; };"));
+		assertTrue(out, out.contains("struct Alpha  2 bytes, pack()  new") ||
+			out.matches("(?s).*struct Alpha  [^\\n]*  new\\n.*"));
+		assertTrue(out, out.matches("(?s).*struct Beta  [^\\n]*  new.*"));
+		assertTrue(out, !out.contains("already identical"));
+	}
+
+	@Test
+	public void enumUnderlyingTypeSetsItsSize() throws Exception {
+		String out = ok(defineTypes, Map.of("source",
+			"enum Err : char { E_OPEN = 1, E_READ = 2 };\nenum Wide { W_A = 0x12345 };"));
+		List<DataType> found = new ArrayList<>();
+		program.getDataTypeManager().findDataTypes("Err", found);
+		assertEquals(1, found.size());
+		assertEquals("declared 1 byte", 1, found.get(0).getLength());
+		found.clear();
+		program.getDataTypeManager().findDataTypes("Wide", found);
+		assertEquals("no clause: the value needs 4", 4, found.get(0).getLength());
+		assertTrue(out, out.contains("enum Err  1 byte"));
+
+		String refused = error(defineTypes, Map.of("source", "enum Big : char { B = 300 };"));
+		assertTrue(refused, refused.contains("cannot be 1 byte(s): its values need at least 2"));
+	}
+
 	@Test
 	public void farMarkersWidenOnlyTheNamedPointers() throws Exception {
 		ok(defineTypes, Map.of("source", "struct Hdr { int a; };"));

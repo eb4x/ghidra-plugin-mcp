@@ -347,3 +347,7 @@ _Fixed in 0.20.3, built and smoke-tested, but **not deployed**: :8765 still serv
 - **Workaround:** comments talk about the expression (`translate + 0xfc`) rather than the
   variable holding it. A convention note for now; a fix would be naming support for merged
   variables.
+- **Partly met (0.28.0):** `rename kind=local_variable pc=<defining instruction> split=false`
+  names a merged variable whole, every instance, without a split or a lock, so a comment can
+  name a stable user name instead of `iVar10`. Still open: the comment itself cannot follow a
+  variable; it stays prose.
