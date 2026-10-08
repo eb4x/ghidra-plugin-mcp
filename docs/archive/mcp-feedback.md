@@ -2058,12 +2058,21 @@ _Verification record for the five entries above._
 - **`uint8` (item 3):** Ghidra has `uint16`/`uint32`/`uint64` built-ins but no `uint8`; the
   1-byte integers are `byte` and `sbyte`, and `uint8_t` exists only as a typedef in the C
   library archives. One `util/Types.parse` serves every tool that takes a type string, and its
-  refusal names the width's Ghidra spellings when the text is a `u?intN` / `_t` form. **The
-  char-literal claim is not what the source says:** `byte` reaches the decompiler as metatype
-  `uint` with no char flag, and `PrintC::pushConstant` prints a char literal only for a
-  char-flagged type (`char`, `uchar`, `schar`) or a symbol with a forced char display format;
-  a `byte` 8 prints as `8`. Reported back to madstools for a re-check of what the variable was
-  actually typed.
+  refusal names the width's Ghidra spellings when the text is a `u?intN` / `_t` form.
+  **The char-literal claim was right, and my rebuttal was wrong about what `byte` was.**
+  The built-in `byte` does reach the decompiler as metatype `uint` with no char flag, and
+  `PrintC::pushConstant` prints a char literal only for a char-flagged type or a forced char
+  display format — but NEBULAR.EXE carries its own `typedef /byte = uchar` (a header's
+  `typedef unsigned char byte`), and the parser resolves a program type before a built-in, so
+  every `byte` in that program is `uchar` and `room_load_error = '\b'` is exactly what the
+  typedef asks for. madstools re-checked on 0.28.0 (`set_data_type type=byte` → `'\x02'` …
+  `'\n'`, `sbyte` → numbers); reproduced on `/scratch-mcp-byte/NEBULAR.EXE` and
+  `manage_types op=describe name=byte` showed the typedef. **Fixed (0.28.1):** `set_data_type`
+  reports the resolved type through its typedef (`Applied byte (1 bytes, typedef of uchar)`)
+  and, when a program type shadows a built-in name, says so and whether it is a char type;
+  `define_types` warns on the line that creates such a typedef. On that program `byte` can be
+  rescued with `manage_types op=rename name=byte new_name=u8` (or `op=delete`), after which
+  `byte` means the built-in again.
 - **CALL pc default (item 4):** a call defines its result and, through INDIRECT ops, every frame
   slot it may clobber, which is where the 13 candidates came from. With no `storage`, the
   candidate whose varnode is the CALL/CALLIND output is picked and the message says so

@@ -8,6 +8,7 @@ import java.util.Map;
 import org.junit.Test;
 
 import ebbex.ghidramcpserver.RealModeProgramTest;
+import ebbex.ghidramcpserver.tools.DefineTypesTool;
 import ebbex.ghidramcpserver.tools.SetDataTypeTool;
 
 /**
@@ -34,5 +35,33 @@ public class TypesTest extends RealModeProgramTest {
 			"address", "1000:0000", "type", "uint8"));
 		assertTrue(refused, refused.contains("no built-in 'uint8'"));
 		assertTrue(refused, refused.contains("char, uchar and schar"));
+	}
+
+	/**
+	 * A header's {@code typedef unsigned char byte} shadows the built-in: from then on every
+	 * {@code byte} in a type string is a char type and the decompiler prints its values as
+	 * character literals. Both the definition and each application have to say so.
+	 */
+	@Test
+	public void aProgramTypedefShadowingABuiltinIsCalledOut() throws Exception {
+		String defined = ok(new DefineTypesTool(), Map.of("source", "typedef unsigned char byte;"));
+		assertTrue(defined, defined.contains("typedef byte = uchar  1 byte  new — shadows Ghidra's " +
+			"built-in byte: 'byte' in a type string means the program's own /byte = uchar, a char " +
+			"type: the decompiler prints its values as character literals"));
+
+		String applied = ok(new SetDataTypeTool(new Decompilers(1)), Map.of("kind", "data",
+			"address", "1000:0000", "type", "byte"));
+		assertTrue(applied, applied.startsWith("Applied byte (1 bytes, typedef of uchar) — shadows " +
+			"Ghidra's built-in byte:"));
+		assertTrue(applied, applied.contains("character literals @ 1000:0000 = "));
+
+		String array = ok(new SetDataTypeTool(new Decompilers(1)), Map.of("kind", "data",
+			"address", "1000:0010", "type", "byte[4]"));
+		assertTrue("the element type is what is judged: " + array,
+			array.contains("byte[4] (4 bytes) — shadows Ghidra's built-in byte"));
+
+		String plain = ok(new SetDataTypeTool(new Decompilers(1)), Map.of("kind", "data",
+			"address", "1000:0020", "type", "short"));
+		assertTrue(plain, plain.startsWith("Applied short (2 bytes) @ 1000:0020"));
 	}
 }

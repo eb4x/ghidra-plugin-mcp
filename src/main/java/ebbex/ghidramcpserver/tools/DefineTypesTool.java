@@ -90,7 +90,10 @@ public class DefineTypesTool implements ProgramTool {
 			"'T *32'. An enum is int-sized (2 bytes in a 16-bit program) unless declared with an " +
 			"underlying type, 'enum Err : byte { … }' (any 1–8 byte integer type; " +
 			"__attribute__((packed)) is accepted by Ghidra's parser and ignored). Each result " +
-			"line gives the type's size; manage_types op=describe prints a full layout.";
+			"line gives the type's size; manage_types op=describe prints a full layout. A typedef " +
+			"named like a built-in ('typedef unsigned char byte') shadows it in every later type " +
+			"string, and the result line warns so: 'byte' is then a char type and the decompiler " +
+			"prints its values as character literals.";
 	}
 
 	@Override
@@ -196,7 +199,7 @@ public class DefineTypesTool implements ProgramTool {
 		if (stored instanceof Composite composite) {
 			collectReferenced(composite, parsedComposites, referenced);
 		}
-		return describe(stored) + "  " + state;
+		return describe(stored) + "  " + state + Types.shadowNote(stored);
 	}
 
 	/** {@code struct RoomArt  1576 bytes (0x628), pack(1)}; typedefs and enums in their own shape. */

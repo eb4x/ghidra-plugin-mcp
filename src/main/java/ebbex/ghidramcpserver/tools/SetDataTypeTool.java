@@ -206,9 +206,8 @@ public class SetDataTypeTool implements ProgramTool {
 		return Transactions.modify(program, "Set data type", () -> {
 			Data data = DataUtilities.createData(program, address, dataType, -1,
 				ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
-			return "Applied " + dataType.getName() + " (" + data.getLength() + " bytes) @ " +
-				address + " = " + data.getDefaultValueRepresentation() +
-				applyMutability(data, mutability);
+			return "Applied " + Types.describe(dataType) + " @ " + address + " = " +
+				data.getDefaultValueRepresentation() + applyMutability(data, mutability);
 		});
 	}
 
@@ -226,7 +225,7 @@ public class SetDataTypeTool implements ProgramTool {
 				"give 'type' as well to define it first.");
 		}
 		return Transactions.modify(program, "Set data mutability",
-			() -> data.getDataType().getName() + " (" + data.getLength() + " bytes) @ " + address +
+			() -> Types.describe(data.getDataType()) + " @ " + address +
 				applyMutability(data, mutability));
 	}
 
@@ -252,8 +251,7 @@ public class SetDataTypeTool implements ProgramTool {
 		Function function = Locations.findFunction(program, functionRef);
 		return Transactions.modify(program, "Set return type", () -> {
 			function.setReturnType(dataType, SourceType.USER_DEFINED);
-			return "Set return type of " + function.getName() + " to " + dataType.getName() +
-				" (" + dataType.getLength() + " bytes)";
+			return "Set return type of " + function.getName() + " to " + Types.describe(dataType);
 		});
 	}
 
@@ -312,8 +310,8 @@ public class SetDataTypeTool implements ProgramTool {
 					"replace_overlapping=true to remove them and apply the type; then name the " +
 					"fields with manage_types op=rename_field.");
 			}
-			return "Set type of " + variableName + " to " + dataType.getName() + " (" +
-				dataType.getLength() + " bytes) in " + function.getName() + removed +
+			return "Set type of " + variableName + " to " + Types.describe(dataType) + " in " +
+				function.getName() + removed +
 				autoNameNote(target.highSymbol(), variableName) + removedNote(function, before);
 		});
 	}
@@ -372,8 +370,8 @@ public class SetDataTypeTool implements ProgramTool {
 								" out as their own variable" +
 								Variables.otherPcsNote(target, oldName, "left")
 							: "all " + all + " instances of " + oldName;
-			return "Set type " + dataType.getName() + " (" + dataType.getLength() + " bytes) on " +
-				where + " (" + groups + ")" + removed + autoNameNote(symbol, symbol.getName()) +
+			return "Set type " + Types.describe(dataType) + " on " + where + " (" + groups + ")" +
+				removed + autoNameNote(symbol, symbol.getName()) +
 				removedNote(function, before);
 		});
 	}
