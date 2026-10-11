@@ -8,6 +8,9 @@ import java.util.stream.Collectors;
 
 import ghidra.app.util.NamespaceUtils;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressRange;
+import ghidra.program.model.address.AddressSet;
+import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.address.SegmentedAddress;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
@@ -28,6 +31,31 @@ import ghidra.program.model.symbol.SymbolType;
  * consulted by name (indexed); a bare-hex string is tried as an address last.
  */
 public final class Locations {
+
+	/**
+	 * The memory between two optional bounds as an address set, clipped block by block, so a
+	 * single bound never pairs the resident space's start with the last overlay's end (an
+	 * {@code AddressSet(from, to)} across spaces is refused). Addresses order by space, then
+	 * offset, so a bound in one space clips only that space's blocks.
+	 */
+	public static AddressSetView scope(Program program, Address from, Address to) {
+		AddressSet set = new AddressSet();
+		for (AddressRange range : program.getMemory().getAddressRanges()) {
+			Address low = range.getMinAddress();
+			Address high = range.getMaxAddress();
+			if ((to != null && low.compareTo(to) > 0) || (from != null && high.compareTo(from) < 0)) {
+				continue;
+			}
+			if (from != null && low.compareTo(from) < 0) {
+				low = from;
+			}
+			if (to != null && high.compareTo(to) > 0) {
+				high = to;
+			}
+			set.add(low, high);
+		}
+		return set;
+	}
 
 	/**
 	 * A decompiler-synthesized global name for an unnamed memory location: a short type

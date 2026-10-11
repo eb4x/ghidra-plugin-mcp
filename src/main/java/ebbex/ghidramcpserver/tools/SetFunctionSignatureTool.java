@@ -75,7 +75,11 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			"be set on its own); this pins custom storage exactly (a C signature can't). Referenced " +
 			"types must already exist — define them first with define_types. 'noreturn' (true/false) " +
 			"sets or clears the no-return flag, alongside any mode above; given with nothing else it " +
-			"changes only the flag and leaves the prototype alone.";
+			"changes only the flag and leaves the prototype alone. 'call_fixup' installs a compiler-" +
+			"spec call fixup on the function (or \"\" clears it) the way a fresh analysis would, " +
+			"without re-running the Call-Fixup Installer over an analyzed program; an unknown name " +
+			"lists the names this spec defines, which also tells whether the running Ghidra loaded " +
+			"a new spec.";
 	}
 
 	@Override
@@ -112,7 +116,12 @@ public class SetFunctionSignatureTool implements ProgramTool {
 							"Register (AX), pair (DX:AX), or stack slot"))),
 				"noreturn", Schemas.boolProp(
 					"Set (true) or clear (false) the no-return flag; the decompiler then treats " +
-					"calls to the function as not returning. Alone, it changes only the flag")),
+					"calls to the function as not returning. Alone, it changes only the flag"),
+				"call_fixup", Schemas.stringProp(
+					"Call fixup to install on the function: a name the compiler spec's injection " +
+					"library defines (e.g. chkstk16far for MSC's far _chkstk stack probe), so the " +
+					"decompiler replaces every call to it with the fixup's p-code; \"\" clears it. " +
+					"An unknown name is refused with the valid names. Alone, it changes only the fixup")),
 			"required", List.of("function"));
 	}
 
@@ -142,18 +151,69 @@ public class SetFunctionSignatureTool implements ProgramTool {
 			return Results.error(
 				"provide either a C 'signature' or structured 'parameters'/'return', not both");
 		}
+		String callFixup = Args.stringArg(args, "call_fixup", null);
+		if (callFixup != null) {
+			String refusal = unknownCallFixup(program, callFixup);
+			if (refusal != null) {
+				return Results.error(refusal);
+			}
+			boolean fixupOnly = !hasParameters && !hasReturn && !hasSignature && noReturn == null &&
+				callingConvention == null;
+			if (fixupOnly) {
+				return Transactions.modify(program, "Set call fixup",
+					() -> function.getName() + applyCallFixup(function, callFixup));
+			}
+		}
+		McpSchema.CallToolResult result;
 		if (hasParameters || hasReturn) {
-			return applyCustomStorage(program, function, parametersObj, returnObj, callingConvention,
-				noReturn);
+			result = applyCustomStorage(program, function, parametersObj, returnObj,
+				callingConvention, noReturn);
 		}
-		if (hasSignature) {
-			return applyPrototype(program, function, signature, callingConvention, noReturn);
+		else if (hasSignature) {
+			result = applyPrototype(program, function, signature, callingConvention, noReturn);
 		}
-		if (noReturn != null && callingConvention == null) {
-			return Transactions.modify(program, "Set no-return",
+		else if (noReturn != null && callingConvention == null) {
+			result = Transactions.modify(program, "Set no-return",
 				() -> function.getName() + applyNoReturn(function, noReturn));
 		}
-		return commitInferred(program, function, callingConvention, noReturn);
+		else {
+			result = commitInferred(program, function, callingConvention, noReturn);
+		}
+		if (callFixup == null || Results.isError(result)) {
+			return result;
+		}
+		// The fixup rides in its own transaction after the prototype: the commands above rebuild
+		// the function's signature and must not be able to drop it on the way.
+		McpSchema.CallToolResult fixup = Transactions.modify(program, "Set call fixup",
+			() -> applyCallFixup(function, callFixup).strip());
+		return Results.appendNote(result, Results.isError(fixup)
+				? "call fixup NOT set: " + Results.text(fixup)
+				: Results.text(fixup));
+	}
+
+	/**
+	 * Why {@code name} cannot be installed as a call fixup, or null when it can: the compiler
+	 * spec's injection library knows exactly the fixups its {@code <callfixup>} entries declare,
+	 * and the refusal lists them so the caller can also see whether a newly added fixup is in the
+	 * spec the running Ghidra loaded.
+	 */
+	private static String unknownCallFixup(Program program, String name) {
+		if (name.isEmpty()) {
+			return null;
+		}
+		String[] names = program.getCompilerSpec().getPcodeInjectLibrary().getCallFixupNames();
+		if (List.of(names).contains(name)) {
+			return null;
+		}
+		String spec = program.getLanguageID() + "/" + program.getCompilerSpec().getCompilerSpecID();
+		return "Unknown call fixup '" + name + "': the compiler spec " + spec + " defines " +
+			(names.length == 0 ? "none" : String.join(", ", names)) + ". \"\" clears the fixup.";
+	}
+
+	/** Install or clear ("" / null) the fixup, returning the text appended to the result. */
+	private static String applyCallFixup(Function function, String name) {
+		function.setCallFixup(name.isEmpty() ? null : name);
+		return name.isEmpty() ? " [call fixup cleared]" : " [call fixup " + name + "]";
 	}
 
 	/**

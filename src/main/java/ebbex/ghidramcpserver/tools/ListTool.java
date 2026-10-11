@@ -11,6 +11,9 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Decompilers;
@@ -22,7 +25,6 @@ import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.address.AddressRange;
-import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.data.StringDataInstance;
 import ghidra.program.model.lang.Register;
@@ -128,10 +130,12 @@ public class ListTool implements ProgramTool {
 			"flow Ghidra holds now (what the decompiler sees), d is target linear minus " +
 			"next-instruction linear (equal to the encoded displacement when the target was " +
 			"computed without wrapping), and the window test is target linear within " +
-			"[CS<<4, CS<<4+0xFFFF]. The filter matches the whole line, so filter='e8 ' or " +
-			"filter='0f 8' selects an encoding and filter=CALL a mnemonic; summary=true returns " +
-			"counts per (mnemonic, byte length, relation) instead of lines, so a whole program's " +
-			"branch census fits one reply.";
+			"[CS<<4, CS<<4+0xFFFF], with ', crosses 64K page' added when the target's linear " +
+			"64K page differs from the next instruction's. The filter matches the whole line, so " +
+			"filter='e8 ' or filter='0f 8' selects an encoding and filter=CALL a mnemonic " +
+			"(regex=true for AND/OR: '(?=.*e9 )(?=.*outside)'); summary=true returns counts per " +
+			"(mnemonic, byte length, relation) instead of lines, so a whole program's branch " +
+			"census fits one reply.";
 	}
 
 	@Override
@@ -141,7 +145,10 @@ public class ListTool implements ProgramTool {
 		Map<String, Object> properties = new LinkedHashMap<>();
 		properties.put("kind", Schemas.enumProp("What to list", KINDS));
 		properties.put("filter", Schemas.stringProp(
-			"Case-insensitive substring to match against names/values"));
+			"Case-insensitive substring to match against names/values (the whole line)"));
+		properties.put("regex", Schemas.boolProp("Treat 'filter' as a case-insensitive Java " +
+			"regex matched anywhere in the line instead of a substring (default false); " +
+			"'(?=.*e9 )(?=.*outside)' ANDs two conditions, 'JZ|JNZ' ORs them"));
 		properties.put("sort",
 			Schemas.enumProp("Sort order for kind=functions (default address)", SORTS));
 		properties.put("min_address", Schemas.stringProp(
@@ -188,6 +195,14 @@ public class ListTool implements ProgramTool {
 			return Results.error("sort must be one of " + SORTS);
 		}
 		String filter = Args.stringArg(args, "filter", "").toLowerCase();
+		boolean regex = Args.boolArg(args, "regex", false);
+		Predicate<String> matches;
+		try {
+			matches = lineMatcher(filter, regex);
+		}
+		catch (PatternSyntaxException e) {
+			return Results.error("Invalid regex 'filter': " + e.getMessage());
+		}
 		boolean userOnly = Args.boolArg(args, "user_only", false);
 		boolean full = Args.boolArg(args, "full", false);
 		if (full && !kind.equals("comments")) {
@@ -236,7 +251,7 @@ public class ListTool implements ProgramTool {
 			}
 		}
 		if (summary) {
-			return flowSummary(program, from, to, context, filter);
+			return flowSummary(program, from, to, context, filter, matches, regex);
 		}
 
 		Iterator<String> lines = kind.equals("flows")
@@ -256,7 +271,7 @@ public class ListTool implements ProgramTool {
 				skipped++;
 				continue;
 			}
-			if (!filter.isEmpty() && !line.toLowerCase().contains(filter)) {
+			if (!matches.test(line)) {
 				continue;
 			}
 			if (total >= offset && window.size() < limit) {
@@ -272,7 +287,7 @@ public class ListTool implements ProgramTool {
 						? " among the DEFINED strings (kind=strings only lists data typed as a " +
 							"string; search_memory kind=text scans every byte)"
 						: "") +
-				skipNote);
+				skipNote + Results.regexHint(filter, regex));
 		}
 		return Results.ok(String.join("\n", window) + (window.isEmpty() ? "" : "\n") +
 			Results.paginationFooter(window.size(), offset, total) + skipNote);
@@ -315,20 +330,21 @@ public class ListTool implements ProgramTool {
 	 * one reply instead of hundreds of pages.
 	 */
 	private static McpSchema.CallToolResult flowSummary(Program program, Address from, Address to,
-			Register context, String filter) {
+			Register context, String filter, Predicate<String> matches, boolean regex) {
 		Map<String, Integer> counts = new HashMap<>();
 		int total = 0;
 		Iterator<FlowLines.Row> rows = FlowLines.rows(program, from, to, context);
 		while (rows.hasNext()) {
 			FlowLines.Row row = rows.next();
-			if (!filter.isEmpty() && !row.line().toLowerCase().contains(filter)) {
+			if (!matches.test(row.line())) {
 				continue;
 			}
 			counts.merge(row.group(), 1, Integer::sum);
 			total++;
 		}
 		if (total == 0) {
-			return Results.ok("No flows" + (filter.isEmpty() ? "" : " matching '" + filter + "'"));
+			return Results.ok("No flows" + (filter.isEmpty() ? "" : " matching '" + filter + "'") +
+				Results.regexHint(filter, regex));
 		}
 		StringBuilder sb = new StringBuilder();
 		counts.entrySet().stream()
@@ -338,6 +354,18 @@ public class ListTool implements ProgramTool {
 		sb.append('(').append(total).append(" flows in ").append(counts.size())
 				.append(" groups; summary=false lists them)");
 		return Results.ok(sb.toString());
+	}
+
+	/** The line filter: a lowercased substring, or a case-insensitive regex found anywhere. */
+	private static Predicate<String> lineMatcher(String filter, boolean regex) {
+		if (filter.isEmpty()) {
+			return line -> true;
+		}
+		if (!regex) {
+			return line -> line.toLowerCase().contains(filter);
+		}
+		Pattern pattern = Pattern.compile(filter, Pattern.CASE_INSENSITIVE);
+		return line -> pattern.matcher(line).find();
 	}
 
 	/** Function lines carry a caller count and body size; sortable by address, name, or callers. */
@@ -481,9 +509,7 @@ public class ListTool implements ProgramTool {
 		Listing listing = program.getListing();
 		AddressSetView scope = (from == null && to == null)
 				? program.getMemory()
-				: new AddressSet(
-					from != null ? from : program.getMinAddress(),
-					to != null ? to : program.getMaxAddress());
+				: Locations.scope(program, from, to);
 		AddressIterator addresses = listing.getCommentAddressIterator(scope, true);
 		ArrayDeque<String> pending = new ArrayDeque<>();
 		return new Iterator<>() {

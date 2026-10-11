@@ -12,6 +12,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import ebbex.ghidramcpserver.RealModeProgramTest;
+import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.lang.Register;
 
@@ -41,11 +42,28 @@ public class ListFlowsTest extends RealModeProgramTest {
 			program.endTransaction(tx, true);
 		}
 		builder.setBytes("1000:0000", "e8 10 00 eb 05 0f 84 00 10 c3", true);
+		// A second block in another space: a one-sided min_address used to pair the resident
+		// start with the overlay's end and be refused as a cross-space range.
+		overlay = builder.createOverlayMemory("OVERLAY_1", "2000:0000", 0x100).getStart();
+		// 2000:0000  9a 13 00 00 30  CALLF 3000:0013 -> lin 0x30013, from lin 0x20005: another
+		// 64K page, outside the CS=0x2000 window disassembly asserts over the overlay.
+		builder.withTransaction(() -> {
+			try {
+				program.getMemory().setBytes(overlay,
+					new byte[] { (byte) 0x9a, 0x13, 0x00, 0x00, 0x30 });
+			}
+			catch (Exception e) {
+				throw new AssertionError(e);
+			}
+			new DisassembleCommand(overlay, null, true).applyTo(program);
+		});
 	}
+
+	private Address overlay;
 
 	@Test
 	public void everyBranchGetsBytesContextTargetAndDistance() throws Exception {
-		String text = ok(list, Map.of("kind", "flows"));
+		String text = ok(list, Map.of("kind", "flows", "max_address", "1000:0fff"));
 		List<String> lines = List.of(text.split("\n"));
 		assertEquals(text, "(3 total)", lines.get(3));
 		assertEquals("1000:0000  e8 10 00  CALL  [call]  CS=0x1000  -> 1000:0013 lin 0x10013  " +
@@ -66,10 +84,34 @@ public class ListFlowsTest extends RealModeProgramTest {
 		String summary = ok(list, Map.of("kind", "flows", "summary", true));
 		assertTrue(summary, summary.contains("      1  CALL  3 bytes  in CS window\n"));
 		assertTrue(summary, summary.contains("      1  JZ  4 bytes  in CS window\n"));
-		assertTrue(summary, summary.endsWith("(3 flows in 3 groups; summary=false lists them)"));
+		assertTrue(summary,
+			summary.contains("      1  CALLF  5 bytes  outside CS window, crosses 64K page\n"));
+		assertTrue(summary, summary.endsWith("(4 flows in 4 groups; summary=false lists them)"));
 
-		String calls = ok(list, Map.of("kind", "flows", "summary", true, "filter", "call"));
+		String calls = ok(list, Map.of("kind", "flows", "summary", true, "filter", "call  "));
 		assertTrue(calls, calls.endsWith("(1 flows in 1 groups; summary=false lists them)"));
+	}
+
+	@Test
+	public void aOneSidedBoundClipsEachSpaceAndRegexAndsConditions() throws Exception {
+		String fromMiddle = ok(list, Map.of("kind", "flows", "min_address", "1000:0003"));
+		assertTrue(fromMiddle, fromMiddle.startsWith("1000:0003  eb 05  JMP"));
+		// Disassembly asserted CS=0x2000 over the overlay, so the window test applies there too.
+		assertTrue(fromMiddle, fromMiddle.contains("\n" + overlay + "  9a 13 00 00 30  CALLF" +
+			"  [call]  CS=0x2000  -> 3000:0013 lin 0x30013  d=+0x1000e  outside CS window, " +
+			"crosses 64K page\n"));
+		assertTrue(fromMiddle, fromMiddle.endsWith("(3 total)"));
+		assertTrue(ok(list, Map.of("kind", "flows", "max_address", "1000:0003")).endsWith("(2 total)"));
+
+		String anded = ok(list, Map.of("kind", "flows", "regex", true,
+			"filter", "(?=.*\\[jump)(?=.*rel|.*0f 8)"));
+		assertTrue(anded, anded.startsWith("1000:0005  0f 84 00 10  JZ"));
+		assertTrue(anded, anded.endsWith("(1 total)"));
+		assertTrue(ok(list, Map.of("kind", "flows", "regex", true, "filter", "jz|callf"))
+				.endsWith("(2 total)"));
+		assertTrue(error(list, Map.of("kind", "flows", "regex", true, "filter", "(")).contains(
+			"Invalid regex"));
+		assertTrue(ok(list, Map.of("kind", "functions", "filter", "a|b")).contains("regex=true"));
 	}
 
 	@Test

@@ -631,6 +631,15 @@ public class McpToolSmokeScript extends GhidraScript {
 				}
 			}
 
+			// call_fixup: an unknown name must be refused with the names this cspec defines.
+			McpSchema.CallToolResult badFixup = prog("set_function_signature",
+				Map.of("function", "mcp_batch_renamed", "call_fixup", "no_such_fixup"), program);
+			if (!text(badFixup).startsWith("Unknown call fixup 'no_such_fixup'") ||
+				!text(badFixup).contains(" defines ")) {
+				failures++;
+				println("!! unknown call_fixup was not refused with the spec's names: " +
+					text(badFixup));
+			}
 			// set_function_signature structured mode: a param pinned to a register (custom storage).
 			prog("set_function_signature", Map.of("function", "mcp_batch_renamed",
 				"parameters", List.of(Map.of("name", "arg0", "type", "int", "storage", "EDI"))),

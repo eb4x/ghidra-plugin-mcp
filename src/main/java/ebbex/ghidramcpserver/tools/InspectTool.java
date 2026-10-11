@@ -102,6 +102,11 @@ public class InspectTool implements ProgramTool {
 					.append("\n  entry ").append(function.getEntryPoint()).append(", body ")
 					.append(function.getBody().getNumAddresses()).append(" bytes, ")
 					.append(callers).append(" callers\n");
+			// An installed call fixup rewrites every call to this function in the decompiler
+			// (a stack probe's SP adjustment, say); nothing else in tool output shows it.
+			if (function.getCallFixup() != null) {
+				sb.append("  call fixup ").append(function.getCallFixup()).append('\n');
+			}
 			// Thunk status, so it isn't misread from a decompile of the stub's own body.
 			if (function.isThunk()) {
 				Function thunked = function.getThunkedFunction(false);

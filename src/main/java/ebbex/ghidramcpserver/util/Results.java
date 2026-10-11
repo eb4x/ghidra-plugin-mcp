@@ -18,15 +18,23 @@ public final class Results {
 
 	/** Return a copy of {@code result} with {@code note} appended on its own line (keeps isError). */
 	public static McpSchema.CallToolResult appendNote(McpSchema.CallToolResult result, String note) {
+		return McpSchema.CallToolResult.builder().addTextContent(text(result) + '\n' + note)
+				.isError(isError(result)).build();
+	}
+
+	/** The concatenated text content of a result. */
+	public static String text(McpSchema.CallToolResult result) {
 		StringBuilder sb = new StringBuilder();
 		for (McpSchema.Content content : result.content()) {
 			if (content instanceof McpSchema.TextContent text) {
 				sb.append(text.text());
 			}
 		}
-		sb.append('\n').append(note);
-		return McpSchema.CallToolResult.builder().addTextContent(sb.toString())
-				.isError(Boolean.TRUE.equals(result.isError())).build();
+		return sb.toString();
+	}
+
+	public static boolean isError(McpSchema.CallToolResult result) {
+		return Boolean.TRUE.equals(result.isError());
 	}
 
 	/**

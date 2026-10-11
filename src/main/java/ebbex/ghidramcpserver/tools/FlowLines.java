@@ -4,8 +4,8 @@ import java.math.BigInteger;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
+import ebbex.ghidramcpserver.util.Locations;
 import ghidra.program.model.address.Address;
-import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.SegmentedAddress;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Instruction;
@@ -38,9 +38,7 @@ final class FlowLines {
 		Listing listing = program.getListing();
 		InstructionIterator instructions = from == null && to == null
 				? listing.getInstructions(true)
-				: listing.getInstructions(new AddressSet(
-					from != null ? from : program.getMinAddress(),
-					to != null ? to : program.getMaxAddress()), true);
+				: listing.getInstructions(Locations.scope(program, from, to), true);
 		ProgramContext programContext = program.getProgramContext();
 		return new Iterator<>() {
 			private Row pending;
@@ -89,7 +87,9 @@ final class FlowLines {
 		else {
 			Address next = instruction.getMaxAddress().next();
 			long distance = next == null ? 0 : linear(flows[0]) - linear(next);
-			relation = relation(instruction.getAddress(), flows[0], contextValue);
+			relation = relation(instruction.getAddress(), flows[0], contextValue) +
+				(next != null && (linear(next) >>> 16) != (linear(flows[0]) >>> 16)
+						? ", crosses 64K page" : "");
 			target = "  -> " + flows[0] + " lin 0x" + Long.toHexString(linear(flows[0])) +
 				(next == null ? "" : "  d=" + signedHex(distance)) +
 				(flows.length > 1 ? "  (+" + (flows.length - 1) + " more)" : "") + "  " + relation;
@@ -104,7 +104,9 @@ final class FlowLines {
 	/**
 	 * Where the target lies relative to the branch: inside the 64K window the assumed CS
 	 * value spans, or outside it; without a context value, whether it shares the branch's
-	 * segment frame.
+	 * segment frame. The caller appends ", crosses 64K page" when the target's linear 64K
+	 * page differs from the next instruction's: that is where a 16-bit offset computed from
+	 * the wrong base lands in another page, the other half of the rel16 question.
 	 */
 	private static String relation(Address at, Address target, BigInteger contextValue) {
 		if (contextValue != null) {

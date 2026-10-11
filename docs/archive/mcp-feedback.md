@@ -2161,3 +2161,36 @@ _Verification record for the five entries above._
   `3359 JMP 3 bytes in CS window`, `2223 CALL 3 bytes in CS window`, and the tail held the
   outliers the census is after (`6 CALL 4 bytes outside CS window`, `1 JMP 3 bytes outside CS
   window`, `1 JNZ 2 bytes outside CS window`). `INT` appears as a call-type flow with no target.
+
+## 2026-10-12 — RESOLVED (0.30.0) — `list kind=flows` follow-ups: one-sided `min_address` refused across spaces, no AND in the filter, no page-crossing relation — viceroy
+- **Friction** (dog-food of 0.29.0 on `/COLONIZE/VICEROY.EXE`): (1) `min_address` without
+  `max_address` failed with "Start and end addresses must be in same address space! Start
+  0000:0000 end = OVERLAY_30::03a6fd": the default end was the last overlay while the start was
+  resident. (2) The filter is one substring, so "e9 AND outside CS window" took range bisection
+  with summaries. (3) Page crossing, half of ghidra-core's question, had to be derived per boundary.
+- **Fix:** (1) `Locations.scope` clips the memory blocks one by one against the bounds (addresses
+  order by space, then offset, so a bound clips only its own space); `kind=comments` had the same
+  construction and uses it too. (2) `list` takes `regex=true` as `search_memory` does: a
+  case-insensitive Java regex found anywhere in the line, so `(?=.*e9 )(?=.*outside)` ANDs and
+  `JZ|JNZ` ORs, for every kind and for `summary=true`; a substring filter with regex syntax that
+  matches nothing gets the regex hint. (3) The relation gains `, crosses 64K page` when the
+  target's linear 64K page differs from the next instruction's, so the summary groups split on it.
+- **Verified** by `ListFlowsTest` (a one-sided bound over a resident block plus an overlay; the
+  overlay CALLF row `CS=0x2000 … outside CS window, crosses 64K page`; a lookahead AND; an
+  alternation; an invalid regex refused; the hint on a substring `a|b`) and the smoke run.
+
+## 2026-10-12 — RESOLVED (0.30.0) — no way to set or clear a function's call fixup — ghidra-core for viceroy
+- **Task:** dailydriver's x86-16 cspec gained the call fixups `chkstk16far` (SP = SP + 4 - AX) and
+  `chkstk16near` for MSC's `_chkstk` probe; without them the decompiler lets later call pushes
+  overwrite locals (viceroy's `comexebat`). A fresh analysis installs them by name, but the live
+  VICEROY.EXE is analyzed and the "Call-Fixup Installer" one-shot also repairs flows after every
+  no-return call and queues follow-up analysis, so `_chkstk` (1d1d:03d0) needed the fixup set
+  directly.
+- **Fix:** `set_function_signature call_fixup=<name>` installs it (`Function.setCallFixup`), `""`
+  clears it, alone or alongside any prototype mode (applied after it, in its own transaction, so
+  the signature commands cannot drop it). The name is checked against the cspec's
+  `PcodeInjectLibrary.getCallFixupNames()`; an unknown one is refused as `Unknown call fixup 'x':
+  the compiler spec x86:LE:16:Real Mode/default defines a, b`, which also shows whether the running
+  Ghidra loaded a new spec. `inspect` on a function shows `call fixup <name>`.
+- **Verified** by `CallFixupTest` (refusal with the spec's names; install, inspect, combination
+  with `noreturn`, clear) and the smoke run (refusal on the x86-64 sample).
