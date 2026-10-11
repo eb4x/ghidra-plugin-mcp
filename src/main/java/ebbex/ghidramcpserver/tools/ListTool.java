@@ -3,6 +3,7 @@ package ebbex.ghidramcpserver.tools;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,6 +25,7 @@ import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.data.StringDataInstance;
+import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
@@ -46,7 +48,7 @@ public class ListTool implements ProgramTool {
 
 	private static final List<String> KINDS = List.of("functions", "symbols", "strings",
 		"imports", "exports", "segments", "data", "namespaces", "bookmarks", "comments",
-		"undeclared_inputs");
+		"undeclared_inputs", "flows");
 
 	/** Longest comment text shown on a listing line; inspect the address for the full text. */
 	private static final int MAX_COMMENT_CHARS = 300;
@@ -118,7 +120,18 @@ public class ListTool implements ProgramTool {
 			"committed ones that are provably incomplete. CAVEAT: a function mis-declared as " +
 			"returning void can sweep CLEAN — its body is dead code, and the in_* reads are " +
 			"eliminated with it — so a clean sweep does not prove prototypes complete; " +
-			"suspiciously empty decompilations still need a look.";
+			"suspiciously empty decompilations still need a look. kind=flows lists every jump and " +
+			"call with its encoding: 'addr  raw bytes  MNEMONIC  [call|jump, cond, computed]  " +
+			"CS=0x…  -> target seg:off lin 0x…  d=+0x…  in|outside CS window' — the bytes give " +
+			"the branch width (rel8 vs rel16), CS is the assumed context value at that address " +
+			"(omitted where none is set; 'context' names another register), the target is the " +
+			"flow Ghidra holds now (what the decompiler sees), d is target linear minus " +
+			"next-instruction linear (equal to the encoded displacement when the target was " +
+			"computed without wrapping), and the window test is target linear within " +
+			"[CS<<4, CS<<4+0xFFFF]. The filter matches the whole line, so filter='e8 ' or " +
+			"filter='0f 8' selects an encoding and filter=CALL a mnemonic; summary=true returns " +
+			"counts per (mnemonic, byte length, relation) instead of lines, so a whole program's " +
+			"branch census fits one reply.";
 	}
 
 	@Override
@@ -132,9 +145,15 @@ public class ListTool implements ProgramTool {
 		properties.put("sort",
 			Schemas.enumProp("Sort order for kind=functions (default address)", SORTS));
 		properties.put("min_address", Schemas.stringProp(
-			"kind=functions|comments|undeclared_inputs: only entries at addresses >= this"));
+			"kind=functions|comments|undeclared_inputs|flows: only entries at addresses >= this"));
 		properties.put("max_address", Schemas.stringProp(
-			"kind=functions|comments|undeclared_inputs: only entries at addresses <= this"));
+			"kind=functions|comments|undeclared_inputs|flows: only entries at addresses <= this"));
+		properties.put("summary", Schemas.boolProp("kind=flows: return counts per (mnemonic, " +
+			"byte length, target relation) instead of lines (default false); the filter still " +
+			"selects which lines are counted"));
+		properties.put("context", Schemas.stringProp("kind=flows: register whose assumed " +
+			"context value is shown per branch and defines the 64K window (default CS when the " +
+			"processor has one)"));
 		properties.put("user_only", Schemas.boolProp("kind=functions|symbols|data: keep only " +
 			"non-auto-generated names (default false)"));
 		properties.put("full", Schemas.boolProp("kind=comments: return full comment texts " +
@@ -203,8 +222,26 @@ public class ListTool implements ProgramTool {
 			return Results.error("min_body/max_body apply to kind=functions");
 		}
 
-		Iterator<String> lines =
-			lines(kind, program, sort, from, to, userOnly, full, minBody, maxBody);
+		boolean summary = Args.boolArg(args, "summary", false);
+		String contextName = Args.stringArg(args, "context", null);
+		if ((summary || contextName != null) && !kind.equals("flows")) {
+			return Results.error("summary/context apply to kind=flows");
+		}
+		Register context = null;
+		if (kind.equals("flows")) {
+			context = program.getRegister(contextName != null ? contextName : "CS");
+			if (contextName != null && context == null) {
+				return Results.error("No register named '" + contextName + "' in " +
+					program.getLanguageID());
+			}
+		}
+		if (summary) {
+			return flowSummary(program, from, to, context, filter);
+		}
+
+		Iterator<String> lines = kind.equals("flows")
+				? map(FlowLines.rows(program, from, to, context), FlowLines.Row::line)
+				: lines(kind, program, sort, from, to, userOnly, full, minBody, maxBody);
 
 		List<String> window = new ArrayList<>();
 		int total = 0;
@@ -270,6 +307,37 @@ public class ListTool implements ProgramTool {
 			case "undeclared_inputs" -> undeclaredInputs(program, from, to);
 			default -> throw new IllegalArgumentException(kind);
 		};
+	}
+
+	/**
+	 * {@code kind=flows summary=true}: how many branches of each (mnemonic, byte length,
+	 * relation) the filter selects, largest group first, so a program-wide branch census is
+	 * one reply instead of hundreds of pages.
+	 */
+	private static McpSchema.CallToolResult flowSummary(Program program, Address from, Address to,
+			Register context, String filter) {
+		Map<String, Integer> counts = new HashMap<>();
+		int total = 0;
+		Iterator<FlowLines.Row> rows = FlowLines.rows(program, from, to, context);
+		while (rows.hasNext()) {
+			FlowLines.Row row = rows.next();
+			if (!filter.isEmpty() && !row.line().toLowerCase().contains(filter)) {
+				continue;
+			}
+			counts.merge(row.group(), 1, Integer::sum);
+			total++;
+		}
+		if (total == 0) {
+			return Results.ok("No flows" + (filter.isEmpty() ? "" : " matching '" + filter + "'"));
+		}
+		StringBuilder sb = new StringBuilder();
+		counts.entrySet().stream()
+				.sorted(Map.Entry.<String, Integer> comparingByValue().reversed()
+						.thenComparing(Map.Entry.comparingByKey()))
+				.forEach(e -> sb.append(String.format("%7d  %s%n", e.getValue(), e.getKey())));
+		sb.append('(').append(total).append(" flows in ").append(counts.size())
+				.append(" groups; summary=false lists them)");
+		return Results.ok(sb.toString());
 	}
 
 	/** Function lines carry a caller count and body size; sortable by address, name, or callers. */

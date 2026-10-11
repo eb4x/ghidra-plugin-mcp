@@ -215,6 +215,16 @@ public class McpToolSmokeScript extends GhidraScript {
 			waitForAnalysis(program);
 			prog("get_program_info", Map.of(), program);
 			prog("list", Map.of("kind", "functions", "filter", "main", "limit", 3), program);
+			// kind=flows: the branch census. x86-64 has no CS context, so rows carry the
+			// space relation instead; the summary must count the same rows the listing shows.
+			McpSchema.CallToolResult flows = prog("list", Map.of("kind", "flows", "limit", 5), program);
+			McpSchema.CallToolResult census =
+				prog("list", Map.of("kind", "flows", "summary", true), program);
+			if (!text(flows).contains("CALL  [call]") || !text(census).contains("CALL  5 bytes")) {
+				failures++;
+				println("!! list kind=flows shows no CALL rows or census group: " + text(flows) +
+					"\n" + text(census));
+			}
 			prog("decompile", Map.of("function", "main"), program);
 			McpSchema.CallToolResult symbols =
 				prog("decompile", Map.of("function", "main", "dump_symbols", true), program);

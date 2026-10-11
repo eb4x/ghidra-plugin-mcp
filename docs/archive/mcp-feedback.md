@@ -2134,3 +2134,24 @@ _Verification record for the five entries above._
   can never contradict `get_application_info`. The description says what a single level shows.
 - **Verified** by the smoke run (`list_files recursive=false` on the sample project lists
   `/backups/  [folder]`) and live on 0.28.3 against `mads`.
+
+## 2026-10-12 — RESOLVED (0.29.0) — no one-call census of flow instructions with encoding, CS context and target — viceroy via ghidra-core
+- **Task:** count, on `/COLONIZE/VICEROY.EXE`, the near rel16 branches (`E8`, `E9`, `0F 80..8F`
+  without a `66` prefix) by how their target is computed, to size a core fix for rel16 targets
+  (#981/#9393).
+- **Friction:** `search_memory kind=instruction` shows no bytes or length (rel8 and rel16 look the
+  same), prints the target normalized to another segment, shows no CS context, and returns tens of
+  thousands of lines through paging; `read_bytes` + `inspect` per hit would be thousands of calls;
+  `kind=bytes 'E8 ?? ??'` matches data and non-instruction starts.
+- **Fix:** `list kind=flows`: one line per jump or call, `addr  raw bytes  MNEMONIC  [call|jump,
+  cond, computed]  CS=0x…  -> target seg:off lin 0x…  d=+0x…  in|outside CS window`, where CS is
+  the assumed context value at the address (`context` names another register; omitted where none
+  is set, then the relation is same/other segment), the target is the flow Ghidra holds now, `d`
+  is target linear minus next-instruction linear (equal to the encoded displacement when the
+  target was computed without wrapping; off by 0x10000 where it was wrapped, checkable against the
+  bytes on the same line), and the window is `[CS<<4, CS<<4+0xFFFF]`. `min_address`/`max_address`
+  scope the walk, the filter matches the whole line (`filter='0f 8'` selects Jcc rel16,
+  `filter=CALL` a mnemonic), and `summary=true` returns counts per (mnemonic, byte length,
+  relation) so the whole program is one reply.
+- **Verified** by `ListFlowsTest` (bytes, CS, target, d and relation on `E8`/`EB`/`0F 84`; filter
+  by encoding; summary counts; `context=DS`; refusals) and the smoke run on the x86-64 sample.
