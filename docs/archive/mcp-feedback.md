@@ -2114,4 +2114,9 @@ _Verification record for the five entries above._
   `INFO (RTLinkOverlayAnalyzer) …`; an empty run says `(the analyzer logged nothing)`. The
   parameter description now says what comes back.
 - **Verified** by `LogCaptureTest` (this thread's INFO/WARN kept, DEBUG and another thread's
-  entries dropped, nothing after close) and the smoke run.
+  entries dropped, nothing after close) and the smoke run. **Verified live** by rtlink on 0.28.2
+  against a fresh import of its smoke sample into `/scratch-oneshot-log` (deleted afterwards):
+  `analyze analyzer="RTLink/Plus Overlay"` returned `Logged during the run (6):` with every INFO
+  line of the run in order, including `Set CS over 4 overlay module(s) in 3 page(s)` and the DS
+  line, matching `read_log` for the same run; `analyzer="RTLink Buried Code Repair"` with nothing
+  to repair returned `(the analyzer logged nothing)`; no lines lost to another thread.
