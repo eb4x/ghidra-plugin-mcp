@@ -2099,3 +2099,19 @@ _Verification record for the five entries above._
   first (bottom-up) and callers get re-checked afterwards; the decompile description now says
   so. Nothing for `ghidra-core`.
 - **Item 6** (the "should be unmapped" warning on a locked write-only local): noted, no action.
+
+## 2026-10-11 — RESOLVED (0.28.2) — `analyze analyzer=…` one-shot returns no log although the description promises one — rtlink, viceroy
+- **Friction:** `analyze analyzer="RTLink/Plus Overlay"` on a VICEROY.EXE copy answered only
+  `Ran one-shot analyzer 'RTLink/Plus Overlay' on VICEROY.EXE.` while the analyzer had written
+  `RTLink/Plus: Set CS over 73 overlay module(s) in 31 page(s)` and `Seeded 6 VM runtime function
+  entries…` to application.log. The tool returned only the `MessageLog`, which RTLink keeps empty
+  on purpose: any content there makes `AutoAnalysisPlugin` pop a dialog, so analyzers report work
+  through `Msg.info` and reserve the message log for failures. Every caller had to follow up with
+  `read_log`.
+- **Fix:** the one-shot path now attaches a log4j appender for the duration of the run
+  (`LogCapture`), keeps INFO and above from the calling thread (the run is synchronous), and
+  returns them after the message log as `Logged during the run (N):` lines of the form
+  `INFO (RTLinkOverlayAnalyzer) …`; an empty run says `(the analyzer logged nothing)`. The
+  parameter description now says what comes back.
+- **Verified** by `LogCaptureTest` (this thread's INFO/WARN kept, DEBUG and another thread's
+  entries dropped, nothing after close) and the smoke run.

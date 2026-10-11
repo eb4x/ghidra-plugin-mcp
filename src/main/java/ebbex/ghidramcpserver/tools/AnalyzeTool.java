@@ -1,11 +1,13 @@
 package ebbex.ghidramcpserver.tools;
 
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 import ebbex.ghidramcpserver.ProgramTool;
 import ebbex.ghidramcpserver.util.Analysis;
 import ebbex.ghidramcpserver.util.Args;
+import ebbex.ghidramcpserver.util.LogCapture;
 import ebbex.ghidramcpserver.util.Results;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.app.plugin.core.analysis.OneShotAnalysisCommand;
@@ -34,8 +36,10 @@ import io.modelcontextprotocol.spec.McpSchema;
  * that analyzer over an already-analyzed program without disturbing the rest of the
  * markup. The canonical use is re-running the {@code RTLink/Plus Overlay} analyzer to
  * retrofit the assumed data segment (DS/DGROUP) onto a program that was analyzed before
- * that support existed. The one-shot path runs synchronously and returns the analyzer's
- * own log output.
+ * that support existed. The one-shot path runs synchronously and returns what the analyzer
+ * logged: its {@link MessageLog} and, through {@link LogCapture}, the application.log entries
+ * the run emitted (analyzers report their work with {@code Msg.info} and keep the message log
+ * for failures, since any content there pops a GUI dialog).
  *
  * <p>Analysis runs inside a single transaction (mirroring the headless analyzer);
  * some analyzers &mdash; notably the RTLink/Plus Overlay analyzer &mdash; require an
@@ -66,7 +70,10 @@ public class AnalyzeTool implements ProgramTool {
 				"type", "string",
 				"description", "Optional: run only this single named analyzer as a one-shot " +
 					"(exact display name, e.g. \"RTLink/Plus Overlay\") instead of full " +
-					"auto-analysis. Runs synchronously and returns the analyzer's log.")));
+					"auto-analysis. Runs synchronously and returns what the analyzer logged: " +
+					"its message log (usually empty; analyzers keep it for failures) and every " +
+					"application.log entry it emitted during the run, so no read_log follow-up " +
+					"is needed.")));
 	}
 
 	@Override
@@ -101,7 +108,8 @@ public class AnalyzeTool implements ProgramTool {
 	 * Run a single named analyzer as a one-shot (GUI <em>Analysis &rarr; One Shot</em>
 	 * equivalent): resolve the analyzer configured for this program, apply the saved
 	 * options, and invoke it synchronously inside a transaction over all of memory.
-	 * Returns the analyzer's own {@link MessageLog} so the caller sees what it did.
+	 * Returns the analyzer's own {@link MessageLog} and the log entries this thread emitted
+	 * during the run, so the caller sees what it did.
 	 */
 	private McpSchema.CallToolResult runOneShot(Program program, String analyzerName) {
 		AutoAnalysisManager mgr = AutoAnalysisManager.getAnalysisManager(program);
@@ -114,14 +122,16 @@ public class AnalyzeTool implements ProgramTool {
 		}
 
 		MessageLog log = new MessageLog();
+		List<String> logged;
 		boolean applied;
 		int txId = program.startTransaction("One-shot analysis: " + analyzerName);
-		try {
+		try (LogCapture capture = new LogCapture()) {
 			Options options = program.getOptions(Program.ANALYSIS_PROPERTIES);
 			analyzer.optionsChanged(options.getOptions(analyzer.getName()), program);
 			OneShotAnalysisCommand cmd =
 				new OneShotAnalysisCommand(analyzer, program.getMemory(), log);
 			applied = cmd.applyTo(program, TaskMonitor.DUMMY);
+			logged = capture.lines();
 		}
 		finally {
 			program.endTransaction(txId, true);
@@ -143,7 +153,14 @@ public class AnalyzeTool implements ProgramTool {
 				.append(program.getName()).append('.');
 		String detail = log.toString().strip();
 		if (!detail.isEmpty()) {
-			sb.append('\n').append(detail);
+			sb.append("\nMessage log:\n").append(detail);
+		}
+		if (logged.isEmpty()) {
+			sb.append(detail.isEmpty() ? "\n(the analyzer logged nothing)" : "");
+		}
+		else {
+			sb.append("\nLogged during the run (").append(logged.size()).append("):\n")
+					.append(String.join("\n", logged));
 		}
 		return Results.ok(sb.toString());
 	}
