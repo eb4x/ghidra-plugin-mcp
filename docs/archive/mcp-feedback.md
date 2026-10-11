@@ -2155,3 +2155,9 @@ _Verification record for the five entries above._
   relation) so the whole program is one reply.
 - **Verified** by `ListFlowsTest` (bytes, CS, target, d and relation on `E8`/`EB`/`0F 84`; filter
   by encoding; summary counts; `context=DS`; refusals) and the smoke run on the x86-64 sample.
+  **Verified live** on 0.29.0: `list kind=flows summary=true` on `/COLONIZE/VICEROY.EXE` (x86 4.9)
+  returned 34285 flows in 40 groups in one reply, where the row listing would have been 343 pages;
+  the first groups were `9188 CALLF 5 bytes outside CS window`, `4642 JZ 2 bytes in CS window`,
+  `3359 JMP 3 bytes in CS window`, `2223 CALL 3 bytes in CS window`, and the tail held the
+  outliers the census is after (`6 CALL 4 bytes outside CS window`, `1 JMP 3 bytes outside CS
+  window`, `1 JNZ 2 bytes outside CS window`). `INT` appears as a call-type flow with no target.
