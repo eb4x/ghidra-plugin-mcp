@@ -409,6 +409,16 @@ public class McpToolSmokeScript extends GhidraScript {
 			app("manage_files", Map.of("op", "copy", "path", "/target.bin", "dest_folder", "/backups",
 				"new_name", "ls.snapshot"), project);
 			app("list_files", Map.of("folder", "/backups"), project);
+			// A single-level listing of the root shows its folders, so a project whose root holds
+			// only folders never reads as empty ("No files under /" was the 12.1.4-day report).
+			McpSchema.CallToolResult singleLevel =
+				app("list_files", Map.of("recursive", false), project);
+			if (!text(singleLevel).contains("/backups/  [folder]  ") ||
+				text(singleLevel).startsWith("No files")) {
+				failures++;
+				println("!! list_files recursive=false on / does not list the /backups folder: " +
+					text(singleLevel));
+			}
 			app("manage_files", Map.of("op", "delete", "path", "/backups", "recursive", true),
 				project);
 

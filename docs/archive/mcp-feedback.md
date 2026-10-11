@@ -2120,3 +2120,17 @@ _Verification record for the five entries above._
   line of the run in order, including `Set CS over 4 overlay module(s) in 3 page(s)` and the DS
   line, matching `read_log` for the same run; `analyzer="RTLink Buried Code Repair"` with nothing
   to repair returned `(the analyzer logged nothing)`; no lines lost to another thread.
+
+## 2026-10-11 — RESOLVED (0.28.3) — `list_files recursive=false` on `/` says "No files under /" while `get_application_info` counts 678 files — keil8051, ghidra-core
+- **Friction:** right after the 12.1.4 cutover, `list_files {folder:"/", recursive:false}` on the
+  live `mads` project answered `No files under /`, while `get_application_info` reported 10 folders
+  and 678 files. keil8051 suspected the wrong project was open; ghidra-core suspected a 12.1.4
+  framework change in root enumeration. Neither: the mads root holds folders only, and a
+  single-level listing printed files only, so a project of the usual shape read as empty.
+- **Fix:** a single-level listing prints the subfolders first (`/COLONIZE/  [folder]  2 files`,
+  with the recursive file and folder counts below each), then the folder's own files; with no
+  files of its own it ends `(no files directly in /; recursive=true lists the files of every
+  folder)`. An empty answer names what the folder holds (`it holds 678 files in 10 folders`) so it
+  can never contradict `get_application_info`. The description says what a single level shows.
+- **Verified** by the smoke run (`list_files recursive=false` on the sample project lists
+  `/backups/  [folder]`) and live on 0.28.3 against `mads`.
