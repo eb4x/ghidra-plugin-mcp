@@ -2193,4 +2193,9 @@ _Verification record for the five entries above._
   the compiler spec x86:LE:16:Real Mode/default defines a, b`, which also shows whether the running
   Ghidra loaded a new spec. `inspect` on a function shows `call fixup <name>`.
 - **Verified** by `CallFixupTest` (refusal with the spec's names; install, inspect, combination
-  with `noreturn`, clear) and the smoke run (refusal on the x86-64 sample).
+  with `noreturn`, clear) and the smoke run (refusal on the x86-64 sample). **Verified live** by
+  viceroy on 0.30.0: `function=1d1d:03d0 call_fixup=chkstk16far` on `/COLONIZE/VICEROY.EXE`
+  returned `_chkstk [call fixup chkstk16far]` (the client passed the parameter before it had the
+  new schema), and `comexebat` decompiles cleanly with the fixup injected. The refusal path on the
+  live program listed exactly `chkstk16far, chkstk16near`, confirming the running Ghidra had
+  loaded dailydriver's new cspec.
