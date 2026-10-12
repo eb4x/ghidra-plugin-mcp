@@ -2214,3 +2214,5 @@ _Verification record for the five entries above._
   **Verified live** on 0.30.1 against `/COLONIZE/VICEROY.EXE`: `list kind=flows regex=true
   filter='^\S+  9a \S+ \S+ \S+ \S+  CALLF  \[call\]  CS=0x\D{0}1d1d'` matched 103 rows (the same
   pattern returned nothing on 0.30.0, where `\S` had become `\s`).
+  rtlink re-ran its original pattern `^OVERLAY_\d+::\S+\s+[0-9a-f ]+\s(CALL|JMP|J(?!MPF)[A-Z]{1,3}|LOOP[A-Z]*)\s.*crosses 64K page`
+  on 0.30.1: 450 rows on `/COLONIZE/VICEROY.EXE`, where 0.30.0 had returned none.
