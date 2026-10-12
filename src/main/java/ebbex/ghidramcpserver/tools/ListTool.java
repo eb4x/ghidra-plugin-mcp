@@ -194,7 +194,7 @@ public class ListTool implements ProgramTool {
 		if (!SORTS.contains(sort)) {
 			return Results.error("sort must be one of " + SORTS);
 		}
-		String filter = Args.stringArg(args, "filter", "").toLowerCase();
+		String filter = Args.stringArg(args, "filter", "");
 		boolean regex = Args.boolArg(args, "regex", false);
 		Predicate<String> matches;
 		try {
@@ -356,13 +356,18 @@ public class ListTool implements ProgramTool {
 		return Results.ok(sb.toString());
 	}
 
-	/** The line filter: a lowercased substring, or a case-insensitive regex found anywhere. */
+	/**
+	 * The line filter: a case-insensitive substring, or a case-insensitive regex found anywhere. The
+	 * pattern is compiled as written: lowercasing it would turn {@code \S}, {@code \D}, {@code \W}
+	 * and {@code \B} into their opposites.
+	 */
 	private static Predicate<String> lineMatcher(String filter, boolean regex) {
 		if (filter.isEmpty()) {
 			return line -> true;
 		}
 		if (!regex) {
-			return line -> line.toLowerCase().contains(filter);
+			String needle = filter.toLowerCase();
+			return line -> line.toLowerCase().contains(needle);
 		}
 		Pattern pattern = Pattern.compile(filter, Pattern.CASE_INSENSITIVE);
 		return line -> pattern.matcher(line).find();

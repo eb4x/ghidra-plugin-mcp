@@ -2199,3 +2199,15 @@ _Verification record for the five entries above._
   new schema), and `comexebat` decompiles cleanly with the fixup injected. The refusal path on the
   live program listed exactly `chkstk16far, chkstk16near`, confirming the running Ghidra had
   loaded dailydriver's new cspec.
+
+## 2026-10-12 — RESOLVED (0.30.1) — `list regex=true` lowercased the pattern, so `\S` `\D` `\W` `\B` flipped meaning — rtlink
+- **Report:** `list kind=flows regex=true filter='^OVERLAY_\d+::\S+\s+…'` on 0.30.0 returned
+  `No flows matching '^overlay_\d+::\s+\s+…'`: the whole filter was lowercased before
+  `Pattern.compile`, so every uppercase escape became its negation and a pattern meant to match
+  silently matched nothing. The echo showed the lowercased pattern. rtlink worked around it with
+  `[^ ]+` and `[0-9]+`.
+- **Fix:** the filter is kept as written. The substring mode lowercases its own needle; the regex
+  mode compiles the pattern unchanged with `Pattern.CASE_INSENSITIVE`, which already made letters
+  case-insensitive without touching escapes. The miss echo now shows the filter as typed.
+- **Verified** by `ListFlowsTest` (`^\S+  e8 \d{2} \d{2}  \D+\[call\]` and `\bCALLF\b` match; an
+  uppercase miss echoes as typed) and the smoke run.

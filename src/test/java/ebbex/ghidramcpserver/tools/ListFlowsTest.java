@@ -111,6 +111,17 @@ public class ListFlowsTest extends RealModeProgramTest {
 				.endsWith("(2 total)"));
 		assertTrue(error(list, Map.of("kind", "flows", "regex", true, "filter", "(")).contains(
 			"Invalid regex"));
+		// Uppercase escapes keep their meaning: the pattern is compiled as written, not lowercased
+		// (rtlink saw \S matching nothing because it had become \s).
+		String escapes = ok(list, Map.of("kind", "flows", "regex", true,
+			"filter", "^\\S+  e8 \\d{2} \\d{2}  \\D+\\[call\\]"));
+		assertTrue(escapes, escapes.startsWith("1000:0000  e8 10 00  CALL"));
+		assertTrue(escapes, escapes.endsWith("(1 total)"));
+		assertTrue(ok(list, Map.of("kind", "flows", "regex", true, "filter", "\\bCALLF\\b"))
+				.contains("(1 total)"));
+		// The echo of a miss shows the filter as written.
+		assertTrue(ok(list, Map.of("kind", "flows", "regex", true, "filter", "^OVERLAY_\\d+::\\S+XYZ"))
+				.startsWith("No flows matching '^OVERLAY_\\d+::\\S+XYZ'"));
 		assertTrue(ok(list, Map.of("kind", "functions", "filter", "a|b")).contains("regex=true"));
 	}
 
