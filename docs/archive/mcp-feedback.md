@@ -2211,3 +2211,6 @@ _Verification record for the five entries above._
   case-insensitive without touching escapes. The miss echo now shows the filter as typed.
 - **Verified** by `ListFlowsTest` (`^\S+  e8 \d{2} \d{2}  \D+\[call\]` and `\bCALLF\b` match; an
   uppercase miss echoes as typed) and the smoke run.
+  **Verified live** on 0.30.1 against `/COLONIZE/VICEROY.EXE`: `list kind=flows regex=true
+  filter='^\S+  9a \S+ \S+ \S+ \S+  CALLF  \[call\]  CS=0x\D{0}1d1d'` matched 103 rows (the same
+  pattern returned nothing on 0.30.0, where `\S` had become `\s`).
