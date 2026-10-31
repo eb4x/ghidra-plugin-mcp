@@ -15,6 +15,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.feature.fid.db.FidDB;
 import ghidra.feature.fid.db.FidFile;
 import ghidra.feature.fid.db.FidFileManager;
+import ghidra.feature.fid.db.FidFilter;
 import ghidra.feature.fid.hash.FidHashQuad;
 import ghidra.feature.fid.hash.FidHasher;
 import ghidra.feature.fid.service.FidPopulateResult;
@@ -145,7 +146,9 @@ public class FidBuildTool implements ApplicationLevelTool {
 			Predicate<Pair<Function, FidHashQuad>> functionFilter =
 				pair -> eligible.test(pair.first);
 			FidPopulateResult result = service.createNewLibraryFromPrograms(fidDb, library, version,
-				variant, programs, functionFilter, languageId, /*linkLibraries*/ null,
+				variant, programs, functionFilter,
+				// Any compiler spec and source language: the corpus is filtered by language only.
+				new FidFilter(languageId.getIdAsString(), null, null), /*linkLibraries*/ null,
 				/*commonSymbols*/ List.of(), TaskMonitor.DUMMY);
 			fidDb.saveDatabase("Saving", TaskMonitor.DUMMY);
 			message = summarize(result, programs.size(), dbPath, languageId, service, programs,

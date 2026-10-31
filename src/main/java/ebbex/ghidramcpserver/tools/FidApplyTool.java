@@ -14,6 +14,7 @@ import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.feature.fid.cmd.ApplyFidEntriesCommand;
 import ghidra.feature.fid.db.FidFileManager;
+import ghidra.feature.fid.db.FidProgramID;
 import ghidra.feature.fid.db.FidQueryService;
 import ghidra.feature.fid.db.LibraryRecord;
 import ghidra.feature.fid.service.FidMatch;
@@ -104,7 +105,10 @@ public class FidApplyTool implements ProgramTool {
 		if (fidManager.addUserFidFile(dbFile) == null) {
 			return Results.error("Not a valid FID database: " + dbPath);
 		}
-		if (!fidManager.canQuery(program.getLanguage())) {
+		// Language only, ignoring the databases' compiler-spec and source-language filters: the
+		// matching fid_apply has always done, and what our own fid_build databases record.
+		FidProgramID programId = new FidProgramID(program, /*ignoreCompilerSpec*/ true);
+		if (!fidManager.canQuery(programId)) {
 			return Results.error("No FID database matches this program's language (" +
 				program.getLanguageID() + "). Build one with fid_build from a binary of the same " +
 				"toolchain.");
@@ -121,7 +125,7 @@ public class FidApplyTool implements ProgramTool {
 		// is a lazy lookup in the database's strings table, which closing the service tears
 		// down (NPE on getName() afterwards).
 		Map<Address, Before> before = new TreeMap<>();
-		try (FidQueryService query = service.openFidQueryService(program.getLanguage(), false)) {
+		try (FidQueryService query = service.openFidQueryService(programId, false)) {
 			List<FidSearchResult> search =
 				service.processProgram(program, query, score, TaskMonitor.DUMMY);
 			if (search == null) {
@@ -143,7 +147,8 @@ public class FidApplyTool implements ProgramTool {
 		String status = null;
 		try {
 			ApplyFidEntriesCommand cmd = new ApplyFidEntriesCommand(program.getMemory(), score,
-				multi, /*alwaysApplyFidLabels*/ false, /*createBookmarks*/ false);
+				multi, /*alwaysApplyFidLabels*/ false, /*createBookmarks*/ false,
+				/*ignoreCompilerSpec*/ true);
 			if (cmd.applyTo(program, TaskMonitor.DUMMY)) {
 				affected = cmd.getFIDLocations();
 			}
