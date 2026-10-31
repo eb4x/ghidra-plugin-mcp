@@ -265,6 +265,18 @@ public class McpToolSmokeScript extends GhidraScript {
 					println("!! rename by pc with split=false did not name the whole variable " +
 						"at " + pc + ": " + text(whole));
 				}
+				// A local the function writes is not an input, whatever it is called: the
+				// undeclared-inputs check must read the decompiler's flags, not the in_ prefix.
+				prog("rename", Map.of("kind", "local_variable", "function", "main", "pc", pc,
+					"new_name", "in_mcp_local", "split", false), program);
+				McpSchema.CallToolResult prefixed =
+					prog("decompile", Map.of("function", "main"), program);
+				if (!text(prefixed).contains("in_mcp_local") ||
+					text(prefixed).contains("in_mcp_local (")) {
+					failures++;
+					println("!! a written local named in_* was reported as an undeclared " +
+						"input (or the rename did not land): " + text(prefixed));
+				}
 			}
 			else {
 				println("(no auto-named decompiler symbol with a pc in main; pc handle not " +

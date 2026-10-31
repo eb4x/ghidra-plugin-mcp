@@ -20,6 +20,7 @@ import ebbex.ghidramcpserver.util.Schemas;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSet;
+import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Program;
@@ -27,10 +28,12 @@ import ghidra.program.model.pcode.DynamicEntry;
 import ghidra.program.model.pcode.ElementId;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighSymbol;
+import ghidra.program.model.pcode.HighVariable;
 import ghidra.program.model.pcode.JumpTable;
 import ghidra.program.model.pcode.PcodeBlockBasic;
 import ghidra.program.model.pcode.PcodeDataTypeManager;
 import ghidra.program.model.pcode.SymbolEntry;
+import ghidra.program.model.pcode.Varnode;
 import ghidra.program.model.pcode.XmlEncode;
 import ghidra.program.model.symbol.IdentityNameTransformer;
 import ghidra.program.model.symbol.SourceType;
@@ -483,7 +486,14 @@ public class DecompileTool implements ProgramTool {
 		}
 	}
 
-	/** Shared with {@code list kind=undeclared_inputs}, which sweeps a program for this. */
+	/**
+	 * Shared with {@code list kind=undeclared_inputs}, which sweeps a program for this.
+	 *
+	 * <p>Classified by the decompiler's own varnode flags, the same test it uses to mint an
+	 * {@code in_} name: an input that is neither a declared parameter nor an unaffected
+	 * (callee-saved, {@code unaff_}) register. Never by the name: a user may name an ordinary
+	 * local {@code in_colony}, and may rename a real undeclared input to anything.
+	 */
 	static IrregularInputs irregularInputs(DecompileResults results) {
 		List<String> args = new ArrayList<>();
 		List<String> flags = new ArrayList<>();
@@ -494,20 +504,36 @@ public class DecompileTool implements ProgramTool {
 		Iterator<HighSymbol> symbols = high.getLocalSymbolMap().getSymbols();
 		while (symbols.hasNext()) {
 			HighSymbol symbol = symbols.next();
-			String name = symbol.getName();
-			if (name == null || !name.startsWith("in_") || name.equals("in_FS_OFFSET")) {
+			if (symbol.isParameter() || !isIrregularInput(symbol.getHighVariable())) {
 				continue;
 			}
-			if (FLAG_BITS.contains(name.substring("in_".length()))) {
-				flags.add(name.substring("in_".length()));
+			Register register = symbol.getStorage().getRegister();
+			String registerName = register == null ? null : register.getName();
+			if ("FS_OFFSET".equals(registerName)) {
+				continue;
+			}
+			if (registerName != null && FLAG_BITS.contains(registerName)) {
+				flags.add(registerName);
 			}
 			else {
-				args.add(name + " (" + symbol.getStorage() + ')');
+				args.add(symbol.getName() + " (" + symbol.getStorage() + ')');
 			}
 		}
 		args.sort(null);
 		flags.sort(null);
 		return new IrregularInputs(args, flags);
+	}
+
+	private static boolean isIrregularInput(HighVariable variable) {
+		if (variable == null) {
+			return false;
+		}
+		for (Varnode instance : variable.getInstances()) {
+			if (instance.isInput() && !instance.isUnaffected()) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
