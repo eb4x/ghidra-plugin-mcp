@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
+import ebbex.ghidramcpserver.util.Analysis;
 import ebbex.ghidramcpserver.util.Args;
 import ebbex.ghidramcpserver.util.Edt;
 import ebbex.ghidramcpserver.util.ProjectContext;
@@ -114,9 +115,10 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			// A busy file has a background task (e.g. analysis) mid-run: releasing our cached
 			// handle now could drop the last consumer and close the program under that task,
 			// so refuse before touching anything.
-			if (file.isBusy()) {
-				return Results.error("'" + path + "' is busy — a background task (e.g. analysis) " +
-					"is still running on it; wait for it to finish and retry.");
+			String busy = busyReason(file);
+			if (busy != null) {
+				return Results.error("'" + path + "' is busy — " + busy + "; wait for it to finish " +
+					"and retry.");
 			}
 			String onDirty = Args.stringArg(args, "on_dirty", "refuse");
 			if (!ON_DIRTY.contains(onDirty)) {
@@ -249,8 +251,9 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		if (!Program.class.isAssignableFrom(file.getDomainObjectClass())) {
 			return new Outcome(file, Fate.SKIPPED, "not a program (" + file.getContentType() + ")");
 		}
-		if (file.isBusy()) {
-			return new Outcome(file, Fate.SKIPPED, "busy: a background task is running on it");
+		String busy = busyReason(file);
+		if (busy != null) {
+			return new Outcome(file, Fate.SKIPPED, "busy: " + busy);
 		}
 		if (file.isReadOnly()) {
 			return new Outcome(file, Fate.SKIPPED, "read-only");
@@ -476,9 +479,9 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			checkDeletable(sub, blocked);
 		}
 		for (DomainFile file : folder.getFiles()) {
-			String why = null;
-			if (file.isBusy()) {
-				why = "busy (a background task is still running on it)";
+			String why = busyReason(file);
+			if (why != null) {
+				why = "busy (" + why + ")";
 			}
 			else if (file.isOpen()) {
 				why = "held open by: " + describeConsumers(file);
@@ -560,10 +563,26 @@ public class ManageFilesTool implements ApplicationLevelTool {
 			collectBusy(sub, busy);
 		}
 		for (DomainFile file : folder.getFiles()) {
-			if (file.isBusy()) {
-				busy.add(file.getPathname());
+			String why = busyReason(file);
+			if (why != null) {
+				busy.add(file.getPathname() + " — " + why);
 			}
 		}
+	}
+
+	/**
+	 * Why a background task holds {@code file}, or null. Ghidra's {@code isBusy()} only sees a
+	 * task once it is running, so an analysis still waiting in this server's queue is asked
+	 * about separately: releasing the file under it would close the program it is about to use.
+	 */
+	private static String busyReason(DomainFile file) {
+		if (file.isBusy()) {
+			return "a background task (e.g. analysis) is still running on it";
+		}
+		if (Analysis.isQueued(file.getPathname())) {
+			return "an MCP analysis is queued or running on it";
+		}
+		return null;
 	}
 
 	/**

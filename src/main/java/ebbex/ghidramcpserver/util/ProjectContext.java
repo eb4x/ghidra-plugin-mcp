@@ -10,6 +10,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import ghidra.framework.data.DefaultProjectData;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.DomainFile;
+import ghidra.framework.model.DomainObjectLockedException;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectLocator;
 import ghidra.program.model.listing.Program;
@@ -180,10 +181,10 @@ public class ProjectContext {
 		return "'" + path + "' needs a one-way upgrade before any tool can read it (" + detail +
 			"). The language or data schema moved under the saved program — every program saved " +
 			"under the older one is in the same state, and nothing reports it until something " +
-			"tries to open it. This server will not upgrade it for you: the rewrite is " +
-			"irreversible and auto-saved, so it is the program owner's call. Open it in the " +
-			"Ghidra window and accept the upgrade prompt, or verify on a fresh import and leave " +
-			"the curated program alone.";
+			"tries to open it (list_files marks them '**'). No tool upgrades it as a side effect: " +
+			"the rewrite is irreversible and auto-saved, so it is the program owner's call. The " +
+			"owner runs manage_files op=copy, then manage_files op=upgrade on it (dry_run=true " +
+			"previews).";
 	}
 
 	/** Short default bound for the auto-save the endpoint runs after each edit. */
@@ -254,29 +255,67 @@ public class ProjectContext {
 		}
 	}
 
-	/** Drop this context's hold on one program (e.g. before deleting/moving its file). */
+	/** How long a release waits for a save or transaction to let go of the program. */
+	private static final long RELEASE_WAIT_MS = 5000;
+
+	/**
+	 * Drop this context's hold on one program (e.g. before deleting/moving its file).
+	 *
+	 * <p>An entry leaves the cache only once its release has gone through. Releasing the last
+	 * consumer closes the program, and a close under a save's lock throws after Ghidra has
+	 * already dropped the consumer: done in the other order, that left an open program nobody
+	 * held ("held open by: an unknown consumer") that no tool could free until a restart.
+	 *
+	 * @throws IllegalStateException if a save or transaction still holds the program after a
+	 *             short wait; this context still holds it then, so a retry can release it
+	 */
 	public synchronized void release(String path) {
-		releaseProgram(openByPath.remove(path));
 		// The cache is keyed by the exact string each caller passed, so the same file can
 		// also sit under a variant spelling — match those by their resolved pathname too.
-		var it = openByPath.entrySet().iterator();
-		while (it.hasNext()) {
-			var entry = it.next();
-			if (entry.getValue().getDomainFile().getPathname().equals(path)) {
-				it.remove();
-				writeLocks.remove(entry.getKey());
-				releaseProgram(entry.getValue());
-			}
+		List<String> keys = openByPath.entrySet()
+				.stream()
+				.filter(e -> e.getKey().equals(path) ||
+					e.getValue().getDomainFile().getPathname().equals(path))
+				.map(Map.Entry::getKey)
+				.toList();
+		for (String key : keys) {
+			releaseProgram(openByPath.get(key), path);
+			openByPath.remove(key);
+			writeLocks.remove(key);
 		}
 		writeLocks.remove(path);
 	}
 
-	private void releaseProgram(Program program) {
-		if (program != null) {
-			decompilers.release(program);
-			if (!program.isClosed()) {
-				program.release(consumer);
-			}
+	private void releaseProgram(Program program, String path) {
+		if (program == null) {
+			return;
+		}
+		decompilers.release(program);
+		if (program.isClosed()) {
+			return;
+		}
+		long deadline = System.currentTimeMillis() + RELEASE_WAIT_MS;
+		while (!program.canLock() && System.currentTimeMillis() < deadline) {
+			sleep(100);
+		}
+		try {
+			program.release(consumer);
+		}
+		catch (DomainObjectLockedException e) {
+			// The consumer is already gone by the time close() refuses: take it back, so the
+			// program stays held, cached, and releasable by a retry.
+			program.addConsumer(consumer);
+			throw new IllegalStateException("'" + path + "' is being saved or modified right " +
+				"now (" + e.getMessage() + "), so it was not released; retry in a moment.", e);
+		}
+	}
+
+	private static void sleep(long millis) {
+		try {
+			Thread.sleep(millis);
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
 		}
 	}
 

@@ -41,11 +41,24 @@ public final class Analysis {
 	/**
 	 * Queue full auto-analysis of the program. Returns false if it was already queued or
 	 * running — the caller should say so rather than promise a second run.
+	 *
+	 * <p>The job holds the program as a consumer of its own from now until it finishes. Without
+	 * that, a release by whoever opened it (a manage_files delete, say) could close the program
+	 * while it waits in the queue, and the job would then build its analysis manager on a
+	 * closed program.
+	 *
+	 * @throws IllegalStateException if the program is already closed
 	 */
 	public static boolean enqueue(Program program) {
 		String key = program.getDomainFile().getPathname();
 		if (!QUEUED.add(key)) {
 			return false;
+		}
+		Object holder = new Object();
+		if (!program.addConsumer(holder)) {
+			QUEUED.remove(key);
+			throw new IllegalStateException("'" + key + "' was closed before its analysis " +
+				"could be queued");
 		}
 		PENDING.incrementAndGet();
 		WORKER.execute(() -> {
@@ -53,11 +66,22 @@ public final class Analysis {
 				analyze(program);
 			}
 			finally {
+				try {
+					program.release(holder);
+				}
+				catch (RuntimeException e) {
+					Msg.error(Analysis.class, "MCP: could not release " + key + " after analysis", e);
+				}
 				QUEUED.remove(key);
 				PENDING.decrementAndGet();
 			}
 		});
 		return true;
+	}
+
+	/** True while an analysis of the program at {@code path} is queued or running. */
+	public static boolean isQueued(String path) {
+		return QUEUED.contains(path);
 	}
 
 	/** Number of analyses queued or running. */
@@ -76,6 +100,10 @@ public final class Analysis {
 
 	/** Run full auto-analysis synchronously on the calling thread, then save. */
 	public static void analyze(Program program) {
+		if (program.isClosed()) {
+			Msg.warn(Analysis.class, "MCP: analysis skipped, " + program.getName() + " was closed");
+			return;
+		}
 		try {
 			AutoAnalysisManager mgr = AutoAnalysisManager.getAnalysisManager(program);
 			int txId = program.startTransaction("Auto-analysis");
