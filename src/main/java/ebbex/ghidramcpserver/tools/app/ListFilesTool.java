@@ -6,9 +6,9 @@ import java.util.Map;
 
 import ebbex.ghidramcpserver.ApplicationLevelTool;
 import ebbex.ghidramcpserver.util.Args;
-import ebbex.ghidramcpserver.util.LanguageStatus;
 import ebbex.ghidramcpserver.util.Results;
 import ebbex.ghidramcpserver.util.Schemas;
+import ebbex.ghidramcpserver.util.UpgradeStatus;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
@@ -31,9 +31,10 @@ public class ListFilesTool implements ApplicationLevelTool {
 			"program tools) and content type are shown. Defaults to a recursive listing from the " +
 			"root; pass 'folder' to scope it and 'recursive'=false for a single level, which " +
 			"lists that folder's subfolders (with their file counts) and then its own files. A program " +
-			"whose processor language has moved on since it was saved is marked '**': it cannot " +
-			"be opened by any tool until it is upgraded, which is checked here so it is found by " +
-			"listing rather than by a call failing.";
+			"saved under an older program schema (a Ghidra release) or processor language than " +
+			"this Ghidra's is marked '**': it cannot be opened by any tool until it is upgraded " +
+			"(manage_files op=upgrade), which is checked here so it is found by listing rather " +
+			"than by a call failing.";
 	}
 
 	@Override
@@ -92,8 +93,8 @@ public class ListFilesTool implements ApplicationLevelTool {
 		int unreadable = 0;
 		for (DomainFile file : window) {
 			sb.append(file.getPathname()).append("  [").append(file.getContentType()).append(']');
-			String staleness = LanguageStatus.staleness(data, file);
-			if (LanguageStatus.isUnreadable(staleness)) {
+			String staleness = UpgradeStatus.staleness(data, file);
+			if (UpgradeStatus.isUnreadable(staleness)) {
 				unreadable++;
 				sb.append("  ?? ").append(staleness);
 			}
@@ -104,11 +105,12 @@ public class ListFilesTool implements ApplicationLevelTool {
 			sb.append('\n');
 		}
 		if (stale > 0) {
-			sb.append("\n** ").append(stale).append(" of these cannot be opened as they stand. ")
-					.append("The processor language moved under them; upgrading rewrites the ")
-					.append("program one way and is the owner's call, so no tool here does it. ")
-					.append("Open one in the Ghidra window and accept the upgrade prompt, or ")
-					.append("re-import.\n");
+			sb.append("\n** ").append(stale).append(" of these cannot be opened as they stand: ")
+					.append("each row says whether the program schema or the processor language ")
+					.append("moved under it. Upgrading rewrites the program one way and is its ")
+					.append("owner's call: manage_files op=copy first, then manage_files ")
+					.append("op=upgrade (dry_run=true to preview). One saved by a newer Ghidra, or ")
+					.append("under a language not installed here, cannot be upgraded here.\n");
 		}
 		if (unreadable > 0) {
 			sb.append("\n?? ").append(unreadable).append(" could not be judged either way, each ")
