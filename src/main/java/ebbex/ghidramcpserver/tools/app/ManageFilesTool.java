@@ -554,8 +554,8 @@ public class ManageFilesTool implements ApplicationLevelTool {
 		if (busy.isEmpty()) {
 			return null;
 		}
-		return Results.error("A background task (e.g. analysis) is still running on:\n  " +
-			String.join("\n  ", busy) + "\nwait for it to finish and retry.");
+		return Results.error("Busy, so nothing was touched:\n  " + String.join("\n  ", busy) +
+			"\nWait for it to finish and retry.");
 	}
 
 	private static void collectBusy(DomainFolder folder, List<String> busy) {

@@ -26,7 +26,6 @@ import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
-import ghidra.program.model.data.EnumDataType;
 import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.data.ParameterDefinition;
 import ghidra.program.model.data.Pointer;
@@ -87,9 +86,11 @@ public class DefineTypesTool implements ProgramTool {
 			"'#pragma pack(1)'. Pointer width follows the program (2 bytes in a 16-bit program): " +
 			"write '__far *' (or 'far *', '__ptr32') for a 4-byte segment:offset pointer in a " +
 			"field, typedef or parameter — the same thing the other tools' type strings spell " +
-			"'T *32'. An enum is int-sized (2 bytes in a 16-bit program) unless declared with an " +
-			"underlying type, 'enum Err : byte { … }' (any 1–8 byte integer type; " +
-			"__attribute__((packed)) is accepted by Ghidra's parser and ignored). Each result " +
+			"'T *32'. An enum is int-sized (2 bytes in a 16-bit program) unless declared with a " +
+			"C23 underlying type, 'enum Err : byte { … }' (any 1–8 byte integer type), and a " +
+			"member too wide for the declared type is refused. Without one, Ghidra's parser drops " +
+			"a member that does not fit int, so declare the type for any wider value " +
+			"('enum Big : long { … }'); __attribute__((packed)) is accepted and ignored. Each result " +
 			"line gives the type's size; manage_types op=describe prints a full layout. A typedef " +
 			"named like a built-in ('typedef unsigned char byte') shadows it in every later type " +
 			"string, and the result line warns so: 'byte' is then a char type and the decompiler " +
@@ -117,8 +118,8 @@ public class DefineTypesTool implements ProgramTool {
 		if (source == null || source.isBlank()) {
 			return Results.error("source is required");
 		}
-		EnumSizeScan sized = scanEnumSizes(source, program);
-		FarScan scan = scanFarMarkers(sized.source());
+		Map<String, DeclaredEnum> enums = declaredEnums(source, program);
+		FarScan scan = scanFarMarkers(source);
 		DataTypeManager dtm = program.getDataTypeManager();
 
 		// The parse runs inside the transaction: in non-storing mode CParser still fills an
@@ -135,7 +136,7 @@ public class DefineTypesTool implements ProgramTool {
 			List<String> notes = new ArrayList<>();
 			Map<String, DataType> typedefs = new TreeMap<>(parser.getTypes());
 			applyFarMarkers(scan.marks(), parser, typedefs, dtm, notes);
-			applyEnumSizes(sized.sizes(), parser);
+			checkEnums(enums, parser, dtm);
 
 			List<DataType> parsed = new ArrayList<>();
 			parsed.addAll(new TreeMap<>(parser.getComposites()).values());
@@ -290,75 +291,96 @@ public class DefineTypesTool implements ProgramTool {
 	record FarScan(String source, List<FarMark> marks) {
 	}
 
-	/** {@code enum Name : base {}} with the base clause removed, and each enum's byte size. */
-	record EnumSizeScan(String source, Map<String, Integer> sizes) {
-	}
+	/** {@code enum Name [: base] { members }}: a named enum as written. */
+	private static final Pattern ENUM_BODY =
+		Pattern.compile("\\benum\\s+([A-Za-z_]\\w*)\\s*(?::([^{;]*))?\\{([^}]*)\\}");
 
-	/** {@code enum Name : uint8 {}: the C++11/C23 underlying-type clause Ghidra's parser lacks. */
-	private static final Pattern ENUM_BASE =
-		Pattern.compile("\\benum\\s+([A-Za-z_]\\w*)?\\s*:\\s*([A-Za-z_][\\w\\s*]*?)\\s*\\{");
+	/** The member name at the start of one enumerator, {@code NAME} or {@code NAME = value}. */
+	private static final Pattern ENUMERATOR = Pattern.compile("^\\s*([A-Za-z_]\\w*)");
 
 	/**
-	 * Ghidra's C parser sizes every enum to the data organization's int (2 bytes in a 16-bit
-	 * program) or larger, and has no syntax to say otherwise: {@code enum X : uint8} is a parse
-	 * error there and {@code __attribute__((packed))} is accepted and ignored. This reads the
-	 * underlying-type clause off each enum, removes it so the parser sees plain C, and
-	 * remembers the base type's size; {@link #applyEnumSizes} sets it after the parse.
-	 *
-	 * @throws IllegalArgumentException for an anonymous enum with a base clause (nothing to key
-	 *             the size on), or a base type the program cannot resolve
+	 * A named enum as the source declares it: its C23 underlying type's size (null without a
+	 * clause, or with a base the program cannot resolve, which the parser reports) and members.
 	 */
-	static EnumSizeScan scanEnumSizes(String source, Program program) {
-		Matcher m = ENUM_BASE.matcher(COMMENTS.matcher(source).replaceAll(" "));
-		Map<String, Integer> sizes = new HashMap<>();
-		StringBuilder out = new StringBuilder();
+	record DeclaredEnum(String base, Integer baseSize, List<String> members) {
+	}
+
+	/**
+	 * Ghidra 12.2's parser takes the C23 {@code : base} clause itself and sizes the enum from it.
+	 * What it does with a member that does not fit, the declared base or, without one, int, is
+	 * not something to rely on: stock 12.2 drops the member silently, and a parser fix seen on
+	 * the dailydriver build widened the enum instead. Either is a C constraint violation the
+	 * caller should hear about, so {@link #checkEnums} refuses both against what the source said.
+	 */
+	static Map<String, DeclaredEnum> declaredEnums(String source, Program program) {
+		Matcher m = ENUM_BODY.matcher(COMMENTS.matcher(source).replaceAll(" "));
+		Map<String, DeclaredEnum> enums = new HashMap<>();
 		while (m.find()) {
-			String name = m.group(1);
-			String base = m.group(2).trim();
-			if (name == null) {
-				throw new IllegalArgumentException("'enum : " + base +
-					"' needs a tag name to size: write 'enum Name : " + base + " { … }'");
+			String base = m.group(2) == null ? null : m.group(2).trim();
+			Integer baseSize = null;
+			if (base != null) {
+				try {
+					baseSize = Types.parse(program, base).getLength();
+				}
+				catch (Exception e) {
+					// The parser names an unknown base type better than a second lookup would.
+				}
 			}
-			DataType baseType;
-			try {
-				baseType = Types.parse(program, base);
+			List<String> members = new ArrayList<>();
+			for (String enumerator : m.group(3).split(",")) {
+				Matcher name = ENUMERATOR.matcher(enumerator);
+				if (name.find()) {
+					members.add(name.group(1));
+				}
 			}
-			catch (Exception e) {
-				throw new IllegalArgumentException("enum " + name + ": base type '" + base +
-					"' — " + e.getMessage());
-			}
-			if (baseType.getLength() < 1 || baseType.getLength() > 8) {
-				throw new IllegalArgumentException("enum " + name + ": base type '" + base +
-					"' is " + baseType.getLength() + " bytes; an enum is 1 to 8");
-			}
-			sizes.put(name, baseType.getLength());
-			m.appendReplacement(out, Matcher.quoteReplacement("enum " + name + " {"));
+			enums.put(m.group(1), new DeclaredEnum(base, baseSize, members));
 		}
-		m.appendTail(out);
-		return new EnumSizeScan(sizes.isEmpty() ? source : out.toString(), sizes);
+		return enums;
 	}
 
 	/**
-	 * Resize the parsed enums to their declared base: the parser hands back
-	 * {@link EnumDataType} instances, whose {@code setLength} refuses a size the values do not
-	 * fit (the message says the minimum).
+	 * Refuse an enum whose parsed form lost a declared member, or holds a value its declared
+	 * base cannot: the members are named, so one look says which values need a wider type.
 	 */
-	private static void applyEnumSizes(Map<String, Integer> sizes, CParser parser)
-			throws Exception {
-		for (Map.Entry<String, Integer> entry : sizes.entrySet()) {
-			DataType dt = parser.getEnums().get(entry.getKey());
-			if (!(dt instanceof EnumDataType e)) {
-				throw new Exception("enum " + entry.getKey() + " was declared with a base type " +
-					"but the parser produced no enum of that name");
+	private static void checkEnums(Map<String, DeclaredEnum> declared, CParser parser,
+			DataTypeManager dtm) throws Exception {
+		for (Map.Entry<String, DeclaredEnum> entry : declared.entrySet()) {
+			if (!(parser.getEnums()
+					.get(entry.getKey()) instanceof ghidra.program.model.data.Enum parsed)) {
+				continue;
 			}
-			try {
-				e.setLength(entry.getValue());
+			DeclaredEnum want = entry.getValue();
+			Set<String> kept = Set.of(parsed.getNames());
+			List<String> misfits = new ArrayList<>();
+			for (String member : want.members()) {
+				if (!kept.contains(member) || (want.baseSize() != null &&
+					!fits(parsed.getValue(member), want.baseSize()))) {
+					misfits.add(member);
+				}
 			}
-			catch (IllegalArgumentException ex) {
-				throw new Exception("enum " + entry.getKey() + " cannot be " + entry.getValue() +
-					" byte(s): its values need at least " + e.getMinimumPossibleLength());
+			if (misfits.isEmpty()) {
+				continue;
 			}
+			String name = entry.getKey();
+			throw new Exception("enum " + name + ": " + String.join(", ", misfits) +
+				(want.base() != null
+						? " do not fit its declared type '" + want.base() + "'" +
+							(want.baseSize() != null ? " (" + want.baseSize() + " byte(s))" : "") +
+							"; declare a wider one"
+						: " do not fit int (" + dtm.getDataOrganization().getIntegerSize() +
+							" bytes in this program); declare a wider type, e.g. 'enum " + name +
+							" : long { … }'") +
+				". Ghidra's parser would drop or widen them silently, so nothing was defined.");
 		}
+	}
+
+	/** True if {@code value} is representable in {@code bytes}, signed or unsigned. */
+	private static boolean fits(long value, int bytes) {
+		if (bytes >= 8) {
+			return true;
+		}
+		long bits = 8L * bytes;
+		return value >= -(1L << (bits - 1)) && value < (1L << bits);
 	}
 
 	/**

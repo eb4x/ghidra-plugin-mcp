@@ -11,6 +11,7 @@ import org.junit.Test;
 
 import ebbex.ghidramcpserver.RealModeProgramTest;
 import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.Enum;
 import ghidra.program.model.data.Structure;
 
 /**
@@ -60,18 +61,27 @@ public class DefineTypesToolTest extends RealModeProgramTest {
 	@Test
 	public void enumUnderlyingTypeSetsItsSize() throws Exception {
 		String out = ok(defineTypes, Map.of("source",
-			"enum Err : char { E_OPEN = 1, E_READ = 2 };\nenum Wide { W_A = 0x12345 };"));
+			"enum Err : char { E_OPEN = 1, E_READ = 2 };\nenum Wide : long { W_A = 0x12345 };"));
 		List<DataType> found = new ArrayList<>();
 		program.getDataTypeManager().findDataTypes("Err", found);
 		assertEquals(1, found.size());
 		assertEquals("declared 1 byte", 1, found.get(0).getLength());
 		found.clear();
 		program.getDataTypeManager().findDataTypes("Wide", found);
-		assertEquals("no clause: the value needs 4", 4, found.get(0).getLength());
+		Enum wide = (Enum) found.get(0);
+		assertEquals("declared long: 4 bytes in a 16-bit program", 4, wide.getLength());
+		assertEquals("the wide value is kept", 0x12345, wide.getValue("W_A"));
 		assertTrue(out, out.contains("enum Err  1 byte"));
 
-		String refused = error(defineTypes, Map.of("source", "enum Big : char { B = 300 };"));
-		assertTrue(refused, refused.contains("cannot be 1 byte(s): its values need at least 2"));
+		// Stock 12.2 drops the misfit and a fixed parser widens the enum; both are refused, naming it.
+		String refused = error(defineTypes, Map.of("source", "enum Big : char { A = 1, B = 300 };"));
+		assertTrue(refused, refused.contains("enum Big: B do not fit its declared type 'char'"));
+		String noClause = error(defineTypes, Map.of("source", "enum Huge { H = 0x12345 };"));
+		assertTrue(noClause, noClause.contains("enum Huge: H do not fit int (2 bytes"));
+		List<DataType> none = new ArrayList<>();
+		program.getDataTypeManager().findDataTypes("Big", none);
+		program.getDataTypeManager().findDataTypes("Huge", none);
+		assertTrue("a refusal defines nothing", none.isEmpty());
 	}
 
 	@Test
