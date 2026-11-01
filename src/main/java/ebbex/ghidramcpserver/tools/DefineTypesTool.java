@@ -126,6 +126,7 @@ public class DefineTypesTool implements ProgramTool {
 		// existing EMPTY composite in place (a placeholder from an earlier forward declaration).
 		return Transactions.modify(program, "Define types", () -> {
 			Set<String> placeholdersBefore = emptyComposites(dtm);
+			Map<String, Integer> sizesBefore = compositeSizes(dtm);
 			CParser parser = new CParser(dtm, false, new DataTypeManager[0]);
 			try {
 				parser.parse(scan.source());
@@ -143,22 +144,22 @@ public class DefineTypesTool implements ProgramTool {
 			parsed.addAll(typedefs.values());
 			parsed.addAll(new TreeMap<>(parser.getEnums()).values());
 			parsed.addAll(new TreeMap<>(parser.getFunctions()).values());
-			// Judged before anything is stored: resolving one struct adds every type it refers
-			// to, and a type this call created must not then read as "already identical".
-			Map<String, DataType> existingBefore = new HashMap<>();
+			// Judged before anything is stored: resolving one type adds or replaces in place
+			// every type it refers to, so a later verdict would compare the new layout with
+			// itself and read "already identical".
+			Map<String, String> states = new HashMap<>();
 			for (DataType dt : parsed) {
-				DataType existing = dtm.getDataType(dt.getCategoryPath(), dt.getName());
-				if (existing != null) {
-					existingBefore.put(dt.getPathName(), existing);
-				}
+				states.put(dt.getPathName(), state(dt,
+					dtm.getDataType(dt.getCategoryPath(), dt.getName()), placeholdersBefore));
 			}
 			List<String> lines = new ArrayList<>();
 			Set<String> parsedComposites = parser.getComposites().keySet();
 			Set<String> referenced = new HashSet<>();
 			for (DataType dt : parsed) {
-				lines.add(store(dtm, dt, existingBefore.get(dt.getPathName()), placeholdersBefore,
-					parsedComposites, referenced));
+				lines.add(store(dtm, dt, states.get(dt.getPathName()), parsedComposites,
+					referenced));
 			}
+			List<String> resized = resized(dtm, sizesBefore, states.keySet());
 			StringBuilder sb = new StringBuilder();
 			if (lines.isEmpty()) {
 				sb.append("Parsed successfully, but no named types were produced.");
@@ -170,6 +171,10 @@ public class DefineTypesTool implements ProgramTool {
 			if (!referenced.isEmpty()) {
 				sb.append("\nExisting types used as-is: ").append(String.join(", ", referenced));
 			}
+			if (!resized.isEmpty()) {
+				sb.append("\nResized because they contain a redefined type: ")
+						.append(String.join(", ", resized));
+			}
 			for (String note : notes) {
 				sb.append('\n').append(note);
 			}
@@ -177,25 +182,24 @@ public class DefineTypesTool implements ProgramTool {
 		});
 	}
 
-	/**
-	 * Resolve one parsed type into the program and describe what that did to the name:
-	 * new, filled-in placeholder, unchanged, or redefined with the size it had before.
-	 */
-	private static String store(DataTypeManager dtm, DataType dt, DataType existing,
-			Set<String> placeholdersBefore, Set<String> parsedComposites, Set<String> referenced) {
-		String state;
+	/** What storing {@code dt} will do to its name: new, filled-in placeholder, unchanged, or
+	 * redefined with the size it had before. */
+	private static String state(DataType dt, DataType existing, Set<String> placeholdersBefore) {
 		if (existing == null) {
-			state = "new";
+			return "new";
 		}
-		else if (placeholdersBefore.contains(existing.getPathName())) {
-			state = "filled in (was an empty placeholder)";
+		if (placeholdersBefore.contains(existing.getPathName())) {
+			return "filled in (was an empty placeholder)";
 		}
-		else if (existing.isEquivalent(dt)) {
-			state = "unchanged (already identical)";
+		if (existing.isEquivalent(dt)) {
+			return "unchanged (already identical)";
 		}
-		else {
-			state = "REDEFINED in place (was " + size(existing) + ")";
-		}
+		return "REDEFINED in place (was " + size(existing) + ")";
+	}
+
+	/** Resolve one parsed type into the program and describe it with its precomputed state. */
+	private static String store(DataTypeManager dtm, DataType dt, String state,
+			Set<String> parsedComposites, Set<String> referenced) {
 		DataType stored = dtm.addDataType(dt, DataTypeConflictHandler.REPLACE_HANDLER);
 		if (stored instanceof Composite composite) {
 			collectReferenced(composite, parsedComposites, referenced);
@@ -252,6 +256,26 @@ public class DefineTypesTool implements ProgramTool {
 			}
 		});
 		return empty;
+	}
+
+	private static Map<String, Integer> compositeSizes(DataTypeManager dtm) {
+		Map<String, Integer> sizes = new HashMap<>();
+		dtm.getAllComposites().forEachRemaining(c -> sizes.put(c.getPathName(), c.getLength()));
+		return sizes;
+	}
+
+	/** {@code sav_unit 28 → 31 (0x1f) bytes} for each composite the snippet did not define whose
+	 * size changed: it embeds a redefined type, and its own later fields moved. */
+	private static List<String> resized(DataTypeManager dtm, Map<String, Integer> sizesBefore,
+			Set<String> parsedPaths) {
+		Map<String, String> resized = new TreeMap<>();
+		dtm.getAllComposites().forEachRemaining(c -> {
+			Integer before = sizesBefore.get(c.getPathName());
+			if (before != null && before != c.getLength() && !parsedPaths.contains(c.getPathName())) {
+				resized.put(c.getName(), c.getName() + " " + before + " → " + size(c));
+			}
+		});
+		return new ArrayList<>(resized.values());
 	}
 
 	/** Composites this struct's fields reach (through pointers, arrays, typedefs) that the

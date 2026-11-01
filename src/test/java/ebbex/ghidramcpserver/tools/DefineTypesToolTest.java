@@ -117,6 +117,44 @@ public class DefineTypesToolTest extends RealModeProgramTest {
 		assertEquals(2, struct("Rec").getLength());
 	}
 
+	/**
+	 * VICEROY's case: sav_unit_kind sorts first and embeds the new sav_unit_land by value, so
+	 * storing it replaces the old one in place. sav_unit_land's own verdict must still compare
+	 * against the old layout, and the types outside the snippet that embed it and grew are named.
+	 */
+	@Test
+	public void aTypeReplacedByAnEarlierOneStillReadsRedefined() throws Exception {
+		ok(defineTypes, Map.of("source", """
+			#pragma pack(1)
+			typedef unsigned char u8;
+			typedef short s16;
+			struct sav_unit_land { u8 ai_counter; u8 ai_countdown;
+				union { u8 ai_search_slot; s16 created_turn; } k; u8 wants_trade; u8 tools; };
+			union sav_unit_payload { u8 hold[6]; struct sav_unit_land land; };
+			struct sav_unit { u8 head[16]; union sav_unit_payload u; s16 turn_counter; u8 tail[4]; };
+			"""));
+		assertEquals(28, struct("sav_unit").getLength());
+
+		String out = ok(defineTypes, Map.of("source", """
+			#pragma pack(1)
+			struct sav_unit_cargo { u8 item_0 : 4; u8 item_1 : 4; u8 item_2 : 4;
+				u8 item_3 : 4; u8 item_4 : 4; u8 item_5 : 4; };
+			struct sav_unit_ship { struct sav_unit_cargo cargo; u8 cargo_amount[6]; };
+			struct sav_unit_wagon { struct sav_unit_cargo cargo; u8 cargo_amount[2]; u8 unk18[2];
+				u8 wants_trade; u8 unk21; };
+			struct sav_unit_land { u8 unk13[3]; u8 ai_counter; u8 ai_countdown; u8 ai_search_slot;
+				u8 unk19[2]; u8 tools; };
+			struct sav_unit_native { u8 unk13[5]; s16 stamp_turn; u8 unk20[2]; };
+			union sav_unit_kind { struct sav_unit_ship ship; struct sav_unit_wagon wagon;
+				struct sav_unit_land land; struct sav_unit_native native; };
+			"""));
+		assertTrue(out, out.contains(
+			"struct sav_unit_land  9 bytes, pack(1)  REDEFINED in place (was 6 bytes)"));
+		assertTrue(out, out.contains("Resized because they contain a redefined type: " +
+			"sav_unit 28 → 31 (0x1f) bytes, sav_unit_payload 6 → 9 bytes"));
+		assertEquals(31, struct("sav_unit").getLength());
+	}
+
 	@Test
 	public void forwardDeclarationAloneIsFlaggedEmpty() throws Exception {
 		String out = ok(defineTypes, Map.of("source", "struct Opaque;"));

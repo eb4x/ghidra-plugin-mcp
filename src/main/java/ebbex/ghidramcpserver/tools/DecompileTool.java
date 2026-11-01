@@ -24,6 +24,8 @@ import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.listing.StackFrame;
+import ghidra.program.model.listing.VariableStorage;
 import ghidra.program.model.pcode.DynamicEntry;
 import ghidra.program.model.pcode.ElementId;
 import ghidra.program.model.pcode.HighFunction;
@@ -493,6 +495,11 @@ public class DecompileTool implements ProgramTool {
 	 * {@code in_} name: an input that is neither a declared parameter nor an unaffected
 	 * (callee-saved, {@code unaff_}) register. Never by the name: a user may name an ordinary
 	 * local {@code in_colony}, and may rename a real undeclared input to anything.
+	 *
+	 * <p>A stack location inside the local frame is never reported: no prototype can declare
+	 * it, and the decompiler gives one an entry-value input whenever it carries a value around a
+	 * loop or its address escapes, even though the body writes it first (VICEROY's
+	 * {@code unit_check_neighbours_after_move} listed 14 such locals).
 	 */
 	static IrregularInputs irregularInputs(DecompileResults results) {
 		List<String> args = new ArrayList<>();
@@ -501,10 +508,12 @@ public class DecompileTool implements ProgramTool {
 		if (high == null) {
 			return new IrregularInputs(args, flags);
 		}
+		StackFrame frame = high.getFunction().getStackFrame();
 		Iterator<HighSymbol> symbols = high.getLocalSymbolMap().getSymbols();
 		while (symbols.hasNext()) {
 			HighSymbol symbol = symbols.next();
-			if (symbol.isParameter() || !isIrregularInput(symbol.getHighVariable())) {
+			if (symbol.isParameter() || isFrameLocal(symbol.getStorage(), frame) ||
+				!isIrregularInput(symbol.getHighVariable())) {
 				continue;
 			}
 			Register register = symbol.getStorage().getRegister();
@@ -522,6 +531,10 @@ public class DecompileTool implements ProgramTool {
 		args.sort(null);
 		flags.sort(null);
 		return new IrregularInputs(args, flags);
+	}
+
+	private static boolean isFrameLocal(VariableStorage storage, StackFrame frame) {
+		return storage.isStackStorage() && !frame.isParameterOffset(storage.getStackOffset());
 	}
 
 	private static boolean isIrregularInput(HighVariable variable) {
